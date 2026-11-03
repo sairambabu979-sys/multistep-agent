@@ -1,6 +1,6 @@
 # Multistep Agent: Engineering Plan
 
-> Status: **Draft for review** · Owner: sairambabu979-sys · Last updated: 2026-11-02
+> Status: **M0 and M1 complete** · Owner: sairambabu979-sys · Last updated: 2026-11-03
 >
 > This document is the build contract. Every milestone below has exit criteria a CI job can check.
 > If a section here and the code disagree later, one of them is a bug.
@@ -153,10 +153,13 @@ def transition(state: RunState, event: Event) -> Step:
 2. **Finalization gate.** `FINALIZING` is reachable only if, for the *current* `head_tree`: verify passed, tests passed, fail-before/pass-after held, and there are zero open `blocker` or `major` findings.
 3. **Bounded work.** `revisions ≤ max_revisions`, `negotiation_round ≤ max_rounds`, and `replans ≤ 2`.
 4. **Negotiation progress.** In every round, the count of open findings strictly decreases, or the round emits `Deadlocked`. The system never loops silently.
-5. **Budget safety.** `ledger.spent ≤ budget.limit` after every step. The check runs *before* each LLM effect is issued, not after.
+5. **Budget safety.** For every live run, `spent + reserved ≤ limit`. Each spending effect is issued with a *reservation*: a slice of the remaining budget it must not exceed. Concurrent effects get disjoint slices, so parallel regions cannot overspend together. Reported overspend is recorded truthfully and ends the run.
 6. **Replay determinism.** `fold(transition, journal.events) == live_state` for every run in the test corpus.
-7. **Liveness (static).** In the transition graph, every non-terminal phase can reach a terminal phase. This is checked by graph search over the table, not by sampling.
+7. **Liveness.** Statically, every live phase can reach `DONE` through rules alone (global escapes don't count). Exhaustively, every *reachable state* can still reach `DONE` (EF DONE), checked by model checking at the default limits. This check found a real bug in M1: at the revision cap, a run that had already accepted a change kept negotiating, and paged a human, toward an outcome that was already decided. It now fails fast.
 8. **No dead entries.** Every phase is reachable from `INTAKE`.
+9. **Never stuck.** A live run always has at least one pending effect, so it can never wait on nothing.
+
+All state-level invariants run on **every transition in production**, not only in tests. A violation raises `InvariantViolation` at the step that caused it.
 
 ---
 
@@ -335,6 +338,7 @@ When a dispute is decided by a human ruling, or the same `style` finding is dism
 | **Unit** | Tools, path confinement, preference merge, cost ledger, prompt rendering | pytest | every push |
 | **Property** | FSM invariants (§2.4), preference merge laws, edit/apply round-trips, journal encode/decode | Hypothesis | every push |
 | **Model-based** | `RuleBasedStateMachine` sends random legal and illegal event sequences to `transition` and checks every invariant after each step | Hypothesis stateful | every push |
+| **Model check** | BFS over *every* reachable state at the production default limits (about 81k states across 4 configurations). Checks: no stuck states, EF DONE, every declared edge exercised, every rule-driven outcome reachable. | `tests/support/explorer.py` | every push |
 | **Static FSM** | Reachability, liveness, global-event coverage, diagram up to date | graph checks over the table | every push |
 | **Contract** | Every output schema is strict-compatible, every prompt renders byte-stable, and transcripts are append-only (prefix-extension check) | pytest | every push |
 | **Integration** | The full pipeline on fixture repos with a **scripted FakeLLM** and a **real sandbox** (see the scenarios below) | pytest, subprocess | every push |
@@ -505,8 +509,8 @@ Each milestone is a vertical slice that merges green. The sizes are relative [Gu
 
 | M | Deliverable | Exit criteria (CI-checkable) | Size |
 |---|---|---|---|
-| **M0** | Skeleton: pyproject, tooling, CI, import contracts, ADR-001..006, empty packages | CI green on an empty suite. Import-linter enforced. | S |
-| **M1** | **Pure FSM:** state, events, effects, transition table, invariants, diagram generator | All §2.4 invariants pass under Hypothesis (≥ 10k examples). Static liveness check passes. `docs/fsm.md` generated. | M |
+| **M0** ✅ | Skeleton: pyproject, tooling, CI, import contracts, ADR-001..006, empty packages | CI green on an empty suite. Import-linter enforced. | S |
+| **M1** ✅ | **Pure FSM:** state, events, effects, transition table, invariants, diagram generator | All §2.4 invariants pass under Hypothesis (≥ 10k examples, nightly profile). Exhaustive model check at the default limits. Static liveness check passes. `docs/fsm.md` generated. 100% branch coverage on `core`. | M |
 | **M2** | **Journal + interpreter** with stub effects: resume, replay, inspect | Chaos test: 100 random kill points, all resume to an identical final state | M |
 | **M3** | **LLM gateway:** streaming, structured outputs, retries, refusal fallback, budget ledger, FakeLLM, cassettes, append-only `Transcript` | Contract tests green. One cassette recorded and replayed offline. | M |
 | **M4** | **Sandbox + tools + capabilities** | I-12 and I-13 green. Fuzzed path-confinement property test. | M |
