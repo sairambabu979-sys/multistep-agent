@@ -17,8 +17,18 @@ from msa.core.events import AnyEvent, CancelRequested
 from msa.core.graph import analyze, render_markdown
 from msa.core.ids import RunId
 from msa.core.transitions import TABLE
-from msa.core.values import Escalation, Limits, Phase, PlanGate
+from msa.core.values import Escalation, Phase, PlanGate
 from msa.runtime.clock import LogicalClock, SystemClock
+from msa.runtime.config import (
+    DEFAULT_CONFIG,
+    ConfigError,
+    JournalConfig,
+    LimitsConfig,
+    MsaConfig,
+    Role,
+    json_schema,
+    load_config,
+)
 from msa.runtime.interpreter import Interpreter, Observer
 from msa.runtime.journal import JournalError, SqliteJournal
 from msa.runtime.simulation import (
@@ -30,10 +40,14 @@ from msa.runtime.simulation import (
 
 app = typer.Typer(no_args_is_help=True, add_completion=False, help="Multistep coding agent.")
 fsm_app = typer.Typer(no_args_is_help=True, help="Inspect the orchestrator state machine.")
+config_app = typer.Typer(no_args_is_help=True, help="Validate msa.toml and export its schema.")
 app.add_typer(fsm_app, name="fsm")
+app.add_typer(config_app, name="config")
 
-DEFAULT_DB = Path(".msa/runs.db")
-Db = Annotated[Path, typer.Option("--db", envvar="MSA_DB", help="Journal database.")]
+Db = Annotated[
+    Path | None,
+    typer.Option("--db", envvar="MSA_DB", help="Journal database [default: from msa.toml]."),
+]
 Run = Annotated[str, typer.Argument(help="Run id (see `msa runs`).")]
 Quiet = Annotated[bool, typer.Option("--quiet", "-q", help="No per-event timeline.")]
 
@@ -66,6 +80,83 @@ class Timeline(Observer):
         arrow = f"{source} -> {edge.target.name}"
         issued = ", ".join(e.command.kind for e in step.effects) or "-"
         typer.echo(f"{step.state.seq:>5}  {arrow:<34}{edge.event:<28}{issued}")
+
+
+# ---------- configuration
+
+
+@app.callback()
+def options(
+    ctx: typer.Context,
+    config: Annotated[
+        Path, typer.Option("--config", envvar="MSA_CONFIG", help="Settings file.")
+    ] = DEFAULT_CONFIG,
+) -> None:
+    """Multistep coding agent."""
+    ctx.obj = config
+
+
+def _settings(ctx: typer.Context) -> MsaConfig | None:
+    """The loaded settings, or None when the default msa.toml does not exist (built-in
+    defaults then apply). A missing file that was named explicitly is an error."""
+    path: Path = ctx.obj or DEFAULT_CONFIG
+    if not path.exists() and path == DEFAULT_CONFIG:
+        return None
+    try:
+        return load_config(path)
+    except ConfigError as exc:
+        raise _fail(str(exc)) from exc
+
+
+def _journal_settings(ctx: typer.Context) -> JournalConfig:
+    settings = _settings(ctx)
+    return settings.journal if settings else JournalConfig()
+
+
+def _journal(ctx: typer.Context, db: Path | None) -> SqliteJournal:
+    return SqliteJournal(db or _journal_settings(ctx).path)
+
+
+@config_app.command(name="check")
+def config_check(ctx: typer.Context) -> None:
+    """Validate the settings file and summarize what it configures."""
+    path: Path = ctx.obj or DEFAULT_CONFIG
+    try:
+        settings = load_config(path)
+    except ConfigError as exc:
+        raise _fail(str(exc)) from exc
+    typer.echo(f"ok: {path}")
+    for role in Role:
+        price = settings.pricing_for(role)
+        model, effort = settings.models.model_for(role), settings.models.effort_for(role)
+        typer.echo(
+            f"  {role:<9}{model:<20}effort {effort:<7}"
+            f"${price.input:.2f} in / ${price.output:.2f} out per MTok"
+        )
+    lim, journal = settings.limits, settings.journal
+    typer.echo(
+        f"  limits   ${lim.budget_usd:.2f} and {lim.wall_clock_minutes} min per run, "
+        f"{lim.max_replans} replans, {lim.max_revisions} revisions, "
+        f"{lim.max_negotiation_rounds} rounds, plan gate {lim.plan_gate}, "
+        f"escalation {lim.escalation}"
+    )
+    typer.echo(f"  journal  {journal.path} (snapshot every {journal.snapshot_every} events)")
+
+
+@config_app.command(name="schema")
+def config_schema(
+    output: Annotated[
+        Path | None, typer.Option("--output", "-o", help="Write to this file instead of stdout.")
+    ] = None,
+) -> None:
+    """Print the JSON Schema of msa.toml (committed as schemas/msa.schema.json)."""
+    text = json_schema()
+    if output is None:
+        typer.echo(text, nl=False)
+        return
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(text, encoding="utf-8")
+    typer.echo(f"wrote {output}")
 
 
 # ---------- version and state machine
@@ -117,7 +208,7 @@ def _drive(rid: RunId, coroutine: Coroutine[Any, Any, RunState]) -> RunState:
 
 
 def _interpreter(
-    journal: SqliteJournal, environment: dict[str, Any], *, quiet: bool
+    ctx: typer.Context, journal: SqliteJournal, environment: dict[str, Any], *, quiet: bool
 ) -> Interpreter:
     try:
         config = SimulationConfig.model_validate(environment)
@@ -129,35 +220,41 @@ def _interpreter(
         SimulatedEnvironment(config),
         clock=LogicalClock(),
         observer=Observer() if quiet else Timeline(),
+        snapshot_every=_journal_settings(ctx).snapshot_every,
     )
 
 
 @app.command()
 def simulate(
+    ctx: typer.Context,
     seed: Annotated[int, typer.Option(help="Seed for the simulated environment.")] = 0,
     profile: Annotated[Profile, typer.Option(help="happy: always succeed; mixed: anything.")] = (
         Profile.MIXED
     ),
     run_id: Annotated[str | None, typer.Option(help="Defaults to sim-<seed>-<random>.")] = None,
-    plan_gate: Annotated[PlanGate, typer.Option()] = PlanGate.AUTO,
-    escalation: Annotated[Escalation, typer.Option()] = Escalation.HUMAN,
-    budget_usd: Annotated[float, typer.Option(min=0.000001)] = 5.0,
+    plan_gate: Annotated[PlanGate | None, typer.Option(help="[default: msa.toml]")] = None,
+    escalation: Annotated[Escalation | None, typer.Option(help="[default: msa.toml]")] = None,
+    budget_usd: Annotated[
+        float | None, typer.Option(min=0.000001, help="[default: msa.toml]")
+    ] = None,
     quiet: Quiet = False,
-    db: Db = DEFAULT_DB,
+    db: Db = None,
 ) -> None:
     """Drive a full run against simulated (stub) executors and journal every event."""
     config = SimulationConfig(seed=seed, profile=profile)
     rid = RunId(run_id or f"sim-{seed}-{uuid.uuid4().hex[:6]}")
-    limits = Limits(
-        budget_usd_micros=round(budget_usd * 1_000_000),
-        # Logical time advances one tick per event, so this is effectively an event budget.
-        wall_clock=LogicalClock().tick * 10_000,
-        plan_gate=plan_gate,
-        escalation=escalation,
-    )
+    settings = _settings(ctx)
+    overrides: dict[str, Any] = {
+        key: value
+        for key, value in (("plan_gate", plan_gate), ("escalation", escalation))
+        if value is not None
+    }
+    if budget_usd is not None:
+        overrides["budget_usd_micros"] = round(budget_usd * 1_000_000)
+    limits = (settings.limits if settings else LimitsConfig()).to_limits(**overrides)
     environment = config.model_dump(mode="json")
-    with SqliteJournal(db) as journal:
-        interpreter = _interpreter(journal, environment, quiet=quiet)
+    with _journal(ctx, db) as journal:
+        interpreter = _interpreter(ctx, journal, environment, quiet=quiet)
         try:
             state = _drive(
                 rid,
@@ -171,13 +268,13 @@ def simulate(
 
 
 @app.command()
-def resume(run_id: Run, db: Db = DEFAULT_DB, quiet: Quiet = False) -> None:
+def resume(ctx: typer.Context, run_id: Run, db: Db = None, quiet: Quiet = False) -> None:
     """Continue a run from its journal. Completed effects are never re-executed."""
     rid = RunId(run_id)
-    with SqliteJournal(db) as journal:
+    with _journal(ctx, db) as journal:
         try:
             environment = journal.environment(rid)
-            state = _drive(rid, _interpreter(journal, environment, quiet=quiet).resume(rid))
+            state = _drive(rid, _interpreter(ctx, journal, environment, quiet=quiet).resume(rid))
         except JournalError as exc:
             raise _fail(str(exc)) from exc
     typer.echo(_outcome_line(state))
@@ -185,13 +282,14 @@ def resume(run_id: Run, db: Db = DEFAULT_DB, quiet: Quiet = False) -> None:
 
 @app.command()
 def cancel(
+    ctx: typer.Context,
     run_id: Run,
     reason: Annotated[str, typer.Option()] = "cancelled by operator",
-    db: Db = DEFAULT_DB,
+    db: Db = None,
 ) -> None:
     """Journal a cancellation. A process still driving the run stops at its next commit."""
     rid = RunId(run_id)
-    with SqliteJournal(db) as journal:
+    with _journal(ctx, db) as journal:
         try:
             state = journal.load(rid)
             event = CancelRequested(at=SystemClock().stamp(state), reason=reason)
@@ -205,9 +303,9 @@ def cancel(
 
 
 @app.command(name="runs")
-def list_runs(db: Db = DEFAULT_DB) -> None:
+def list_runs(ctx: typer.Context, db: Db = None) -> None:
     """List journaled runs, newest first."""
-    with SqliteJournal(db) as journal:
+    with _journal(ctx, db) as journal:
         summaries = journal.runs()
     if not summaries:
         typer.echo("no runs")
@@ -221,13 +319,14 @@ def list_runs(db: Db = DEFAULT_DB) -> None:
 
 @app.command()
 def inspect(
+    ctx: typer.Context,
     run_id: Run,
     at: Annotated[int | None, typer.Option(min=1, help="Show the state after this event.")] = None,
     as_json: Annotated[bool, typer.Option("--json", help="Print the full state as JSON.")] = False,
-    db: Db = DEFAULT_DB,
+    db: Db = None,
 ) -> None:
     """Show a run's state, now or as of any past event (time travel)."""
-    with SqliteJournal(db) as journal:
+    with _journal(ctx, db) as journal:
         try:
             state = journal.load(RunId(run_id), upto=at)
         except JournalError as exc:
@@ -264,9 +363,9 @@ def inspect(
 
 
 @app.command()
-def replay(run_id: Run, db: Db = DEFAULT_DB) -> None:
+def replay(ctx: typer.Context, run_id: Run, db: Db = None) -> None:
     """Re-fold the whole journal from scratch and check every snapshot against it."""
-    with SqliteJournal(db) as journal:
+    with _journal(ctx, db) as journal:
         try:
             result = journal.verify(RunId(run_id))
         except JournalError as exc:

@@ -1,0 +1,332 @@
+{
+  "$defs": {
+    "ApiConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "betas": {
+          "$ref": "#/$defs/BetasConfig"
+        },
+        "fallbacks": {
+          "title": "Fallbacks",
+          "type": "string"
+        },
+        "max_tokens": {
+          "exclusiveMinimum": 0,
+          "title": "Max Tokens",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "max_tokens",
+        "fallbacks",
+        "betas"
+      ],
+      "title": "ApiConfig",
+      "type": "object"
+    },
+    "BetasConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "server_side_fallback": {
+          "pattern": "^[a-z0-9-]+-\\d{4}-\\d{2}-\\d{2}$",
+          "title": "Server Side Fallback",
+          "type": "string"
+        },
+        "task_budgets": {
+          "pattern": "^[a-z0-9-]+-\\d{4}-\\d{2}-\\d{2}$",
+          "title": "Task Budgets",
+          "type": "string"
+        },
+        "thinking_binding": {
+          "pattern": "^[a-z0-9-]+-\\d{4}-\\d{2}-\\d{2}$",
+          "title": "Thinking Binding",
+          "type": "string"
+        }
+      },
+      "required": [
+        "server_side_fallback",
+        "task_budgets",
+        "thinking_binding"
+      ],
+      "title": "BetasConfig",
+      "type": "object"
+    },
+    "Effort": {
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "title": "Effort",
+      "type": "string"
+    },
+    "Escalation": {
+      "description": "Who rules on findings the negotiation could not settle.",
+      "enum": [
+        "human",
+        "arbiter"
+      ],
+      "title": "Escalation",
+      "type": "string"
+    },
+    "JournalConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "default": ".msa/runs.db",
+          "format": "path",
+          "title": "Path",
+          "type": "string"
+        },
+        "snapshot_every": {
+          "default": 50,
+          "exclusiveMinimum": 0,
+          "title": "Snapshot Every",
+          "type": "integer"
+        }
+      },
+      "title": "JournalConfig",
+      "type": "object"
+    },
+    "LimitsConfig": {
+      "additionalProperties": false,
+      "description": "Defaults for every run. The loop bounds default to the core's own defaults, which are\nthe limits the state machine is exhaustively model-checked at.",
+      "properties": {
+        "budget_usd": {
+          "default": 5.0,
+          "exclusiveMinimum": 0,
+          "title": "Budget Usd",
+          "type": "number"
+        },
+        "escalation": {
+          "$ref": "#/$defs/Escalation",
+          "default": "human"
+        },
+        "max_negotiation_rounds": {
+          "default": 3,
+          "exclusiveMinimum": 0,
+          "title": "Max Negotiation Rounds",
+          "type": "integer"
+        },
+        "max_replans": {
+          "default": 2,
+          "minimum": 0,
+          "title": "Max Replans",
+          "type": "integer"
+        },
+        "max_revisions": {
+          "default": 4,
+          "minimum": 0,
+          "title": "Max Revisions",
+          "type": "integer"
+        },
+        "plan_gate": {
+          "$ref": "#/$defs/PlanGate",
+          "default": "auto"
+        },
+        "wall_clock_minutes": {
+          "default": 45,
+          "exclusiveMinimum": 0,
+          "title": "Wall Clock Minutes",
+          "type": "integer"
+        }
+      },
+      "title": "LimitsConfig",
+      "type": "object"
+    },
+    "ModelsConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "default": {
+          "pattern": "^claude-[a-z]+(?:-\\d{1,2})+$",
+          "title": "Default",
+          "type": "string"
+        },
+        "roles": {
+          "additionalProperties": {
+            "$ref": "#/$defs/RoleConfig"
+          },
+          "propertyNames": {
+            "$ref": "#/$defs/Role"
+          },
+          "title": "Roles",
+          "type": "object"
+        }
+      },
+      "required": [
+        "default",
+        "roles"
+      ],
+      "title": "ModelsConfig",
+      "type": "object"
+    },
+    "PlanGate": {
+      "description": "Whether a produced plan needs a human's approval before building starts.",
+      "enum": [
+        "auto",
+        "human"
+      ],
+      "title": "PlanGate",
+      "type": "string"
+    },
+    "Pricing": {
+      "additionalProperties": false,
+      "description": "US dollars per million tokens, as published.",
+      "properties": {
+        "cache_read": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "title": "Cache Read"
+        },
+        "cache_write_1h": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "title": "Cache Write 1H"
+        },
+        "cache_write_5m": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "title": "Cache Write 5M"
+        },
+        "input": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "title": "Input"
+        },
+        "output": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "title": "Output"
+        }
+      },
+      "required": [
+        "input",
+        "output",
+        "cache_read",
+        "cache_write_5m",
+        "cache_write_1h"
+      ],
+      "title": "Pricing",
+      "type": "object"
+    },
+    "Role": {
+      "enum": [
+        "planner",
+        "coder",
+        "tester",
+        "reviewer",
+        "arbiter"
+      ],
+      "title": "Role",
+      "type": "string"
+    },
+    "RoleConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "effort": {
+          "$ref": "#/$defs/Effort"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "pattern": "^claude-[a-z]+(?:-\\d{1,2})+$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model"
+        }
+      },
+      "required": [
+        "effort"
+      ],
+      "title": "RoleConfig",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "api": {
+      "$ref": "#/$defs/ApiConfig"
+    },
+    "journal": {
+      "$ref": "#/$defs/JournalConfig",
+      "default": {
+        "path": ".msa/runs.db",
+        "snapshot_every": 50
+      }
+    },
+    "limits": {
+      "$ref": "#/$defs/LimitsConfig",
+      "default": {
+        "budget_usd": 5.0,
+        "escalation": "human",
+        "max_negotiation_rounds": 3,
+        "max_replans": 2,
+        "max_revisions": 4,
+        "plan_gate": "auto",
+        "wall_clock_minutes": 45
+      }
+    },
+    "models": {
+      "$ref": "#/$defs/ModelsConfig"
+    },
+    "pricing": {
+      "patternProperties": {
+        "^claude-[a-z]+(?:-\\d{1,2})+$": {
+          "$ref": "#/$defs/Pricing"
+        }
+      },
+      "title": "Pricing",
+      "type": "object"
+    }
+  },
+  "required": [
+    "models",
+    "api",
+    "pricing"
+  ],
+  "title": "msa.toml",
+  "type": "object"
+}

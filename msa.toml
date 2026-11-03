@@ -1,0 +1,46 @@
+#:schema ./schemas/msa.schema.json
+#
+# The one place for model ids, beta flags, prices, and limits (PLAN §12).
+# When the API changes, edit this file and nothing else. Validate with: uv run msa config check
+
+[models]
+default = "claude-opus-5-5"
+
+# One model for every role; only effort varies (ADR-005). Opus 5.5 defaults to "medium",
+# so effort is always set explicitly. These are starting points; the M9 eval tunes them.
+[models.roles]
+planner = { effort = "high" }
+coder = { effort = "xhigh" }
+tester = { effort = "high" }
+reviewer = { effort = "high" }
+arbiter = { effort = "high" }
+
+[api]
+max_tokens = 64000      # streamed, so large outputs do not hit HTTP timeouts
+fallbacks = "default"   # on a refusal, the server re-runs on a model chosen by category
+
+[api.betas]
+server_side_fallback = "server-side-fallback-2026-07-01"
+task_budgets = "task-budgets-2026-03-13"
+thinking_binding = "thinking-binding-controls-2026-08-01"
+
+# US dollars per million tokens.
+[pricing.claude-opus-5-5]
+input = 4.00
+output = 20.00
+cache_read = 0.20
+cache_write_5m = 5.00
+cache_write_1h = 8.00
+
+[limits]
+budget_usd = 5.0
+wall_clock_minutes = 45
+max_replans = 2
+max_revisions = 4
+max_negotiation_rounds = 3
+plan_gate = "auto"
+escalation = "human"
+
+[journal]
+path = ".msa/runs.db"
+snapshot_every = 50

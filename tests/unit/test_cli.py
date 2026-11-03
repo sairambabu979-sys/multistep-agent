@@ -13,6 +13,7 @@ from msa.core import start
 from msa.core.graph import render_markdown
 from msa.core.table import TransitionTable
 from msa.core.transitions import TABLE
+from msa.runtime.config import json_schema
 from msa.runtime.journal import SqliteJournal
 from msa.runtime.simulation import Profile, SimulationConfig, digest
 from tests.support.factory import run_started
@@ -176,3 +177,85 @@ def test_ctrl_c_leaves_the_run_resumable(db: str, monkeypatch: pytest.MonkeyPatc
     result = msa("resume", "live", "-q", "--db", db)
     assert result.exit_code == 130
     assert "continue with `msa resume live`" in result.output
+
+
+# ---------- configuration
+
+
+def _config(tmp_path: Path, **replacements: str) -> str:
+    text = (Path(__file__).resolve().parents[2] / "msa.toml").read_text(encoding="utf-8")
+    for old, new in replacements.items():
+        assert old in text
+        text = text.replace(old, new, 1)
+    path = tmp_path / "custom.toml"
+    path.write_text(text, encoding="utf-8")
+    return str(path)
+
+
+def test_config_check_summarizes_the_settings() -> None:
+    result = msa("config", "check")
+    assert result.exit_code == 0, result.output
+    assert "coder    claude-opus-5-5     effort xhigh" in result.output
+    assert "$4.00 in / $20.00 out per MTok" in result.output
+
+
+def test_config_check_reports_invalid_settings(tmp_path: Path) -> None:
+    bad = _config(tmp_path, **{"max_tokens = 64000": "max_tokens = 0"})
+    result = msa("--config", bad, "config", "check")
+    assert result.exit_code == 1
+    assert "api.max_tokens" in result.output
+
+
+def test_an_explicitly_named_config_must_exist(tmp_path: Path, db: str) -> None:
+    result = msa("--config", str(tmp_path / "nope.toml"), "simulate", "-q", "--db", db)
+    assert result.exit_code == 1
+    assert "not found" in result.output
+
+
+def test_config_schema_prints_and_writes_the_json_schema(tmp_path: Path) -> None:
+    printed = msa("config", "schema")
+    assert printed.exit_code == 0
+    assert printed.output == json_schema()
+    target = tmp_path / "out" / "schema.json"
+    assert msa("config", "schema", "--output", str(target)).exit_code == 0
+    assert target.read_text(encoding="utf-8") == json_schema()
+
+
+def test_simulate_takes_limits_and_journal_path_from_the_config(tmp_path: Path) -> None:
+    journal = tmp_path / "from-config.db"
+    custom = _config(
+        tmp_path,
+        **{
+            'plan_gate = "auto"': 'plan_gate = "human"',
+            'path = ".msa/runs.db"': f'path = "{journal}"',
+        },
+    )
+    result = msa("--config", custom, "simulate", "--profile", "happy", "--run-id", "cfg")
+    assert result.exit_code == 0, result.output
+    assert "PLANNING -> PLAN_GATE" in result.output
+    assert journal.exists()
+
+
+def test_simulate_flags_override_the_config(tmp_path: Path, db: str) -> None:
+    custom = _config(tmp_path, **{'plan_gate = "auto"': 'plan_gate = "human"'})
+    result = msa(
+        "--config", custom, "simulate", "--profile", "happy", "--plan-gate", "auto", "--db", db
+    )
+    assert result.exit_code == 0, result.output
+    assert "PLAN_GATE" not in result.output
+
+
+def test_without_a_config_file_built_in_defaults_apply(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)  # no msa.toml here
+    result = msa("simulate", "--profile", "happy", "--run-id", "bare", "-q")
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / ".msa" / "runs.db").exists()
+
+
+def test_simulate_budget_flag_overrides_the_config(db: str) -> None:
+    """A three micro-dollar budget runs out within the first few LLM calls."""
+    result = msa("simulate", "--profile", "happy", "--budget-usd", "0.000003", "-q", "--db", db)
+    assert result.exit_code == 0, result.output
+    assert ": FAILED: budget_exhausted" in result.output
