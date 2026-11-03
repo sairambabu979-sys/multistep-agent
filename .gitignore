@@ -19,6 +19,9 @@ dist/
 coverage.xml
 htmlcov/
 
+# Mutation testing workspace
+mutants/
+
 # Runtime state (journals, reports) produced by `msa`
 .msa/runs/
 .msa/runs.db*

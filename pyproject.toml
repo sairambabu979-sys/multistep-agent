@@ -21,8 +21,10 @@ msa = "msa.cli:main"
 
 [dependency-groups]
 dev = [
+    "git-cliff>=2.14",
     "hypothesis>=6.130",
     "import-linter>=2.3",
+    "mutmut>=3.8",
     "mypy>=1.15",
     "pytest>=8.3",
     "pytest-cov>=6.0",
@@ -40,7 +42,7 @@ packages = ["src/msa"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-src = ["src", "tests"]
+src = ["src", "tests", "scripts"]
 extend-exclude = ["*.md"]  # docs keep their hand-aligned code samples
 
 [tool.ruff.lint]
@@ -76,7 +78,7 @@ ignore = [
 "src/msa/cli.py" = ["PLR0917"]  # Typer commands declare every CLI option as a parameter
 
 [tool.ruff.lint.isort]
-known-first-party = ["msa"]
+known-first-party = ["msa", "scripts", "tests"]
 
 # --------------------------------------------------------------------------- mypy
 [tool.mypy]
@@ -85,7 +87,7 @@ strict = true
 warn_unreachable = true
 enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool", "possibly-undefined"]
 plugins = ["pydantic.mypy"]
-files = ["src", "tests"]
+files = ["src", "tests", "scripts"]
 mypy_path = ["src"]
 explicit_package_bases = true
 
@@ -120,6 +122,74 @@ exclude_also = [
     "raise NotImplementedError",
     "assert_never\\(",
     "@overload",
+]
+
+# --------------------------------------------------------------------------- git-cliff
+# The changelog is generated from conventional commit subjects: `make changelog`.
+# Groups carry an HTML comment so they sort in this order rather than alphabetically.
+[tool.git-cliff.changelog]
+header = """
+# Changelog
+
+All notable changes, generated from [Conventional Commits](https://www.conventionalcommits.org/)
+by [git-cliff](https://git-cliff.org). Regenerate with `make changelog`; do not edit by hand.
+"""
+body = """
+{% if version %}\
+## [{{ version | trim_start_matches(pat="v") }}] - {{ timestamp | date(format="%Y-%m-%d") }}
+{% else %}\
+## [Unreleased]
+{% endif %}\
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | striptags | trim | upper_first }}
+{% for commit in commits %}
+- {% if commit.scope %}**{{ commit.scope }}:** {% endif %}\
+{% if commit.breaking %}**breaking:** {% endif %}\
+{{ commit.message | upper_first }} \
+([`{{ commit.id | truncate(length=7, end="") }}`](https://github.com/sairambabu979-sys/multistep-agent/commit/{{ commit.id }}))\
+{% endfor %}
+{% endfor %}
+"""
+trim = false
+
+[tool.git-cliff.git]
+conventional_commits = true
+filter_unconventional = true
+protect_breaking_commits = true
+sort_commits = "oldest"
+tag_pattern = "v[0-9].*"
+commit_parsers = [
+    { message = "^feat", group = "<!-- 0 -->Features" },
+    { message = "^fix", group = "<!-- 1 -->Bug fixes" },
+    { message = "^perf", group = "<!-- 2 -->Performance" },
+    { message = "^refactor", group = "<!-- 3 -->Refactoring" },
+    { message = "^docs", group = "<!-- 4 -->Documentation" },
+    { message = "^test", group = "<!-- 5 -->Tests" },
+    { message = "^(build|ci|chore)", group = "<!-- 6 -->Build and tooling" },
+    { message = "^revert", group = "<!-- 7 -->Reverts" },
+]
+
+# --------------------------------------------------------------------------- mutmut
+# Mutation testing of the functional core (`make mutation`, nightly). Each mutant runs only
+# the selected tests that reach the mutated function. Excluded: the model checker, chaos and
+# the reachable-state round trip (speed; their properties are covered by the faster tests
+# here) and the purity test (it would flag mutmut's own instrumentation imports; a mutant
+# cannot add imports anyway).
+[tool.mutmut]
+source_paths = ["src/"]
+only_mutate = ["src/msa/core/*"]
+also_copy = ["scripts/", "docs/", "schemas/", "msa.toml"]  # read by the selected tests
+pytest_add_cli_args = ["-p", "no:cacheprovider", "-q"]
+pytest_add_cli_args_test_selection = [
+    "tests/unit",
+    "tests/property/test_runs.py",
+    "tests/model_based",
+    "tests/contract/test_fsm_docs.py",
+    "tests/contract/test_schema.py::test_command_union_and_registry_agree",
+    "tests/contract/test_schema.py::test_event_union_and_registry_agree",
+    "tests/contract/test_schema.py::test_every_awaited_command_can_be_completed_and_every_completion_targets_real_commands",
+    "tests/contract/test_schema.py::test_spending_commands_are_completed_by_spending_events",
+    "tests/contract/test_schema.py::test_every_completion_has_a_rule_or_is_a_global_escape",
 ]
 
 # --------------------------------------------------------------------------- import-linter

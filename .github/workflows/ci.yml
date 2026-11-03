@@ -12,6 +12,21 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  commits:
+    # The changelog is generated from commit subjects, so they must parse.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Conventional commit subjects
+        env:
+          BASE: ${{ github.base_ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/conventional_commits.py --range "origin/$BASE..$HEAD_SHA"
+
   check:
     name: check (py${{ matrix.python }})
     runs-on: ubuntu-latest
@@ -46,6 +61,9 @@ jobs:
 
       - name: State machine static analysis
         run: uv run msa fsm check
+
+      - name: Settings file
+        run: uv run msa config check
 
       - name: Tests (unit, property, model-based, exhaustive model check, contracts)
         run: uv run pytest --cov --cov-report=term-missing

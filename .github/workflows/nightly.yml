@@ -1,7 +1,8 @@
 name: Nightly
 
 # Deep randomized testing: 10,000 examples per property, longer stateful runs.
-# Plus 100 crash-recovery trials. The live eval (M9) joins later.
+# Plus 100 crash-recovery trials and mutation testing of the core.
+# The live eval (M9) joins later.
 
 on:
   schedule:
@@ -35,3 +36,11 @@ jobs:
         env:
           MSA_CHAOS_TRIALS: "100"
         run: uv run pytest tests/chaos
+
+      - name: Mutation testing of msa.core (zero survivors)
+        env:
+          HYPOTHESIS_PROFILE: mutation
+        run: |
+          uv run mutmut run
+          uv run mutmut export-cicd-stats
+          uv run python scripts/mutation_gate.py || (uv run mutmut results; exit 1)

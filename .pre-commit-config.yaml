@@ -1,5 +1,7 @@
 # Local hooks run the exact tool versions pinned in uv.lock, so pre-commit and CI cannot
 # disagree. Install with: uv run --with pre-commit pre-commit install
+default_install_hook_types: [pre-commit, commit-msg]
+default_stages: [pre-commit]
 repos:
   - repo: local
     hooks:
@@ -25,9 +27,20 @@ repos:
         language: system
         pass_filenames: false
         types: [python]
+      - id: conventional-commit
+        name: conventional commit subject
+        entry: uv run python scripts/conventional_commits.py --message-file
+        language: system
+        stages: [commit-msg]
       - id: fsm-docs
         name: docs/fsm.md is current
         entry: uv run msa fsm diagram --output docs/fsm.md
         language: system
         pass_filenames: false
         files: ^src/msa/core/
+      - id: config-schema
+        name: schemas/msa.schema.json is current
+        entry: uv run msa config schema --output schemas/msa.schema.json
+        language: system
+        pass_filenames: false
+        files: ^src/msa/runtime/config\.py$
