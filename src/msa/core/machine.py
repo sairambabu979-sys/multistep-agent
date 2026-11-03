@@ -184,7 +184,7 @@ def _commit(source: Phase | None, event: EventBase, decision: Decision, *, escap
 def _seal(state: RunState) -> tuple[RunState, tuple[AnyCommand, ...]]:
     """A terminal run cancels whatever is still in flight and publishes its outcome."""
     if state.outcome is None:  # pragma: no cover - guarded by _terminal and _stop
-        raise InvariantViolation((f"terminal phase {state.phase} without an outcome",))
+        raise InvariantViolation((f"{state.phase} run has no outcome",))  # pragma: no mutate
     commands: list[AnyCommand] = []
     if state.pending:
         commands.append(CancelEffects(effect_ids=tuple(e.id for e in state.pending)))
@@ -197,15 +197,15 @@ def _issue(
     state: RunState, commands: tuple[AnyCommand, ...]
 ) -> tuple[RunState, tuple[Effect, ...]]:
     """Address commands with deterministic ids and fund the spending ones."""
-    ids = [effect_id(state.run_id, state.seq, index) for index in range(len(commands))]
-    ledger = state.ledger.reserve([i for i, c in zip(ids, commands, strict=True) if c.spends])
+    addressed = [(effect_id(state.run_id, state.seq, n), c) for n, c in enumerate(commands)]
+    ledger = state.ledger.reserve([i for i, c in addressed if c.spends])
     effects = tuple(
         Effect(
             id=i,
             budget_usd_micros=r.usd_micros if (r := ledger.reservation_for(i)) else None,
             command=c,
         )
-        for i, c in zip(ids, commands, strict=True)
+        for i, c in addressed
     )
     awaited = tuple(e for e in effects if e.command.awaits)
     return state.model_copy(update={"pending": state.pending + awaited, "ledger": ledger}), effects

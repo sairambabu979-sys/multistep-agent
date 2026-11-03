@@ -33,6 +33,13 @@ def test_analysis_reports_terminal_phases_with_outgoing_rules() -> None:
     assert "terminal DONE has outgoing rules" in analyze(table)
 
 
+def test_analysis_checks_every_terminal_phase_not_just_the_first() -> None:
+    table = TransitionTable((Rule(Phase.ABORTED, Finalized, frozenset({Phase.FAILED}), _noop),))
+    problems = analyze(table)
+    assert "terminal ABORTED has outgoing rules" in problems
+    assert "FAILED is unreachable from INTAKE" in problems
+
+
 def test_table_rejects_duplicate_and_targetless_rules() -> None:
     rule = Rule(Phase.INTAKE, IntakeCompleted, frozenset({Phase.PLANNING}), _noop)
     with pytest.raises(ValueError, match="duplicate rule"):

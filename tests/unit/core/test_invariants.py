@@ -13,6 +13,8 @@ import pytest
 
 from msa.core import RunState
 from msa.core.budget import Reservation, Spend
+from msa.core.effects import ImplementPlan
+from msa.core.events import ImplementationCompleted
 from msa.core.ids import EffectId, FindingId
 from msa.core.invariants import violations
 from msa.core.state import Evidence, Finding, FindingStatus
@@ -132,4 +134,70 @@ def test_clock(negotiating: RunState) -> None:
     assert any(
         "deadline drifted" in v
         for v in corrupt(negotiating, deadline=negotiating.deadline + timedelta(seconds=1))
+    )
+
+
+# ---------- one-sided corruptions and exact messages (found by mutation testing)
+
+PENDING_OR_RESERVED = "terminal run still has pending effects or reservations"
+
+
+def test_a_terminal_run_with_only_pending_or_only_reservations_is_caught(
+    negotiating: RunState,
+) -> None:
+    done = {"phase": Phase.DONE, "outcome": Outcome(reason=OutcomeReason.COMPLETED)}
+    only_pending = corrupt(negotiating, **done, ledger=negotiating.ledger.release_all())
+    only_reserved = corrupt(negotiating, **done, pending=())
+    assert PENDING_OR_RESERVED in only_pending
+    assert PENDING_OR_RESERVED in only_reserved
+
+
+def test_finalizing_with_only_one_kind_of_evidence_is_caught(finalizing: RunState) -> None:
+    head = finalizing.require_head()
+    message = f"finalizing without verify+test evidence for head {head}: "
+    for evidence in (Evidence(verified=head), Evidence(tested=head)):
+        assert message + str(evidence) in corrupt(finalizing, evidence=evidence)
+
+
+def test_disputing_with_only_one_kind_of_evidence_is_caught(negotiating: RunState) -> None:
+    head = negotiating.require_head()
+    for evidence in (Evidence(verified=head), Evidence(tested=head)):
+        assert "negotiating on a tree without current verify+test evidence" in corrupt(
+            negotiating, evidence=evidence
+        )
+
+
+def test_static_messages_are_exact(negotiating: RunState) -> None:
+    assert "testing a tree that was not verified" in corrupt(
+        negotiating, phase=Phase.TESTING, evidence=Evidence()
+    )
+    assert "revising without a counted revision" in corrupt(
+        negotiating, phase=Phase.REVISING, revisions=0
+    )
+    before_start = negotiating.started_at - timedelta(seconds=1)
+    assert "updated_at precedes started_at" in corrupt(negotiating, updated_at=before_start)
+    drifted = negotiating.deadline + timedelta(seconds=1)
+    assert "deadline drifted from started_at + wall_clock" in corrupt(negotiating, deadline=drifted)
+    ledger = negotiating.ledger
+    over = ledger.model_copy(update={"spent": Spend(usd_micros=ledger.limit_usd_micros)})
+    committed = ledger.limit_usd_micros + ledger.reserved_usd_micros
+    assert f"committed {committed} > limit {ledger.limit_usd_micros} in a live run" in corrupt(
+        negotiating, ledger=over
+    )
+
+
+def test_build_progress_must_match_pending_work() -> None:
+    d = Driver()
+    d.intake()
+    d.plan()
+    building = d.state
+    assert violations(building) == ()
+    claims_done = building.build.model_copy(update={"implementation_done": True})
+    assert "build progress for implement_plan is True while it is pending" in corrupt(
+        building, build=claims_done
+    )
+    d.complete(ImplementPlan, ImplementationCompleted)
+    forgot = d.state.build.model_copy(update={"implementation_done": False})
+    assert "build progress for implement_plan is False while it is not pending" in corrupt(
+        d.state, build=forgot
     )

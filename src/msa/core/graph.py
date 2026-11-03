@@ -65,13 +65,10 @@ def analyze(table: TransitionTable) -> list[str]:
 
 def render_mermaid(table: TransitionTable) -> str:
     lines = ["stateDiagram-v2", f"    [*] --> {Phase.INTAKE.name}: RunStarted"]
-    seen: set[tuple[Phase, str, Phase]] = set()
     for rule in table:
         for target in sorted(rule.targets, key=list(Phase).index):
-            key = (rule.source, rule.event.__name__, target)
-            if target is rule.source or key in seen:
+            if target is rule.source:
                 continue  # self-loops are listed in the table below the diagram
-            seen.add(key)
             lines.append(f"    {rule.source.name} --> {target.name}: {rule.event.__name__}")
     lines.extend(f"    {phase.name} --> [*]" for phase in Phase if phase in TERMINAL_PHASES)
     return "\n".join(lines)

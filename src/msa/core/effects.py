@@ -184,7 +184,7 @@ def command_kind(command_type: type[Command]) -> str:
     """The discriminator value of a command class."""
     default = command_type.model_fields["kind"].default
     if not isinstance(default, str):  # pragma: no cover - guarded by a contract test
-        raise TypeError(f"{command_type.__name__} has no literal 'kind'")
+        raise TypeError(f"{command_type.__name__} has no literal 'kind'")  # pragma: no mutate
     return default
 
 

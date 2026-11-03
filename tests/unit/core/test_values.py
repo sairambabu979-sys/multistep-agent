@@ -71,8 +71,13 @@ def test_only_accepted_and_upheld_verdicts_require_a_change() -> None:
     assert {v for v in Verdict if v.requires_change} == {Verdict.ACCEPTED, Verdict.UPHELD}
 
 
+def test_a_non_positive_wall_clock_says_why() -> None:
+    with pytest.raises(ValidationError, match="Value error, wall_clock must be a positive"):
+        limits(wall_clock=timedelta(0))
+
+
 def test_a_review_cannot_report_the_same_finding_twice() -> None:
-    with pytest.raises(ValidationError, match="unique"):
+    with pytest.raises(ValidationError, match="Value error, finding ids must be unique"):
         ReviewProduced(
             at=T0,
             effect_id=EffectId("r:1:0"),
@@ -83,7 +88,7 @@ def test_a_review_cannot_report_the_same_finding_twice() -> None:
 
 def test_a_ruling_cannot_resolve_the_same_finding_twice() -> None:
     twice = Resolution(finding_id=FindingId("f"), verdict=Verdict.UPHELD)
-    with pytest.raises(ValidationError, match="at most once"):
+    with pytest.raises(ValidationError, match="Value error, a finding can be resolved at most"):
         HumanRuled(at=T0, effect_id=EffectId("r:1:0"), resolutions=(twice, twice))
 
 

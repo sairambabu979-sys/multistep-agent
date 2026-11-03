@@ -1,4 +1,4 @@
-"""Hypothesis profiles. Select with HYPOTHESIS_PROFILE=dev|ci|nightly (default: dev)."""
+"""Hypothesis profiles. Select with HYPOTHESIS_PROFILE=dev|ci|nightly|mutation (default: dev)."""
 
 from __future__ import annotations
 
@@ -21,5 +21,10 @@ settings.register_profile(
     deadline=None,
     print_blob=True,
     suppress_health_check=[HealthCheck.too_slow],
+)
+# Mutation testing needs the same examples on every run, or a mutant could be killed in
+# one run and survive the next.
+settings.register_profile(
+    "mutation", max_examples=40, derandomize=True, database=None, deadline=None
 )
 settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "dev"))

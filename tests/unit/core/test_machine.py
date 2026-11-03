@@ -602,8 +602,9 @@ def test_a_handler_that_takes_an_undeclared_edge_is_an_invariant_violation() -> 
     table = TransitionTable((Rule(Phase.INTAKE, IntakeCompleted, frozenset({P.PLANNING}), rogue),))
     d = Driver()
     event = d.answer(PrepareWorkspace, IntakeCompleted, base_tree=BASE)
-    with pytest.raises(InvariantViolation, match="undeclared phase"):
+    with pytest.raises(InvariantViolation) as info:
         transition(d.state, event, table=table)
+    assert str(info.value) == "rule intake x IntakeCompleted moved to undeclared phase testing"
 
 
 # ---------- replay
@@ -619,8 +620,9 @@ def test_replay_rebuilds_the_exact_state() -> None:
 def test_replay_rejects_a_journal_that_does_not_begin_with_run_started() -> None:
     d = Driver()
     d.intake()
-    with pytest.raises(ReplayError, match="must begin with RunStarted"):
+    with pytest.raises(ReplayError) as info:
         replay(d.events[1:])
+    assert str(info.value) == "journal must begin with RunStarted, got IntakeCompleted"
     with pytest.raises(ReplayError, match="must begin with RunStarted"):
         replay([])
 

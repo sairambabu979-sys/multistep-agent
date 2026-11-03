@@ -60,7 +60,6 @@ from msa.core.values import (
     NEGOTIATION_VERDICTS,
     RULING_VERDICTS,
     Escalation,
-    FailureKind,
     Outcome,
     OutcomeReason,
     Owner,
@@ -77,7 +76,7 @@ def _go(state: RunState, phase: Phase, *commands: AnyCommand, **updates: Any) ->
     return Decision(state.model_copy(update={"phase": phase, **updates}), commands)
 
 
-def _stop(state: RunState, reason: OutcomeReason, detail: str = "") -> Decision:
+def _stop(state: RunState, reason: OutcomeReason, detail: str) -> Decision:
     outcome = Outcome(reason=reason, detail=detail)
     return _go(state, outcome.phase, outcome=outcome)
 
@@ -98,7 +97,7 @@ def _begin_build(state: RunState) -> Decision:
         Phase.BUILDING,
         ImplementPlan(plan=plan, base_tree=base),
         AuthorAcceptanceTests(plan=plan, base_tree=base),
-        build=BuildProgress(),
+        build=BuildProgress(),  # pragma: no mutate (defensive: BUILDING is entered once)
     )
 
 
@@ -138,17 +137,9 @@ def _finalize(state: RunState) -> Decision:
 
 
 def _resolve(
-    state: RunState,
-    resolutions: Iterable[Resolution],
-    *,
-    allowed: frozenset[Verdict],
-    exhaustive: bool,
+    state: RunState, resolutions: Iterable[Resolution], *, allowed: frozenset[Verdict]
 ) -> RunState:
-    """Apply verdicts to open findings.
-
-    ``exhaustive`` rulings (arbiter, human) must close every open finding, so a ruling can
-    never leave the run stuck waiting on findings nobody will rule on again.
-    """
+    """Apply verdicts to open findings. Findings without a verdict stay open."""
     open_ids = set(state.open_finding_ids)
     verdicts: dict[FindingId, Verdict] = {}
     for resolution in resolutions:
@@ -161,9 +152,6 @@ def _resolve(
                 Rejection.ILLEGAL_VERDICT, f"{resolution.verdict} is not allowed here"
             )
         verdicts[resolution.finding_id] = resolution.verdict
-    if exhaustive and set(verdicts) != open_ids:
-        missing = sorted(open_ids - set(verdicts))
-        raise TransitionRejected(Rejection.INCOMPLETE_RULING, f"no verdict for {missing}")
     findings = tuple(
         f.model_copy(update={"status": FindingStatus.from_verdict(verdicts[f.id])})
         if f.id in verdicts
@@ -171,6 +159,15 @@ def _resolve(
         for f in state.findings
     )
     return state.model_copy(update={"findings": findings})
+
+
+def _rule(state: RunState, resolutions: Iterable[Resolution]) -> RunState:
+    """Apply a ruling (arbiter or human). A ruling must close every open finding, so it can
+    never leave the run waiting on findings nobody will rule on again."""
+    ruled = _resolve(state, resolutions, allowed=RULING_VERDICTS)
+    if missing := ruled.open_finding_ids:
+        raise TransitionRejected(Rejection.INCOMPLETE_RULING, f"no verdict for {sorted(missing)}")
+    return ruled
 
 
 def _settle(state: RunState) -> Decision:
@@ -273,7 +270,7 @@ def _tests_passed(state: RunState, event: TestsPassed) -> Decision:
 def _tests_failed(state: RunState, event: TestsFailed) -> Decision:
     _require_current(state, event.tree, "test result")
     owner = event.triage.owner
-    if event.triage.kind is FailureKind.ENVIRONMENT or owner is None:
+    if owner is None:  # exactly the environment failures, by Triage's validator
         return _stop(state, OutcomeReason.ENVIRONMENT_FAILURE, f"test report {event.report}")
     return _begin_revision(state, owner, failure_report=event.report)
 
@@ -301,7 +298,7 @@ def _review_produced(state: RunState, event: ReviewProduced) -> Decision:
 
 def _negotiation_round_completed(state: RunState, event: NegotiationRoundCompleted) -> Decision:
     before = len(state.open_finding_ids)
-    state = _resolve(state, event.resolutions, allowed=NEGOTIATION_VERDICTS, exhaustive=False)
+    state = _resolve(state, event.resolutions, allowed=NEGOTIATION_VERDICTS)
     remaining = state.open_finding_ids
     # Settle as soon as the outcome is decided. With no revisions left, the first demanded
     # change already dooms the run, so more rounds (or a human's time) would be wasted.
@@ -319,11 +316,11 @@ def _negotiation_round_completed(state: RunState, event: NegotiationRoundComplet
 
 
 def _arbitration_ruled(state: RunState, event: ArbitrationRuled) -> Decision:
-    return _settle(_resolve(state, event.resolutions, allowed=RULING_VERDICTS, exhaustive=True))
+    return _settle(_rule(state, event.resolutions))
 
 
 def _human_ruled(state: RunState, event: HumanRuled) -> Decision:
-    return _settle(_resolve(state, event.resolutions, allowed=RULING_VERDICTS, exhaustive=True))
+    return _settle(_rule(state, event.resolutions))
 
 
 # ---------- REVISING / FINALIZING

@@ -59,6 +59,20 @@ def _evidence_is_current(s: RunState) -> Iterator[str]:
         yield f"{s.phase} on a tree without current verify+test evidence"
 
 
+def _build_progress_matches_pending_work(s: RunState) -> Iterator[str]:
+    """(+) While BUILDING, a region is recorded done exactly when its effect is no longer
+    pending, so integration can only start after both regions really finished."""
+    if s.phase is not Phase.BUILDING:
+        return
+    pending = {e.command.kind for e in s.pending}
+    for done, kind in (
+        (s.build.implementation_done, "implement_plan"),
+        (s.build.acceptance_tests_done, "author_acceptance_tests"),
+    ):
+        if done == (kind in pending):
+            yield f"build progress for {kind} is {done} while it is {'' if done else 'not '}pending"
+
+
 def _bounded_work(s: RunState) -> Iterator[str]:
     """(3) Every loop in the machine is bounded by a limit."""
     lim = s.limits
@@ -132,6 +146,7 @@ CHECKS: tuple[Callable[[RunState], Iterator[str]], ...] = (
     _never_stuck,
     _finalization_gate,
     _evidence_is_current,
+    _build_progress_matches_pending_work,
     _bounded_work,
     _budget_safety,
     _phase_prerequisites,
