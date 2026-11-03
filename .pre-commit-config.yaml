@@ -1,0 +1,33 @@
+# Local hooks run the exact tool versions pinned in uv.lock, so pre-commit and CI cannot
+# disagree. Install with: uv run --with pre-commit pre-commit install
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-format
+        name: ruff format
+        entry: uv run ruff format
+        language: system
+        types: [python]
+      - id: ruff-check
+        name: ruff check
+        entry: uv run ruff check --fix
+        language: system
+        types: [python]
+      - id: mypy
+        name: mypy --strict
+        entry: uv run mypy
+        language: system
+        pass_filenames: false
+        types: [python]
+      - id: import-linter
+        name: architecture contracts
+        entry: uv run lint-imports
+        language: system
+        pass_filenames: false
+        types: [python]
+      - id: fsm-docs
+        name: docs/fsm.md is current
+        entry: uv run msa fsm diagram --output docs/fsm.md
+        language: system
+        pass_filenames: false
+        files: ^src/msa/core/

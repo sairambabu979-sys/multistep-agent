@@ -1,0 +1,139 @@
+[project]
+name = "multistep-agent"
+version = "0.1.0"
+description = "A multistep coding agent orchestrated by a pure, event-sourced state machine."
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [{ name = "sairambabu979-sys" }]
+classifiers = [
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Typing :: Typed",
+]
+dependencies = [
+    "pydantic>=2.11,<3",
+    "typer>=0.16",
+]
+
+[project.scripts]
+msa = "msa.cli:main"
+
+[dependency-groups]
+dev = [
+    "hypothesis>=6.130",
+    "import-linter>=2.3",
+    "mypy>=1.15",
+    "pytest>=8.3",
+    "pytest-cov>=6.0",
+    "ruff>=0.11",
+]
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/msa"]
+
+# --------------------------------------------------------------------------- ruff
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+extend-exclude = ["*.md"]  # docs keep their hand-aligned code samples
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # isort
+    "N",        # pep8-naming
+    "UP",       # pyupgrade
+    "B",        # bugbear
+    "A",        # builtins shadowing
+    "C4",       # comprehensions
+    "SIM",      # simplify
+    "RET",      # return discipline
+    "PIE",      # misc lints
+    "PT",       # pytest style
+    "PERF",     # performance anti-patterns
+    "PL",       # pylint subset
+    "RUF",      # ruff-specific
+    "ERA",      # commented-out code
+    "T20",      # print statements
+    "DTZ",      # naive datetimes
+]
+ignore = [
+    "PLR2004",  # magic values: tests compare against literals on purpose
+    "PLR0911",  # too many returns: transition handlers branch by design
+    "PLR0913",  # too many arguments
+    "N818",     # domain names (TransitionRejected, InvariantViolation) read better than *Error
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["PLR0912", "PLR0915"]  # scenario scripts and dispatch-style simulators
+
+[tool.ruff.lint.isort]
+known-first-party = ["msa"]
+
+# --------------------------------------------------------------------------- mypy
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool", "possibly-undefined"]
+plugins = ["pydantic.mypy"]
+files = ["src", "tests"]
+mypy_path = ["src"]
+explicit_package_bases = true
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = true
+
+# --------------------------------------------------------------------------- pytest
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = ["-ra", "--strict-markers", "--strict-config", "--import-mode=importlib"]
+pythonpath = ["."]
+xfail_strict = true
+filterwarnings = ["error"]
+markers = [
+    "slow: exhaustive or long-running checks (still run in CI)",
+]
+
+# --------------------------------------------------------------------------- coverage
+[tool.coverage.run]
+branch = true
+source = ["msa"]
+
+[tool.coverage.report]
+fail_under = 85
+show_missing = true
+skip_covered = true
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "assert_never\\(",
+    "@overload",
+]
+
+# --------------------------------------------------------------------------- import-linter
+# The architecture in docs/PLAN.md §10, enforced. Higher layers may import lower ones, never
+# the reverse. Siblings separated by "|" must not import each other.
+[tool.importlinter]
+root_package = "msa"
+
+[[tool.importlinter.contracts]]
+name = "Layered architecture (PLAN §10)"
+type = "layers"
+layers = [
+    "msa.cli",
+    "msa.runtime",
+    "msa.agents",
+    "msa.skills | msa.tools | msa.observability",
+    "msa.core",
+]

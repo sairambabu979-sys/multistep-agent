@@ -1,0 +1,32 @@
+name: Nightly
+
+# Deep randomized testing: 10,000 examples per property, longer stateful runs.
+# Later milestones add chaos (M2) and the live eval (M9) here.
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  thorough:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      HYPOTHESIS_PROFILE: nightly
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+          enable-cache: true
+
+      - name: Install (locked)
+        run: uv sync --locked
+
+      - name: Property and model-based tests (nightly profile)
+        run: uv run pytest tests/property tests/model_based tests/unit
