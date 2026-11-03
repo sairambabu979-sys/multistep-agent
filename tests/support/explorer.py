@@ -22,7 +22,7 @@ from msa.core import Edge, RunState, start, transition
 from msa.core.effects import RunNegotiationRound
 from msa.core.events import NegotiationRoundCompleted
 from msa.core.values import Escalation, Limits, OutcomeReason, Phase, PlanGate
-from tests.support.environment import outcomes
+from msa.runtime.simulation import outcomes
 from tests.support.factory import run_started
 
 type Key = Hashable
@@ -84,7 +84,7 @@ def explore(limits: Limits, *, rich: bool = False) -> Exploration:
         key = abstract_key(state)
         at = state.updated_at + timedelta(seconds=1)
         for effect in state.pending:
-            for event in outcomes(state, effect, at, rich=rich):
+            for event in outcomes(effect, at, rich=rich):
                 step = transition(state, event)  # raises on any invariant violation
                 result.transitions += 1
                 result.edges.add(step.edge)

@@ -1,6 +1,6 @@
 # Multistep Agent: Engineering Plan
 
-> Status: **M0 and M1 complete** · Owner: sairambabu979-sys · Last updated: 2026-11-03
+> Status: **M0, M1 and M2 complete** · Owner: sairambabu979-sys · Last updated: 2026-11-03
 >
 > This document is the build contract. Every milestone below has exit criteria a CI job can check.
 > If a section here and the code disagree later, one of them is a bug.
@@ -343,7 +343,7 @@ When a dispute is decided by a human ruling, or the same `style` finding is dism
 | **Contract** | Every output schema is strict-compatible, every prompt renders byte-stable, and transcripts are append-only (prefix-extension check) | pytest | every push |
 | **Integration** | The full pipeline on fixture repos with a **scripted FakeLLM** and a **real sandbox** (see the scenarios below) | pytest, subprocess | every push |
 | **Replay** | Recorded real-model runs (cassettes keyed by a canonical request hash) replay with no network | pytest | every push |
-| **Chaos** | `kill -9` the process at random effect boundaries, resume, and assert the final state equals an uninterrupted run | pytest, subprocess | nightly |
+| **Chaos** | A forked child `SIGKILL`s itself at a random boundary (effect started, transition computed but not durable, event durable) one to three times per run. Each run must resume to *exactly* the uninterrupted final state, and no journaled effect may execute again. | pytest, fork + SIGKILL | every push (25 trials), nightly (100) |
 | **Live eval** | The real model on the task corpus, with ablations (§11) | `msa eval` | nightly / manual, budget-capped |
 
 **Integration scenarios** (each is a named test with a fixture repo and a FakeLLM script):
@@ -371,13 +371,26 @@ When a dispute is decided by a human ruling, or the same `style` finding is dism
 
 ## 7. Durability: journal, resume, replay
 
-- **Storage:** SQLite in WAL mode at `.msa/runs.db`. Tables: `events(run_id, seq, type, v, payload_json, causation_seq, recorded_at)` and `snapshots(run_id, seq, state_json)`. A snapshot is taken every 50 events.
-- **Write discipline:** event first, then transition. An effect is issued only after its causing event is durable.
-- **Idempotency:** `effect_id = hash(run_id, causation_seq, effect_kind)`. LLM responses and tool results are stored as events, so on resume a completed effect is **replayed from the journal, not re-executed**. Its tokens are not paid for twice.
+- **Storage:** SQLite (WAL, `synchronous=FULL`) at `.msa/runs.db`. Tables:
+  - `runs`: id, environment (how to rebuild executors on resume), head seq, phase, outcome;
+  - `events(run_id, seq, kind, v, payload, recorded_at)`;
+  - `snapshots(run_id, seq, v, state)`, written every 50 events and at the end of every run.
+- **The commit point** is the event append, a compare-and-set on the run's head seq inside `BEGIN IMMEDIATE`. The transition is computed first (it is pure), then the event is appended, then new effects are launched. See [ADR-007](adr/007-commit-point-and-crash-semantics.md).
+- **Crash semantics:**
+  - An effect whose completion is journaled is **never executed again**, so its tokens are never paid for twice.
+  - An effect that was in flight at the crash runs again on resume (at-least-once). Executors get the deterministic effect id as an idempotency key.
+  - An interrupted process (crash or Ctrl-C) leaves the run live and resumable. `msa cancel` journals a terminal outcome, and a process still driving the run sees `JournalConflict` and adopts it.
+- **Time** is stamped by the interpreter at commit, so it is monotonic even when concurrent effects finish out of order. Simulations use a logical clock, which is what makes crash recovery reproducible bit for bit.
+- **Executor failures** (exception, malformed answer, answer the core rejects) become `AgentFailed` or `EffectFailed`. The run fails fast with a reason, never stalls.
+- **Schema evolution:** every event row carries `v`, and upcasters migrate old payloads on load. Snapshots of another state version are ignored and rebuilt from events. A journal from a newer `msa` is refused, not misread.
+- **Snapshots are caches:** `load` trusts the newest one, and `verify` re-folds all of history and audits every snapshot.
 - **Commands:**
-  - `msa resume <run>`: rebuild state from the latest snapshot plus the events after it, then continue.
-  - `msa replay <run>`: re-fold the events and diff against the recorded states.
-  - `msa inspect <run> --at <seq>`: time-travel view of the state at any event.
+  - `msa simulate`: a full run against deterministic stub executors.
+  - `msa runs`: list journaled runs.
+  - `msa resume <run>`: continue from snapshot plus tail.
+  - `msa inspect <run> [--at <seq>] [--json]`: time travel.
+  - `msa replay <run>`: re-fold the whole journal and verify every snapshot.
+  - `msa cancel <run>`: journal a terminal cancellation.
 
 ---
 
@@ -511,7 +524,7 @@ Each milestone is a vertical slice that merges green. The sizes are relative [Gu
 |---|---|---|---|
 | **M0** ✅ | Skeleton: pyproject, tooling, CI, import contracts, ADR-001..006, empty packages | CI green on an empty suite. Import-linter enforced. | S |
 | **M1** ✅ | **Pure FSM:** state, events, effects, transition table, invariants, diagram generator | All §2.4 invariants pass under Hypothesis (≥ 10k examples, nightly profile). Exhaustive model check at the default limits. Static liveness check passes. `docs/fsm.md` generated. 100% branch coverage on `core`. | M |
-| **M2** | **Journal + interpreter** with stub effects: resume, replay, inspect | Chaos test: 100 random kill points, all resume to an identical final state | M |
+| **M2** ✅ | **Journal + interpreter** with stub effects: resume, replay, inspect | Chaos test: 100 random kill points, all resume to an identical final state | M |
 | **M3** | **LLM gateway:** streaming, structured outputs, retries, refusal fallback, budget ledger, FakeLLM, cassettes, append-only `Transcript` | Contract tests green. One cassette recorded and replayed offline. | M |
 | **M4** | **Sandbox + tools + capabilities** | I-12 and I-13 green. Fuzzed path-confinement property test. | M |
 | **M5** | **Preferences skill:** schema, layered store, conflict detection, checkers, rendering, CLI | Merge-law properties. I-16 green. `msa prefs` commands work. | M |

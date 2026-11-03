@@ -12,3 +12,4 @@ the old one.
 | [004](004-executable-arbitration.md) | Settle correctness disputes by running code | Accepted |
 | [005](005-single-model-per-role-effort.md) | One model, effort tuned per role | Accepted |
 | [006](006-path-ownership-capabilities.md) | Path ownership enforced as capabilities | Accepted |
+| [007](007-commit-point-and-crash-semantics.md) | The journal append is the commit point; effects are at-least-once | Accepted |

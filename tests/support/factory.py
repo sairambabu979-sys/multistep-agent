@@ -2,35 +2,30 @@
 
 from __future__ import annotations
 
-import hashlib
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from msa.core.events import RunStarted
-from msa.core.ids import Digest, FindingId, PlanId, RunId, TreeHash
-from msa.core.values import FindingRef, Limits, PlanRef, Severity
+from msa.core.ids import RunId
+from msa.core.values import Limits
+
+# Deterministic identifiers are shared with the simulator, so tests and `msa simulate`
+# describe the same world.
+from msa.runtime.simulation import BASE, BUILD, digest, finding, plan_ref, tree
+
+__all__ = [
+    "BASE",
+    "BUILD",
+    "T0",
+    "digest",
+    "finding",
+    "limits",
+    "plan_ref",
+    "run_started",
+    "tree",
+]
 
 T0 = datetime(2026, 1, 1, 9, 0, tzinfo=UTC)
-
-
-def tree(label: object) -> TreeHash:
-    return TreeHash(hashlib.sha1(f"tree:{label}".encode(), usedforsecurity=False).hexdigest())
-
-
-def digest(label: object) -> Digest:
-    return Digest("sha256:" + hashlib.sha256(f"digest:{label}".encode()).hexdigest())
-
-
-BASE = tree("base")
-BUILD = tree("build")
-
-
-def plan_ref(attempt: int = 1) -> PlanRef:
-    return PlanRef(id=PlanId(f"plan-{attempt}"), digest=digest(f"plan-{attempt}"))
-
-
-def finding(name: str, severity: Severity) -> FindingRef:
-    return FindingRef(id=FindingId(name), severity=severity)
 
 
 def limits(**overrides: Any) -> Limits:

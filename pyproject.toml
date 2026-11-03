@@ -73,6 +73,7 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["PLR0912", "PLR0915"]  # scenario scripts and dispatch-style simulators
+"src/msa/cli.py" = ["PLR0917"]  # Typer commands declare every CLI option as a parameter
 
 [tool.ruff.lint.isort]
 known-first-party = ["msa"]

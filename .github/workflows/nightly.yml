@@ -1,7 +1,7 @@
 name: Nightly
 
 # Deep randomized testing: 10,000 examples per property, longer stateful runs.
-# Later milestones add chaos (M2) and the live eval (M9) here.
+# Plus 100 crash-recovery trials. The live eval (M9) joins later.
 
 on:
   schedule:
@@ -30,3 +30,8 @@ jobs:
 
       - name: Property and model-based tests (nightly profile)
         run: uv run pytest tests/property tests/model_based tests/unit
+
+      - name: Crash recovery (100 SIGKILL trials)
+        env:
+          MSA_CHAOS_TRIALS: "100"
+        run: uv run pytest tests/chaos

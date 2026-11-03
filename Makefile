@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := check
-.PHONY: sync fmt lint types imports fsm test cov check nightly docs
+.PHONY: sync fmt lint types imports fsm test cov check nightly chaos docs demo
 
 sync:     ## Install the locked environment
 	uv sync --locked
@@ -30,8 +30,16 @@ cov:      ## Tests with coverage gates (85% overall, 95% core)
 
 check: lint types imports fsm cov  ## Everything CI runs
 
-nightly:  ## 10k examples per property (slow)
+nightly:  ## 10k examples per property, 100 crash trials (slow)
 	HYPOTHESIS_PROFILE=nightly uv run pytest tests/property tests/model_based tests/unit
+	MSA_CHAOS_TRIALS=100 uv run pytest tests/chaos
+
+chaos:    ## Crash-recovery trials (MSA_CHAOS_TRIALS, default 25)
+	uv run pytest tests/chaos
+
+demo:     ## Simulate a run against stub executors, then list the journal
+	uv run msa simulate --seed 11
+	uv run msa runs
 
 docs:     ## Regenerate docs/fsm.md from the transition table
 	uv run msa fsm diagram --output docs/fsm.md
