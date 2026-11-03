@@ -70,6 +70,7 @@ Crash semantics are in [ADR-007](docs/adr/007-commit-point-and-crash-semantics.m
 | Crash recovery | Forked runs `SIGKILL` themselves up to three times at random boundaries. Each resumes to *exactly* the uninterrupted final state, and no journaled effect executes again. |
 | Hypothesis stateful | Random interleavings, including overspend, deadlines, cancellation, redelivered and forged events. The journal replays exactly and survives a JSON round trip. |
 | Property tests | Every run terminates and publishes exactly one outcome. Every journal prefix replays. Interpreted runs execute each effect exactly once. |
+| Mutation testing | All 1,070 mutants of the core are killed (zero-survivor gate, nightly) |
 | Static analysis | Reachability and liveness over the declared transition graph (`msa fsm check`) |
 | Contracts | Core purity (AST allowlist), schema completeness, `docs/fsm.md` freshness, layering (`import-linter`) |
 
@@ -80,9 +81,22 @@ make check      # lint, mypy --strict, architecture contracts, FSM analysis, tes
 ```
 
 ```bash
-make nightly    # 10,000 Hypothesis examples per property and 100 crash trials
+make nightly    # 10,000 Hypothesis examples per property, 100 crash trials, mutation testing
 ```
 
 ```bash
-make docs       # regenerate docs/fsm.md from the transition table
+make mutation   # mutation-test the core; fails if any mutant survives
 ```
+
+```bash
+make docs       # regenerate docs/fsm.md and schemas/msa.schema.json
+```
+
+```bash
+make changelog  # regenerate CHANGELOG.md from commit subjects
+```
+
+Settings (model ids, efforts, beta flags, prices, limits, journal path) live in
+[`msa.toml`](msa.toml); check them with `uv run msa config check`. Commit subjects follow
+[Conventional Commits](https://www.conventionalcommits.org/), checked by a `commit-msg`
+hook (`uv run --with pre-commit pre-commit install`) and in CI.
