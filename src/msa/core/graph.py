@@ -22,6 +22,7 @@ GLOBAL_ESCAPES: tuple[tuple[str, Phase, str], ...] = (
     ("DeadlineExceeded", Phase.FAILED, "wall-clock limit (also any event stamped after it)"),
     ("AgentFailed", Phase.FAILED, "agent invocation failed after gateway retries"),
     ("AgentRefused", Phase.FAILED, "model and every fallback declined"),
+    ("EffectFailed", Phase.FAILED, "a non-LLM effect's executor failed"),
     ("(budget)", Phase.FAILED, "spend overcommits the ledger, or the next effect is unfundable"),
 )
 

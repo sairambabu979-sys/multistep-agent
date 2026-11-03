@@ -17,7 +17,7 @@ from pydantic import AwareDatetime, Field, TypeAdapter, field_validator
 
 from msa.core._frozen import Frozen
 from msa.core.budget import NO_SPEND, Spend
-from msa.core.effects import SPENDING_KINDS
+from msa.core.effects import NON_SPENDING_AWAITED_KINDS, SPENDING_KINDS
 from msa.core.ids import (
     ValidDigest,
     ValidEffectId,
@@ -253,6 +253,18 @@ class AgentRefused(SpendingCompletion):
     category: str | None = None
 
 
+class EffectFailed(Completion):
+    """A non-LLM effect (workspace, verification, merge, finalize) failed in its executor.
+
+    Without it, an executor crash would leave its effect pending forever and the run would
+    stall until the deadline. With it, the run fails fast and says why.
+    """
+
+    completes: ClassVar[frozenset[str]] = NON_SPENDING_AWAITED_KINDS
+    kind: Literal["effect_failed"] = "effect_failed"
+    error: str
+
+
 AnyEvent = Annotated[
     RunStarted
     | CancelRequested
@@ -277,7 +289,8 @@ AnyEvent = Annotated[
     | RevisionCompleted
     | Finalized
     | AgentFailed
-    | AgentRefused,
+    | AgentRefused
+    | EffectFailed,
     Field(discriminator="kind"),
 ]
 
@@ -306,6 +319,7 @@ EVENT_TYPES: tuple[type[EventBase], ...] = (
     Finalized,
     AgentFailed,
     AgentRefused,
+    EffectFailed,
 )
 
 EVENT_ADAPTER: TypeAdapter[AnyEvent] = TypeAdapter(AnyEvent)

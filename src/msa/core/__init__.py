@@ -9,10 +9,11 @@ Public API::
     step = start(RunStarted(...))         # create a run
     step = transition(step.state, event)  # advance it; raises TransitionRejected
     state = replay(journal_events)        # rebuild it from the journal
+    state = fold(snapshot, journal_tail)  # or resume from a snapshot
 """
 
 from msa.core.errors import InvariantViolation, Rejection, ReplayError, TransitionRejected
-from msa.core.machine import replay, start, transition
+from msa.core.machine import fold, replay, start, transition
 from msa.core.state import RunState
 from msa.core.table import Edge, Step
 from msa.core.transitions import TABLE
@@ -26,6 +27,7 @@ __all__ = [
     "RunState",
     "Step",
     "TransitionRejected",
+    "fold",
     "replay",
     "start",
     "transition",

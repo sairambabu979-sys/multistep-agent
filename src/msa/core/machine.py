@@ -32,6 +32,7 @@ from msa.core.events import (
     CancelRequested,
     Completion,
     DeadlineExceeded,
+    EffectFailed,
     EventBase,
     RunStarted,
     spend_of,
@@ -89,8 +90,14 @@ def replay(events: Iterable[EventBase], *, table: TransitionTable = TABLE) -> Ru
     first = next(iterator, None)
     if not isinstance(first, RunStarted):
         raise ReplayError(f"journal must begin with RunStarted, got {type(first).__name__}")
-    state = start(first).state
-    for event in iterator:
+    return fold(start(first).state, iterator, table=table)
+
+
+def fold(
+    state: RunState, events: Iterable[EventBase], *, table: TransitionTable = TABLE
+) -> RunState:
+    """Apply ``events`` to ``state`` in order: resume from a snapshot plus the journal tail."""
+    for event in events:
         try:
             state = transition(state, event, table=table).state
         except TransitionRejected as exc:
@@ -147,6 +154,8 @@ def _global_guard(state: RunState, event: EventBase) -> Decision | None:
         return _terminal(state, OutcomeReason.AGENT_FAILED, event.error)
     if isinstance(event, AgentRefused):
         return _terminal(state, OutcomeReason.AGENT_REFUSED, event.category or "uncategorized")
+    if isinstance(event, EffectFailed):
+        return _terminal(state, OutcomeReason.EFFECT_FAILED, event.error)
     return None
 
 

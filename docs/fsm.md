@@ -83,4 +83,5 @@ its pending effects and publishes its outcome.
 | `DeadlineExceeded` | `FAILED` | wall-clock limit (also any event stamped after it) |
 | `AgentFailed` | `FAILED` | agent invocation failed after gateway retries |
 | `AgentRefused` | `FAILED` | model and every fallback declined |
+| `EffectFailed` | `FAILED` | a non-LLM effect's executor failed |
 | `(budget)` | `FAILED` | spend overcommits the ledger, or the next effect is unfundable |

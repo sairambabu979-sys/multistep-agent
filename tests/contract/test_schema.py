@@ -21,6 +21,7 @@ from msa.core.events import (
     CancelRequested,
     Completion,
     DeadlineExceeded,
+    EffectFailed,
     RunStarted,
     SpendingCompletion,
 )
@@ -64,7 +65,14 @@ def test_spending_commands_are_completed_by_spending_events() -> None:
 
 def test_every_completion_has_a_rule_or_is_a_global_escape() -> None:
     ruled = {rule.event for rule in TABLE}
-    escapes = {RunStarted, CancelRequested, DeadlineExceeded, AgentFailed, AgentRefused}
+    escapes = {
+        RunStarted,
+        CancelRequested,
+        DeadlineExceeded,
+        AgentFailed,
+        AgentRefused,
+        EffectFailed,
+    }
     assert set(EVENT_TYPES) - ruled == escapes
 
 

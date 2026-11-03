@@ -158,6 +158,7 @@ class OutcomeReason(StrEnum):
     DEADLINE_EXCEEDED = "deadline_exceeded"
     AGENT_FAILED = "agent_failed"
     AGENT_REFUSED = "agent_refused"
+    EFFECT_FAILED = "effect_failed"
     ENVIRONMENT_FAILURE = "environment_failure"
     CANCELLED = "cancelled"
     HUMAN_ABORTED = "human_aborted"

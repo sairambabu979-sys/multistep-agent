@@ -12,6 +12,7 @@ from msa.core import (
     ReplayError,
     RunState,
     TransitionRejected,
+    fold,
     replay,
     start,
     transition,
@@ -44,6 +45,7 @@ from msa.core.events import (
     CancelRequested,
     Completion,
     DeadlineExceeded,
+    EffectFailed,
     Finalized,
     HumanAborted,
     HumanRuled,
@@ -657,3 +659,32 @@ def test_a_handler_that_produces_an_invalid_state_is_caught_at_that_step() -> No
 def test_reading_facts_before_they_exist_is_an_invariant_violation(accessor: str) -> None:
     with pytest.raises(InvariantViolation, match="is not set"):
         getattr(Driver().state, accessor)()
+
+
+def test_a_failed_non_llm_effect_fails_the_run_instead_of_stalling() -> None:
+    d = Driver()
+    d.intake()
+    d.plan()
+    d.complete(ImplementPlan, ImplementationCompleted)
+    d.complete(AuthorAcceptanceTests, AcceptanceTestsAuthored)
+    d.complete(IntegrateBuild, EffectFailed, error="merge conflict in src/app.py")
+    assert d.state.outcome is not None
+    assert (d.state.outcome.reason, d.state.outcome.detail) == (
+        OutcomeReason.EFFECT_FAILED,
+        "merge conflict in src/app.py",
+    )
+
+
+def test_effect_failed_cannot_complete_an_llm_effect() -> None:
+    """LLM effects report failure with AgentFailed, which carries spend."""
+    d = Driver()
+    d.intake()
+    wrong = d.answer(RequestPlan, EffectFailed, error="x")
+    assert d.reject(wrong).reason is Rejection.MISMATCHED_COMPLETION
+
+
+def test_fold_resumes_from_any_intermediate_state() -> None:
+    d = Driver()
+    d.to_review()
+    middle = d.steps[4].state
+    assert fold(middle, d.events[5:]) == d.state

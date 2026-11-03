@@ -189,6 +189,9 @@ def command_kind(command_type: type[Command]) -> str:
 
 
 SPENDING_KINDS: frozenset[str] = frozenset(command_kind(c) for c in COMMAND_TYPES if c.spends)
+NON_SPENDING_AWAITED_KINDS: frozenset[str] = frozenset(
+    command_kind(c) for c in COMMAND_TYPES if c.awaits and not c.spends
+)
 
 
 class Effect(Frozen):
