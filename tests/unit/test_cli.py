@@ -255,7 +255,19 @@ def test_without_a_config_file_built_in_defaults_apply(
 
 
 def test_simulate_budget_flag_overrides_the_config(db: str) -> None:
-    """A three micro-dollar budget runs out within the first few LLM calls."""
-    result = msa("simulate", "--profile", "happy", "--budget-usd", "0.000003", "-q", "--db", db)
+    """One micro-dollar can fund the planner's call but can never be split across the two
+    parallel BUILDING calls, whatever the simulated spend: the run must fail on budget."""
+    result = msa(
+        "simulate",
+        "--profile",
+        "happy",
+        "--run-id",
+        "tiny",
+        "--budget-usd",
+        "0.000001",
+        "-q",
+        "--db",
+        db,
+    )
     assert result.exit_code == 0, result.output
-    assert ": FAILED: budget_exhausted" in result.output
+    assert result.output.startswith("tiny: FAILED: budget_exhausted")
