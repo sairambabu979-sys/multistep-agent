@@ -189,12 +189,12 @@ Because ownership splits the paths, the two BUILDING regions run in **separate g
 - **Model:** `claude-opus-5-5` for every role in v1. Only `output_config.effort` varies by role. We stay on one model because caches are model-scoped and a multi-model cascade gives up cache reuse. We move off a single model only if the evals show a cheaper model holds quality on a specific role.
 - **Thinking:** adaptive. It cannot be disabled on Opus 5.5, and that is fine.
 - **Structured final answer:** `output_config.format` (JSON schema generated from the Pydantic model) together with `strict: true` tools. We never use forced `tool_choice`: `any` and `tool` return a 400 on this model.
-- **Transcripts are append-only, enforced by type.** The `Transcript` type has `append()` and nothing else. Mid-run instructions, such as a preference added during the run, go in as appended `role: "system"` messages. The top-level `system` prompt and the tool list are frozen for the life of the invocation. This keeps the prompt cache warm and satisfies the API's history-editing check on thinking blocks. A CI contract test sends replayed transcripts with `thinking.block_binding.prefix_mismatch_behavior: "error"` under beta `thinking-binding-controls-2026-08-01`, so any accidental history edit fails loudly.
+- **Transcripts are append-only, enforced by type.** The `Transcript` type has `append()` and nothing else. Mid-run instructions, such as a preference added during the run, go in as appended `role: "system"` messages. The top-level `system` prompt and the tool list are frozen for the life of the invocation. This keeps the prompt cache warm and satisfies the API's history-editing check on thinking blocks. Every request sends `thinking.block_binding.prefix_mismatch_behavior: "error"` under beta `thinking-binding-controls-2026-08-01`, so any accidental history edit fails loudly, and the recorded `msa llm ping` cassette proves it against the real API (ADR-008).
 - **Prompt caching:** tools are serialized sorted by name, the system prompt is byte-stable, and preferences are rendered in a deterministic order. Every live run records `cache_read_input_tokens`, and the eval report flags a hit rate below the threshold.
 - **Streaming:** always `messages.stream(...)` + `get_final_message()`, with `max_tokens` set to 64k.
 - **Stop reasons are handled exhaustively:** `end_turn`, `tool_use`, `max_tokens`, `pause_turn`, and `refusal`. On `refusal` the request uses server-side `fallbacks: "default"` (beta `server-side-fallback-2026-07-01`). If the whole chain refuses, the gateway emits `AgentRefused(category)`, which leads to `FAILED` with a clear report.
 - **Task budgets:** each invocation passes `output_config.task_budget` (beta `task-budgets-2026-03-13`) so the model paces itself. The harness ledger enforces the hard limit separately.
-- **Errors:** the handler catches a chain, most specific first: rate limit → retry with backoff; 5xx/connection → retry; 4xx → non-retryable `AgentFailed`. Retries happen inside one effect and do not cause state transitions.
+- **Errors:** errors are classified most specific first. Before a response starts, the SDK retries rate limits, 5xx and connection errors, with backoff and `retry-after`. After the stream starts, the gateway retries what the SDK cannot: mid-stream `error` events, transport failures while reading the body, and cut-off streams. Everything else, including 4xx, is a non-retryable `AgentFailed`. Retries happen inside one effect and do not cause state transitions (ADR-008).
 
 ### 3.2 Tool surface
 
@@ -443,9 +443,13 @@ multistep-agent/
 │   ├── skills/preferences/
 │   │   ├── SKILL.md  schema.py  store.py  resolve.py  checks.py  learn.py
 │   ├── tools/                     # fs.py search.py edit.py run.py git.py capabilities.py
+│   ├── config.py                  # msa.toml: models, betas, prices, limits (PLAN §12)
+│   ├── llm/                       # ADR-008: the only package that imports the SDK
+│   │   ├── gateway.py  transcript.py  accounting.py  schema.py  store.py
+│   │   ├── client.py  anthropic_client.py  cassette.py  fake.py  ping.py
 │   ├── runtime/
 │   │   ├── interpreter.py         # effect executor (anyio TaskGroups for parallel regions)
-│   │   ├── journal.py  sandbox.py  gateway.py  cassette.py  fake_llm.py
+│   │   ├── journal.py  sandbox.py  clock.py  codec.py  simulation.py
 │   ├── observability/             # logging.py tracing.py report.py
 │   └── cli.py                     # typer: run, resume, replay, inspect, prefs, fsm, eval
 ├── tests/
@@ -461,11 +465,11 @@ multistep-agent/
 
 **Import contract (enforced):**
 
-`core ← agents ← runtime ← cli`
+`core ← config ← skills | tools | observability ← llm ← agents ← runtime ← cli`
 
-- `skills` and `tools` depend only on `core`.
+- `skills`, `tools` and `observability` depend only on `config` and `core`, never on each other.
 - Nothing imports `cli`.
-- Only `runtime/gateway.py` imports `anthropic`.
+- Only `msa.llm` imports `anthropic` or `httpx2` (ADR-008). The gateway sits below `agents`, because agents call it.
 
 ---
 
@@ -538,7 +542,7 @@ Each milestone is a vertical slice that merges green. The sizes are relative [Gu
 | **M0** ✅ | Skeleton: pyproject, tooling, CI, import contracts, ADR-001..006, empty packages | CI green on an empty suite. Import-linter enforced. | S |
 | **M1** ✅ | **Pure FSM:** state, events, effects, transition table, invariants, diagram generator | All §2.4 invariants pass under Hypothesis (≥ 10k examples, nightly profile). Exhaustive model check at the default limits. Static liveness check passes. `docs/fsm.md` generated. 100% branch coverage on `core`. | M |
 | **M2** ✅ | **Journal + interpreter** with stub effects: resume, replay, inspect | Chaos test: 100 random kill points, all resume to an identical final state | M |
-| **M3** | **LLM gateway:** streaming, structured outputs, retries, refusal fallback, budget ledger, FakeLLM, cassettes, append-only `Transcript` | Contract tests green. One cassette recorded and replayed offline. | M |
+| **M3** 🟡 | **LLM gateway:** streaming, structured outputs, retries, refusal fallback, budget ledger, FakeLLM, cassettes, append-only `Transcript` | Contract tests green ✅. One cassette recorded and replayed offline: the replay is wired, and the recording needs an API key (`msa llm ping --record`, tests/cassettes/README.md). | M |
 | **M4** | **Sandbox + tools + capabilities** | I-12 and I-13 green. Fuzzed path-confinement property test. | M |
 | **M5** | **Preferences skill:** schema, layered store, conflict detection, checkers, rendering, CLI | Merge-law properties. I-16 green. `msa prefs` commands work. | M |
 | **M6** | **Planner + Coder + VERIFYING:** first end-to-end slice | I-01 and I-02 green against a FakeLLM. One live run resolves a fixture task. | L |

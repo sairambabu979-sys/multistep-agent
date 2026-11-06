@@ -6,8 +6,9 @@ negotiation with executable arbitration → finalize, all shaped by a layered
 preferences skill.
 
 **Status:** M0 (skeleton), M1 (the state machine) and M2 (journal and interpreter) are
-done. Real agents arrive in M6–M8; until then every effect runs against deterministic
-stub executors. The full design is in [`docs/PLAN.md`](docs/PLAN.md), decisions are in
+done. M3 (the LLM gateway) is built and contract-tested offline; its live cassette awaits a
+recording with an API key. Real agents arrive in M6–M8; until then every effect runs
+against deterministic stub executors. The full design is in [`docs/PLAN.md`](docs/PLAN.md), decisions are in
 [`docs/adr/`](docs/adr/), and the generated state diagram is in [`docs/fsm.md`](docs/fsm.md).
 
 ## Try it
@@ -62,6 +63,27 @@ It performs no I/O and reads no clock or randomness, which a test enforces. Ever
 
 Crash semantics are in [ADR-007](docs/adr/007-commit-point-and-crash-semantics.md).
 
+**The LLM gateway** (`src/msa/llm`) runs one agent invocation as a bounded tool loop on the
+Messages API ([ADR-008](docs/adr/008-llm-gateway.md)):
+
+- every request follows the model family's rules: adaptive thinking, explicit effort, a
+  strict answer schema, strict tools, and no sampling parameters, forced `tool_choice` or
+  prefill;
+- the transcript is append-only by type, and the API is told to reject any edited history;
+- each turn's `max_tokens` is planned so its worst case fits the remaining reservation, and
+  refusal fallbacks are billed per attempt at each model's price;
+- failures after the stream started, which the SDK cannot retry, are retried by the gateway;
+- paid turns are stored before use, so an invocation re-run after a crash replays them.
+
+Check a real connection (a two-turn tool round trip, well under a cent):
+
+```bash
+ANTHROPIC_API_KEY=... uv run msa llm ping
+```
+
+`--record PATH` also writes a cassette and `--replay PATH` answers from one offline; see
+[`tests/cassettes/README.md`](tests/cassettes/README.md).
+
 ## How it's verified
 
 | Layer | What it shows |
@@ -70,9 +92,11 @@ Crash semantics are in [ADR-007](docs/adr/007-commit-point-and-crash-semantics.m
 | Crash recovery | Forked runs `SIGKILL` themselves up to three times at random boundaries. Each resumes to *exactly* the uninterrupted final state, and no journaled effect executes again. |
 | Hypothesis stateful | Random interleavings, including overspend, deadlines, cancellation, redelivered and forged events. The journal replays exactly and survives a JSON round trip. |
 | Property tests | Every run terminates and publishes exactly one outcome. Every journal prefix replays. Interpreted runs execute each effect exactly once. |
-| Mutation testing | All 1,070 mutants of the core are killed (zero-survivor gate, nightly) |
+| Mutation testing | All 1,070 mutants of the core are caught: killed, or timed out by hanging (zero-survivor gate, nightly) |
 | Static analysis | Reachability and liveness over the declared transition graph (`msa fsm check`) |
-| Contracts | Core purity (AST allowlist), schema completeness, `docs/fsm.md` freshness, layering (`import-linter`) |
+| LLM request contract | Generated multi-turn scripts (parallel and sequential tools, pauses, mid-output fallbacks): every request is well-formed, the cached prefix never changes, `messages` only grows, nothing from a declined attempt is echoed |
+| SDK adapter | A mock transport serving SSE streams pins paths, headers, error classes and mid-stream failures at the locked SDK version |
+| Contracts | Core purity (AST allowlist), schema completeness, `docs/fsm.md` freshness, layering (`import-linter`), only `msa.llm` imports the SDK, no credential in any cassette |
 
 ## Develop
 
