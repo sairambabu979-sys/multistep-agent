@@ -13,13 +13,19 @@ by [git-cliff](https://git-cliff.org). Regenerate with `make changelog`; do not 
 - **config:** msa.toml holds every model id, effort, beta, price and limit ([`8058e8e`](https://github.com/sairambabu979-sys/multistep-agent/commit/8058e8e39feea063d365f88935f8b603f3490e61))
 - **llm:** budgeted, replayable Messages API gateway (M3) ([`bc0b898`](https://github.com/sairambabu979-sys/multistep-agent/commit/bc0b8984ffabc85699dd815731bae2821bbd4b98))
 - **cli:** msa llm ping, a recordable two-turn health check ([`59000fc`](https://github.com/sairambabu979-sys/multistep-agent/commit/59000fcbba20071b760f17c06468419c3d12b344))
+- **tools:** race-free path confinement, capabilities and the local sandbox (M4) ([`1d5e4d3`](https://github.com/sairambabu979-sys/multistep-agent/commit/1d5e4d35b87e72a1867be6597e77be4d11fdc2ba))
+
+### Bug fixes
+
+- **llm:** strict-mode schema transform and tool-result replay ([`33a285b`](https://github.com/sairambabu979-sys/multistep-agent/commit/33a285bf839d736ca6202fe9c446e4a06c340898))
 
 ### Documentation
 
 - add engineering plan for the multistep agent ([`0e00677`](https://github.com/sairambabu979-sys/multistep-agent/commit/0e00677373f5c02be206b4249b67a052ec7dc217))
 - record mutation testing, msa.toml and the changelog in PLAN and README ([`68c51fe`](https://github.com/sairambabu979-sys/multistep-agent/commit/68c51fe2ff772bd14fffd37eca40fe39b785ca41))
 - ADR-008 for the gateway, and M3 status in PLAN and README ([`1b5408d`](https://github.com/sairambabu979-sys/multistep-agent/commit/1b5408d91542575f4a1b78159c4cfbc97cd307fa))
-- **changelog:** regenerate for M3 ([`13334e2`](https://github.com/sairambabu979-sys/multistep-agent/commit/13334e283ae60c7b7f782393a0e27547cab56a1d))
+- **changelog:** regenerate for M3 ([`cb9386a`](https://github.com/sairambabu979-sys/multistep-agent/commit/cb9386a889d7f2b0e2210df45cff6a18edeec14e))
+- ADR-009 for the tool layer, and M4 status in PLAN and README ([`5b57976`](https://github.com/sairambabu979-sys/multistep-agent/commit/5b579762e70aabe929ecccc4555b143b9abca9d5))
 
 ### Tests
 
