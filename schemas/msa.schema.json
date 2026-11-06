@@ -3,6 +3,11 @@
     "ApiConfig": {
       "additionalProperties": false,
       "properties": {
+        "base_url": {
+          "pattern": "^https://[a-z0-9.-]+(:\\d+)?/?$",
+          "title": "Base Url",
+          "type": "string"
+        },
         "betas": {
           "$ref": "#/$defs/BetasConfig"
         },
@@ -10,13 +15,38 @@
           "title": "Fallbacks",
           "type": "string"
         },
+        "max_retries": {
+          "default": 2,
+          "minimum": 0,
+          "title": "Max Retries",
+          "type": "integer"
+        },
         "max_tokens": {
           "exclusiveMinimum": 0,
           "title": "Max Tokens",
           "type": "integer"
+        },
+        "min_output_tokens": {
+          "default": 1024,
+          "exclusiveMinimum": 0,
+          "title": "Min Output Tokens",
+          "type": "integer"
+        },
+        "retry_backoff_seconds": {
+          "default": 2.0,
+          "exclusiveMinimum": 0,
+          "title": "Retry Backoff Seconds",
+          "type": "number"
+        },
+        "timeout_seconds": {
+          "default": 600.0,
+          "exclusiveMinimum": 0,
+          "title": "Timeout Seconds",
+          "type": "number"
         }
       },
       "required": [
+        "base_url",
         "max_tokens",
         "fallbacks",
         "betas"

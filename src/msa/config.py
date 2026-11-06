@@ -91,7 +91,17 @@ class BetasConfig(Frozen):
 
 
 class ApiConfig(Frozen):
+    # Always explicit: the SDK would otherwise read ANTHROPIC_BASE_URL from the environment,
+    # which some hosts (e.g. coding-agent containers) set for their own traffic.
+    base_url: Annotated[str, StringConstraints(pattern=r"^https://[a-z0-9.-]+(:\d+)?/?$")]
     max_tokens: PositiveInt
+    min_output_tokens: PositiveInt = 1024  # below this, a turn is not worth starting
+    # Retries per request: the SDK's (408/409/429/5xx, connection errors) before a response
+    # starts, and the gateway's for failures after the stream started, which the SDK cannot
+    # retry. The gateway waits retry_backoff_seconds, doubling each time.
+    max_retries: NonNegativeInt = 2
+    retry_backoff_seconds: PositiveFloat = 2.0
+    timeout_seconds: PositiveFloat = 600.0
     fallbacks: str  # "default": route refusals by category on the server
     betas: BetasConfig
 
@@ -123,6 +133,11 @@ class Pricing(Frozen):
             + self.cache_write_1h * cache_write_1h_tokens
         )
         return int(total.to_integral_value(rounding=ROUND_CEILING))
+
+    @property
+    def worst_input_rate(self) -> Decimal:
+        """The most an input token can cost: uncached, or written to either cache."""
+        return max(self.input, self.cache_write_5m, self.cache_write_1h)
 
 
 class LimitsConfig(Frozen):
@@ -172,6 +187,24 @@ class MsaConfig(Frozen):
 
     def pricing_for(self, role: Role) -> Pricing:
         return self.pricing[self.models.model_for(role)]
+
+    def pricing_for_model(self, model: str | None) -> Pricing:
+        """Exact pricing for a served model, or a ceiling for one the table does not list.
+
+        A refusal fallback can be served by a model the table lacks. Pricing every
+        component at the highest configured rate over-states such spend; it never
+        under-states it, which is the direction the budget invariant needs.
+        """
+        if model is not None and model in self.pricing:
+            return self.pricing[model]
+        rates = list(self.pricing.values())
+        return Pricing(
+            input=max(r.input for r in rates),
+            output=max(r.output for r in rates),
+            cache_read=max(r.cache_read for r in rates),
+            cache_write_5m=max(r.cache_write_5m for r in rates),
+            cache_write_1h=max(r.cache_write_1h for r in rates),
+        )
 
 
 def load_config(path: Path = DEFAULT_CONFIG) -> MsaConfig:

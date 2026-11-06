@@ -9,11 +9,11 @@ import pytest
 from typer.testing import CliRunner, Result
 
 from msa import __version__, cli
+from msa.config import json_schema
 from msa.core import start
 from msa.core.graph import render_markdown
 from msa.core.table import TransitionTable
 from msa.core.transitions import TABLE
-from msa.runtime.config import json_schema
 from msa.runtime.journal import SqliteJournal
 from msa.runtime.simulation import Profile, SimulationConfig, digest
 from tests.support.factory import run_started

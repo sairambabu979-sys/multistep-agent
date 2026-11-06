@@ -12,14 +12,7 @@ import typer
 from pydantic import ValidationError
 
 from msa import __version__
-from msa.core import RunState, Step, TransitionRejected, transition
-from msa.core.events import AnyEvent, CancelRequested
-from msa.core.graph import analyze, render_markdown
-from msa.core.ids import RunId
-from msa.core.transitions import TABLE
-from msa.core.values import Escalation, Phase, PlanGate
-from msa.runtime.clock import LogicalClock, SystemClock
-from msa.runtime.config import (
+from msa.config import (
     DEFAULT_CONFIG,
     ConfigError,
     JournalConfig,
@@ -29,6 +22,13 @@ from msa.runtime.config import (
     json_schema,
     load_config,
 )
+from msa.core import RunState, Step, TransitionRejected, transition
+from msa.core.events import AnyEvent, CancelRequested
+from msa.core.graph import analyze, render_markdown
+from msa.core.ids import RunId
+from msa.core.transitions import TABLE
+from msa.core.values import Escalation, Phase, PlanGate
+from msa.runtime.clock import LogicalClock, SystemClock
 from msa.runtime.interpreter import Interpreter, Observer
 from msa.runtime.journal import JournalError, SqliteJournal
 from msa.runtime.simulation import (

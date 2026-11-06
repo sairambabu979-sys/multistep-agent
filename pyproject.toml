@@ -12,6 +12,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
+    "anthropic>=0.80",
     "pydantic>=2.11,<3",
     "typer>=0.16",
 ]
@@ -205,6 +206,8 @@ layers = [
     "msa.cli",
     "msa.runtime",
     "msa.agents",
+    "msa.llm",
     "msa.skills | msa.tools | msa.observability",
+    "msa.config",
     "msa.core",
 ]

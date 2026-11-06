@@ -7,8 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from msa.core.values import Escalation, Limits, PlanGate
-from msa.runtime.config import (
+from msa.config import (
     ConfigError,
     Effort,
     LimitsConfig,
@@ -17,8 +16,9 @@ from msa.runtime.config import (
     json_schema,
     load_config,
 )
+from msa.core.values import Escalation, Limits, PlanGate
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(__file__).resolve().parents[2]
 COMMITTED = ROOT / "msa.toml"
 
 

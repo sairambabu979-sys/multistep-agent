@@ -43,4 +43,4 @@ repos:
         entry: uv run msa config schema --output schemas/msa.schema.json
         language: system
         pass_filenames: false
-        files: ^src/msa/runtime/config\.py$
+        files: ^src/msa/config\.py$
