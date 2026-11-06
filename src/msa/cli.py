@@ -28,6 +28,11 @@ from msa.core.graph import analyze, render_markdown
 from msa.core.ids import RunId
 from msa.core.transitions import TABLE
 from msa.core.values import Escalation, Phase, PlanGate
+from msa.llm.anthropic_client import AnthropicMessages
+from msa.llm.cassette import CassetteClient, CassetteMiss
+from msa.llm.client import MessagesClient
+from msa.llm.gateway import InvocationError
+from msa.llm.ping import TOKEN, PingReport, ping
 from msa.runtime.clock import LogicalClock, SystemClock
 from msa.runtime.interpreter import Interpreter, Observer
 from msa.runtime.journal import JournalError, SqliteJournal
@@ -41,8 +46,10 @@ from msa.runtime.simulation import (
 app = typer.Typer(no_args_is_help=True, add_completion=False, help="Multistep coding agent.")
 fsm_app = typer.Typer(no_args_is_help=True, help="Inspect the orchestrator state machine.")
 config_app = typer.Typer(no_args_is_help=True, help="Validate msa.toml and export its schema.")
+llm_app = typer.Typer(no_args_is_help=True, help="Check and record the model API connection.")
 app.add_typer(fsm_app, name="fsm")
 app.add_typer(config_app, name="config")
+app.add_typer(llm_app, name="llm")
 
 Db = Annotated[
     Path | None,
@@ -157,6 +164,78 @@ def config_schema(
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(text, encoding="utf-8")
     typer.echo(f"wrote {output}")
+
+
+# ---------- model API
+
+
+def _live_client(settings: MsaConfig) -> AnthropicMessages:
+    return AnthropicMessages.from_config(settings)
+
+
+async def _ping(settings: MsaConfig, record: Path | None, replay: Path | None) -> PingReport:
+    if replay is not None:
+        return await ping(CassetteClient(replay, mode="replay"), settings)
+    live = _live_client(settings)
+    client: MessagesClient = (
+        live if record is None else CassetteClient(record, mode="record", inner=live)
+    )
+    try:
+        return await ping(client, settings)
+    finally:
+        await live.aclose()
+
+
+@llm_app.command(name="ping")
+def llm_ping(
+    ctx: typer.Context,
+    record: Annotated[
+        Path | None,
+        typer.Option("--record", help="Also write the exchange to this cassette.", dir_okay=False),
+    ] = None,
+    replay: Annotated[
+        Path | None,
+        typer.Option(
+            "--replay", help="Answer from this cassette, offline.", exists=True, dir_okay=False
+        ),
+    ] = None,
+) -> None:
+    """A two-turn tool round trip against the API: proves the key, model id, betas,
+    strict schemas and the append-only transcript, for well under a cent."""
+    if record is not None and replay is not None:
+        raise _fail("--record and --replay cannot be combined")
+    settings = _settings(ctx)
+    if settings is None:
+        raise _fail("msa llm ping needs msa.toml: model ids and prices live there")
+    try:
+        report = asyncio.run(_ping(settings, record, replay))
+    except InvocationError as exc:
+        raise _fail(f"{exc} (spent {_usd(exc.spend.usd_micros)})") from exc
+    except (CassetteMiss, ValueError) as exc:
+        raise _fail(str(exc)) from exc
+    result = report.result
+    source = f"replayed from {replay}" if replay else "live"
+    typer.echo(
+        f"{'ok' if report.ok else 'FAILED'}: {', '.join(report.models)} answered "
+        f"{result.output.token!r} in {len(result.turns)} turns ({source})"
+    )
+    for turn in result.turns:
+        typer.echo(
+            f"  turn {turn.index}  {turn.stop_reason:<9} max_tokens {turn.max_tokens:<6} "
+            f"{_usd(turn.spend.usd_micros)}  {turn.spend.input_tokens} in / "
+            f"{turn.spend.output_tokens} out, {turn.cache_read_tokens} cached"
+            + (f", {turn.retries} retries" if turn.retries else "")
+        )
+    typer.echo(f"  spent {_usd(result.spend.usd_micros)}")
+    if record is not None:
+        typer.echo(f"  recorded {record}")
+    if not report.ok:
+        problem = (
+            "the model answered without calling the tool"
+            if not report.used_the_tool
+            else f"expected token {TOKEN!r}"
+        )
+        raise _fail(problem)
 
 
 # ---------- version and state machine
