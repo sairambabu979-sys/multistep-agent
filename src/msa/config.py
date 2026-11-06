@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Annotated, Any, Self
 
 from pydantic import (
+    AfterValidator,
     Field,
     NonNegativeInt,
     PositiveFloat,
@@ -170,12 +171,98 @@ class JournalConfig(Frozen):
     snapshot_every: PositiveInt = 50
 
 
+# ---------- capabilities (ADR-006) and the sandbox (ADR-009)
+
+
+def _glob(pattern: str) -> str:
+    """Path globs relative to the worktree: ``**`` spans segments, ``*`` and ``?`` stay
+    within one. The matching itself lives in ``msa.tools.capabilities``."""
+    segments = pattern.split("/")
+    if "\x00" in pattern or any(seg in {"", ".", ".."} for seg in segments):
+        raise ValueError(
+            f"{pattern!r}: use a relative path glob without empty, '.' or '..' segments"
+        )
+    return pattern
+
+
+Glob = Annotated[str, AfterValidator(_glob)]
+
+# Environment variables a sandboxed command may inherit. Names that look like credentials
+# are refused here, so no msa.toml edit can hand a key to repository code.
+_SECRET_LIKE = ("KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL", "AUTH", "COOKIE")
+
+
+def _env_name(name: str) -> str:
+    if any(marker in name.upper() for marker in _SECRET_LIKE):
+        raise ValueError(f"{name!r} looks like a credential and is never passed to commands")
+    return name
+
+
+EnvName = Annotated[
+    str, StringConstraints(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$"), AfterValidator(_env_name)
+]
+
+
+class RoleCapability(Frozen):
+    """What one role may write: paths matching ``write`` and not ``deny``."""
+
+    write: tuple[Glob, ...]
+    deny: tuple[Glob, ...] = ()
+
+
+_TESTER_PATHS = ("tests/acceptance/**", "tests/repro/**")
+
+
+class CapabilitiesConfig(Frozen):
+    # No role may write these, whatever its own globs say.
+    protected: tuple[Glob, ...] = (".git/**", ".msa/**")
+    roles: dict[Role, RoleCapability] = Field(
+        default_factory=lambda: {
+            Role.PLANNER: RoleCapability(write=()),
+            Role.CODER: RoleCapability(write=("**",), deny=_TESTER_PATHS),
+            Role.TESTER: RoleCapability(write=_TESTER_PATHS),
+            Role.REVIEWER: RoleCapability(write=()),
+            Role.ARBITER: RoleCapability(write=()),
+        }
+    )
+
+    @model_validator(mode="after")
+    def _every_role_configured(self) -> Self:
+        missing = sorted(role.value for role in set(Role) - set(self.roles))
+        if missing:
+            raise ValueError(f"[capabilities.roles] is missing {missing}")
+        return self
+
+
+class SandboxConfig(Frozen):
+    """How commands run in the local worktree sandbox (PLAN §8, ADR-009)."""
+
+    # Prefix for allowlisted Python tools: `<launcher> pytest ...`.
+    launcher: Annotated[tuple[str, ...], Field(min_length=1)] = (
+        "uv",
+        "run",
+        "--frozen",
+        "python",
+        "-m",
+    )
+    timeout_seconds: PositiveFloat = 600.0
+    output_limit_bytes: PositiveInt = 64 * 1024  # head and tail are kept, the middle elided
+    read_limit_bytes: PositiveInt = 2 * 1024 * 1024  # larger files cannot be read
+    view_limit_chars: PositiveInt = 100_000  # larger views must name a line range
+    search_limit_matches: PositiveInt = 200
+    cpu_seconds: PositiveInt = 1800  # RLIMIT_CPU per command
+    max_file_bytes: PositiveInt = 1024**3  # RLIMIT_FSIZE per command
+    env_passthrough: tuple[EnvName, ...] = ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "TERM")
+
+
 class MsaConfig(Frozen):
     models: ModelsConfig
     api: ApiConfig
     pricing: dict[ModelId, Pricing]
     limits: LimitsConfig = LimitsConfig()
     journal: JournalConfig = JournalConfig()
+    capabilities: CapabilitiesConfig = CapabilitiesConfig()
+    sandbox: SandboxConfig = SandboxConfig()
 
     @model_validator(mode="after")
     def _every_model_is_priced(self) -> Self:

@@ -66,3 +66,29 @@ escalation = "human"
 [journal]
 path = ".msa/runs.db"
 snapshot_every = 50
+
+# Who may write what (ADR-006). Paths are globs relative to the worktree: `**` spans
+# directories, `*` and `?` stay within one. The tool layer checks the resolved path before
+# every write; no prompt can change this.
+[capabilities]
+protected = [".git/**", ".msa/**"]  # no role may write these
+
+[capabilities.roles]
+planner = { write = [] }
+coder = { write = ["**"], deny = ["tests/acceptance/**", "tests/repro/**"] }
+tester = { write = ["tests/acceptance/**", "tests/repro/**"] }
+reviewer = { write = [] }
+arbiter = { write = [] }
+
+# Commands in the local worktree sandbox (ADR-009). It confines paths and scrubs the
+# environment; it is not a network or syscall boundary. Untrusted repos need a container.
+[sandbox]
+launcher = ["uv", "run", "--frozen", "python", "-m"]  # `<launcher> pytest ...`
+timeout_seconds = 600
+output_limit_bytes = 65536
+read_limit_bytes = 2097152
+view_limit_chars = 100000
+search_limit_matches = 200
+cpu_seconds = 1800
+max_file_bytes = 1073741824
+env_passthrough = ["PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "TERM"]
