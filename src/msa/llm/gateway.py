@@ -246,7 +246,7 @@ class _Run[O: BaseModel]:
                     return self._answer(content)
                 case "tool_use":
                     self.transcript.add_assistant(content)
-                    self.transcript.add_tool_results(await self._call_tools(content))
+                    self.transcript.add_tool_results(await self._results(index, content, replayed))
                 case "pause_turn":
                     self.transcript.add_assistant(content)
                 case "refusal":
@@ -356,6 +356,19 @@ class _Run[O: BaseModel]:
                     raise self._fail(f"turn {index} failed{attempts}: {exc}") from exc
             await self.gateway.sleep(api.retry_backoff_seconds * 2**retries)
             retries += 1
+
+    async def _results(self, index: int, content: list[Block], replayed: bool) -> list[Block]:
+        """This turn's tool results: the recorded ones when the turn itself was replayed
+        (its tools already ran before the crash), otherwise run now and recorded."""
+        store, key = self.gateway.store, self.inv.idempotency_key
+        if replayed and store is not None:
+            recorded = store.get_results(key, index)
+            if recorded is not None:
+                return recorded
+        results = await self._call_tools(content)
+        if store is not None:
+            store.put_results(key, index, results)  # durable before the next request
+        return results
 
     async def _call_tools(self, content: list[Block]) -> list[Block]:
         calls = [b for b in content if b.get("type") == "tool_use"]

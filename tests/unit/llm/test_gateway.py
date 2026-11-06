@@ -462,19 +462,63 @@ def test_re_running_an_invocation_replays_paid_turns_instead_of_paying_again() -
     assert [t.replayed for t in second.turns] == [True, True]
 
 
-def test_a_turn_whose_question_changed_is_asked_again() -> None:
+class CrashedDuringTools(MemoryResponseStore):
+    """Responses were recorded; the crash came before the turn's tool results were."""
+
+    def put_results(self, key: str, turn: int, results: list[dict[str, Any]]) -> None:
+        pass
+
+
+def counting_read() -> tuple[Tool[FilePath], list[str]]:
+    calls: list[str] = []
+
+    async def read(arguments: FilePath) -> ToolOutput:
+        calls.append(arguments.path)
+        return ToolOutput(f"contents of {arguments.path}, read at call {len(calls)}")
+
+    return Tool("read_file", "Read a file.", FilePath, read, parallel_safe=True), calls
+
+
+def test_a_replayed_turn_reuses_its_tool_results_instead_of_running_them_again() -> None:
+    """Real tool output (timings, say) differs every run. Re-running would change the next
+    request and end the replay; reusing the recorded results keeps it going."""
     store = MemoryResponseStore()
+    tool, calls = counting_read()
+    crashed = fake.ScriptedClient(
+        tool_turn(fake.tool_use("a", "read_file", {"path": "x"})),
+        LlmError("connection", "the process died here", mid_stream=False),
+    )
+    with pytest.raises(InvocationFailed):
+        run(crashed, store=store, tools=(tool,))
+    resumed = fake.ScriptedClient(fake.answer(VERDICT))
+    result = run(resumed, store=store, tools=(tool,))
+    assert calls == ["x"]  # the tool ran once, before the crash
+    assert resumed.requests == [crashed.requests[1]]  # turn 1 asked exactly as before
+    assert [t.replayed for t in result.turns] == [True, False]
+
+
+def test_tools_that_did_not_finish_before_a_crash_run_again() -> None:
+    store = CrashedDuringTools()
+    tool, calls = counting_read()
     script = (tool_turn(fake.tool_use("a", "read_file", {"path": "x"})), fake.answer(VERDICT))
-    run(fake.ScriptedClient(*script), store=store)
-
-    async def different(arguments: FilePath) -> ToolOutput:
-        return ToolOutput(f"new contents of {arguments.path}")
-
-    tool = Tool("read_file", "Read a file.", FilePath, different, parallel_safe=True)
+    run(fake.ScriptedClient(*script), store=store, tools=(tool,))
     client = fake.ScriptedClient(fake.answer(VERDICT))
     result = run(client, store=store, tools=(tool,))
-    assert len(client.requests) == 1  # turn 0 replayed; turn 1 asked again
+    assert calls == ["x", "x"]
+    assert len(client.requests) == 1  # new tool output: turn 1 is a new question
     assert [t.replayed for t in result.turns] == [True, False]
+
+
+def test_a_turn_asked_afresh_records_fresh_tool_results() -> None:
+    store = MemoryResponseStore()
+    tool, calls = counting_read()
+    script = (tool_turn(fake.tool_use("a", "read_file", {"path": "x"})), fake.answer(VERDICT))
+    run(fake.ScriptedClient(*script), store=store, tools=(tool,))
+    run(fake.ScriptedClient(*script), store=store, tools=(tool,), prompt="A different task.")
+    assert calls == ["x", "x"]
+    assert store.get_results("run-1:9:0", 0) == [
+        {"type": "tool_result", "tool_use_id": "a", "content": "contents of x, read at call 2"}
+    ]
 
 
 def test_an_invocation_without_tools_sends_no_tool_list() -> None:

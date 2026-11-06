@@ -72,3 +72,16 @@ def test_a_store_that_cannot_be_opened_does_not_leak_its_connection(tmp_path: Pa
     path.write_bytes(b"this is not sqlite" * 100)
     with pytest.raises(sqlite3.DatabaseError):
         SqliteResponseStore(path)
+
+
+def test_tool_results_are_kept_per_turn_as_copies(store: ResponseStore) -> None:
+    results = [{"type": "tool_result", "tool_use_id": "a", "content": "ok"}]
+    assert store.get_results("k", 0) is None
+    store.put_results("k", 0, results)
+    results.append({"type": "tool_result", "tool_use_id": "b", "content": "mutated"})
+    assert store.get_results("k", 0) == [
+        {"type": "tool_result", "tool_use_id": "a", "content": "ok"}
+    ]
+    assert store.get_results("k", 1) is None
+    store.put_results("k", 0, [])
+    assert store.get_results("k", 0) == []
