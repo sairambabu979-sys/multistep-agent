@@ -5,11 +5,12 @@ planner → coder ∥ blind tester → deterministic verification → reviewer �
 negotiation with executable arbitration → finalize, all shaped by a layered
 preferences skill.
 
-**Status:** M0 (skeleton), M1 (the state machine) and M2 (journal and interpreter) are
-done. M3 (the LLM gateway) is built and contract-tested offline; its live cassette awaits a
-recording with an API key. Real agents arrive in M6–M8; until then every effect runs
-against deterministic stub executors. The full design is in [`docs/PLAN.md`](docs/PLAN.md), decisions are in
-[`docs/adr/`](docs/adr/), and the generated state diagram is in [`docs/fsm.md`](docs/fsm.md).
+**Status:** M0 (skeleton), M1 (the state machine), M2 (journal and interpreter) and M4
+(tools, capabilities and the local sandbox) are done. M3 (the LLM gateway) is built and
+contract-tested offline; its live cassette awaits a recording with an API key. Real agents
+arrive in M6–M8; until then every effect runs against deterministic stub executors. The
+full design is in [`docs/PLAN.md`](docs/PLAN.md), decisions are in [`docs/adr/`](docs/adr/),
+and the generated state diagram is in [`docs/fsm.md`](docs/fsm.md).
 
 ## Try it
 
@@ -84,6 +85,22 @@ ANTHROPIC_API_KEY=... uv run msa llm ping
 `--record PATH` also writes a cassette and `--replay PATH` answers from one offline; see
 [`tests/cassettes/README.md`](tests/cassettes/README.md).
 
+**The tool layer** (`src/msa/tools`, [ADR-009](docs/adr/009-tool-layer-and-local-sandbox.md))
+is what agents act through: `read_file`, `search`, `edit`, `create_file`, `run` and
+`git_diff`.
+
+- Every path is resolved once and confined to the worktree, then opened component by
+  component without following symlinks, so a symlink swapped in mid-call is refused.
+- Writes are checked against the role's capability (ADR-006) on the *resolved* path, and
+  land atomically.
+- Commands are an allowlist with typed arguments, a scrubbed environment, rlimits, a
+  timeout and an output cap.
+- Refusals go back to the model as tool errors. Security refusals are also recorded for
+  the operator.
+
+The local sandbox is for trusted repositories: it confines paths, but it is not a network
+or syscall boundary.
+
 ## How it's verified
 
 | Layer | What it shows |
@@ -96,6 +113,8 @@ ANTHROPIC_API_KEY=... uv run msa llm ping
 | Static analysis | Reachability and liveness over the declared transition graph (`msa fsm check`) |
 | LLM request contract | Generated multi-turn scripts (parallel and sequential tools, pauses, mid-output fallbacks): every request is well-formed, the cached prefix never changes, `messages` only grows, nothing from a declined attempt is echoed |
 | SDK adapter | A mock transport serving SSE streams pins paths, headers, error classes and mid-stream failures at the locked SDK version |
+| Path confinement | Fuzzed hostile paths agree with a reference resolver and never read, write or change anything they must not. Every known escape is always tried. Each property was shown to fail with its defence removed. |
+| Symlink race | About 100k atomic directory/symlink swaps per run while tools work through them. Several hundred calls per run hit the race window, and all are refused. |
 | Contracts | Core purity (AST allowlist), schema completeness, `docs/fsm.md` freshness, layering (`import-linter`), only `msa.llm` imports the SDK, no credential in any cassette |
 
 ## Develop

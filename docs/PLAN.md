@@ -200,12 +200,12 @@ Because ownership splits the paths, the two BUILDING regions run in **separate g
 
 | Tool | Notes |
 |---|---|
-| `read_file(path, range?)` | Returns content plus a `content_hash`. Paths are resolved and confined to the worktree root, and symlink escapes are rejected. |
-| `search(pattern, glob?)` | Uses ripgrep. Read-only, so it is safe to run in parallel. |
-| `edit(path, old, new, expected_hash)` | **Staleness check:** rejected if the file changed since it was read. The capability check runs first. |
-| `create_file(path, content)` | Capability-checked. |
-| `run(cmd_id, args)` | `cmd_id` comes from an **allowlist** (`pytest`, `ruff`, `mypy`, …) with argument schemas. The tool never accepts a raw shell string. It runs with a timeout, an output cap, a scrubbed environment, and no network by default. |
-| `git_diff(base?)` | Read-only. |
+| `read_file(path, start_line?, end_line?)` | Returns numbered lines plus the whole file's `content_hash`. Paths are resolved once, confined to the worktree, then opened component by component without following symlinks, so a symlink swapped in mid-call is refused (ADR-009). |
+| `search(pattern, glob?)` | ripgrep: linear-time regexes, `.gitignore`-aware, never follows symlinks, results sorted so replays stay byte-identical. Read-only, so it runs in parallel. |
+| `edit(path, old, new, expected_hash)` | **Staleness check:** rejected if the file changed since it was read. The capability check runs first, on the *resolved* path. Atomic: temp file, fsync, rename. |
+| `create_file(path, content)` | Capability-checked on the resolved path. Atomic, and never replaces an existing file. |
+| `run(command, paths, keyword?)` | `command` comes from an **allowlist** (`pytest`, `ruff_check`, `ruff_format_check`, `mypy`) with typed arguments. The tool never accepts a raw shell string. It runs with a timeout, an output cap, rlimits, a scrubbed environment, and network steered to a dead proxy. |
+| `git_diff(base?)` | Read-only. Repository config cannot run programs: fsmonitor, hooks, external diff and textconv are off. |
 
 Read-only calls run concurrently. Writes run serially. All `tool_result`s for one turn go back in a single user message.
 
@@ -400,8 +400,8 @@ When a dispute is decided by a human ruling, or the same `style` finding is dism
 | Threat | Control |
 |---|---|
 | Destructive or unexpected commands | Command allowlist with typed arguments. No raw shell. Timeouts, an output cap, and `RLIMIT_*` limits. |
-| Filesystem escape | All paths are resolved against the worktree root. Symlink targets are checked. Writes outside the root are impossible. |
-| Network exfiltration | Network off by default. Per-command opt-in through the allowlist, e.g. `pip install` from a configured index only. |
+| Filesystem escape | Paths are resolved once and confined, then opened by descriptor without following symlinks, so the check and the use cannot be raced apart. Writes are atomic renames, which also break hard links. Fuzzed and race-tested (ADR-009). |
+| Network exfiltration | `ContainerSandbox` runs with `--network none`. `LocalSandbox` only steers HTTP clients to a dead proxy and sets package tools offline: that stops well-behaved clients, not a hostile one, so it is no boundary (ADR-009). |
 | Secrets in prompts | The environment is scrubbed before any subprocess runs. A secret scanner runs over outgoing prompt payloads in debug builds. |
 | Prompt injection from repo content | Capabilities are enforced by the harness (§3). Tool results are wrapped as data. The agent cannot change its own permissions, budget, or phase. |
 | Untrusted repos | The `SandboxPort` has two adapters: `LocalWorktreeSandbox` (default, trusted repos) and `ContainerSandbox` (Docker or Podman, required for untrusted repos). |
@@ -436,20 +436,21 @@ multistep-agent/
 │   │   ├── negotiation.py         # protocol rules as pure functions
 │   │   └── budget.py
 │   ├── agents/
+│   │   ├── toolset.py             # the tools of §3.2, bound to one role's workspace (M4)
 │   │   ├── runtime.py             # manual tool loop, append-only Transcript
 │   │   ├── planner.py coder.py tester.py reviewer.py arbiter.py
 │   │   ├── schemas.py             # Plan, Review, Finding, Ruling, TestTriage …
 │   │   └── prompts/               # versioned .md templates, hashed into the cassette key
 │   ├── skills/preferences/
 │   │   ├── SKILL.md  schema.py  store.py  resolve.py  checks.py  learn.py
-│   ├── tools/                     # fs.py search.py edit.py run.py git.py capabilities.py
+│   ├── tools/                     # ADR-009: paths.py capabilities.py workspace.py sandbox.py audit.py
 │   ├── config.py                  # msa.toml: models, betas, prices, limits (PLAN §12)
 │   ├── llm/                       # ADR-008: the only package that imports the SDK
 │   │   ├── gateway.py  transcript.py  accounting.py  schema.py  store.py
 │   │   ├── client.py  anthropic_client.py  cassette.py  fake.py  ping.py
 │   ├── runtime/
 │   │   ├── interpreter.py         # effect executor (anyio TaskGroups for parallel regions)
-│   │   ├── journal.py  sandbox.py  clock.py  codec.py  simulation.py
+│   │   ├── journal.py  clock.py  codec.py  simulation.py
 │   ├── observability/             # logging.py tracing.py report.py
 │   └── cli.py                     # typer: run, resume, replay, inspect, prefs, fsm, eval
 ├── tests/
@@ -543,7 +544,7 @@ Each milestone is a vertical slice that merges green. The sizes are relative [Gu
 | **M1** ✅ | **Pure FSM:** state, events, effects, transition table, invariants, diagram generator | All §2.4 invariants pass under Hypothesis (≥ 10k examples, nightly profile). Exhaustive model check at the default limits. Static liveness check passes. `docs/fsm.md` generated. 100% branch coverage on `core`. | M |
 | **M2** ✅ | **Journal + interpreter** with stub effects: resume, replay, inspect | Chaos test: 100 random kill points, all resume to an identical final state | M |
 | **M3** 🟡 | **LLM gateway:** streaming, structured outputs, retries, refusal fallback, budget ledger, FakeLLM, cassettes, append-only `Transcript` | Contract tests green ✅. One cassette recorded and replayed offline: the replay is wired, and the recording needs an API key (`msa llm ping --record`, tests/cassettes/README.md). | M |
-| **M4** | **Sandbox + tools + capabilities** | I-12 and I-13 green. Fuzzed path-confinement property test. | M |
+| **M4** ✅ | **Sandbox + tools + capabilities** | I-12 and I-13 green. Fuzzed path-confinement property test. | M |
 | **M5** | **Preferences skill:** schema, layered store, conflict detection, checkers, rendering, CLI | Merge-law properties. I-16 green. `msa prefs` commands work. | M |
 | **M6** | **Planner + Coder + VERIFYING:** first end-to-end slice | I-01 and I-02 green against a FakeLLM. One live run resolves a fixture task. | L |
 | **M7** | **Tester:** blind authoring, fail-before/pass-after, flakes, triage, weakened-test guard, parallel BUILDING | I-03, I-04, and I-15 green | L |
