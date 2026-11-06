@@ -59,7 +59,12 @@ class Root:
             raise PathRejected(
                 f"{_shown(requested)} is absolute; give a path relative to the repository root"
             )
-        real = os.path.realpath(os.path.join(self.path, requested))
+        try:
+            real = os.path.realpath(os.path.join(self.path, requested))
+        except OSError:
+            # Python 3.12's realpath does not guard readlink: a symlink replaced mid-resolve
+            # raises EINVAL or ENOENT, with the host path in the message. It changed under us.
+            raise PathChanged(f"{_shown(requested)} changed while it was being resolved") from None
         root = str(self.path)
         if real != root and not real.startswith(root + os.sep):
             raise PathRejected(f"{_shown(requested)} resolves outside the repository")

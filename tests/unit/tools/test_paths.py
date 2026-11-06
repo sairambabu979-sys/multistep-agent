@@ -160,3 +160,16 @@ def test_the_walk_refuses_parent_steps_on_its_own(root: Root, unresolved: str) -
     """Defence in depth: even a path that skipped resolve() cannot climb out by '..'."""
     with pytest.raises(PathRejected, match="is not a resolved path inside the repository"):
         root.directory(PurePosixPath(unresolved)).__enter__()
+
+
+def test_a_path_that_changes_while_resolving_is_refused_without_host_paths(
+    root: Root, tree: Tree, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Python 3.12's realpath raises when a symlink is swapped mid-resolve (seen in CI)."""
+
+    def swapped(path: str) -> str:
+        raise OSError(22, "Invalid argument", path)
+
+    monkeypatch.setattr(os.path, "realpath", swapped)
+    with pytest.raises(PathChanged, match=r"^'swap/f\.txt' changed while it was being resolved$"):
+        root.resolve("swap/f.txt")
