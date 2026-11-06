@@ -125,7 +125,7 @@ def test_other_open_failures_name_the_relative_path_only(root: Root, tree: Tree)
     try:
         if os.access(locked, os.R_OK):  # pragma: no cover - running as root
             pytest.skip("permission checks do not apply to root")
-        with pytest.raises(ToolError, match=r"^locked cannot be opened: Permission denied$"):
+        with pytest.raises(ToolError, match=r"^locked/f cannot be opened: Permission denied$"):
             root.open_file(PurePosixPath("locked/f")).__enter__()
     finally:
         locked.chmod(0o755)
