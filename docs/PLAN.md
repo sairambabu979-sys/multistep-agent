@@ -552,7 +552,7 @@ Each milestone is a vertical slice that merges green. The sizes are relative [Gu
 | **M3** 🟡 | **LLM gateway:** streaming, structured outputs, retries, refusal fallback, budget ledger, FakeLLM, cassettes, append-only `Transcript` | Contract tests green ✅. One cassette recorded and replayed offline: the replay is wired, and the recording needs an API key (`msa llm ping --record`, tests/cassettes/README.md). | M |
 | **M4** ✅ | **Sandbox + tools + capabilities** | I-12 and I-13 green. Fuzzed path-confinement property test. | M |
 | **M5** ✅ | **Preferences skill:** schema, layered store, conflict detection, checkers, rendering, CLI | Merge-law properties. I-16 green. `msa prefs` commands work. | M |
-| **M6** 🟡 | **Planner + Coder + VERIFYING:** first end-to-end slice | I-01, I-02 (and I-14) written against a FakeLLM, with the real sandbox; they run on Linux CI. One live run resolves a fixture task: wired (`msa run --record`), and it needs an API key, like M3's cassette. | L |
+| **M6** 🟡 | **Planner + Coder + VERIFYING:** first end-to-end slice | I-01 and I-02 green against a FakeLLM, with the real sandbox ✅ (I-14 too). One live run resolves a fixture task: wired (`msa run --record`), and it needs an API key, like M3's cassette. | L |
 | **M7** | **Tester:** blind authoring, fail-before/pass-after, flakes, triage, weakened-test guard, parallel BUILDING | I-03, I-04, and I-15 green | L |
 | **M8** | **Reviewer + negotiation + arbitration** | I-05 to I-10 green. Negotiation invariants hold under property tests. | L |
 | **M9** | **Eval harness + ablations + run report** | Arms A–D run on the corpus. Report published. Decision rule applied. | M |
