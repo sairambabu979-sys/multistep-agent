@@ -18,12 +18,14 @@ by [git-cliff](https://git-cliff.org). Regenerate with `make changelog`; do not 
 - **runtime:** real INTAKE, preference checks, and msa prefs (I-16) ([`1627deb`](https://github.com/sairambabu979-sys/multistep-agent/commit/1627deb3e29c3449146426493f508d10f56894e5))
 - **agents:** the Planner and Coder: schemas, prompts and invocations (M6) ([`bee5d0e`](https://github.com/sairambabu979-sys/multistep-agent/commit/bee5d0e662a2e752a664ea15bc0014ee2df6c6d1))
 - **runtime:** live runs with the Planner, Coder and VERIFYING; msa run (M6) ([`94b39c8`](https://github.com/sairambabu979-sys/multistep-agent/commit/94b39c8f106de8bae91f6800eeeb632391300950))
+- **runtime:** the Tester: blind acceptance tests, fail-before/pass-after, flakes, triage (M7) ([`f2687d2`](https://github.com/sairambabu979-sys/multistep-agent/commit/f2687d2d62be39e974f76c06cb43a1f503cfcc41))
 
 ### Bug fixes
 
 - **llm:** strict-mode schema transform and tool-result replay ([`33a285b`](https://github.com/sairambabu979-sys/multistep-agent/commit/33a285bf839d736ca6202fe9c446e4a06c340898))
 - **tools:** refuse a path that changes while it is being resolved ([`92f567c`](https://github.com/sairambabu979-sys/multistep-agent/commit/92f567cf95998448f89a71101e029851aef988e0))
 - **tools:** protect the .git file of linked worktrees and submodules ([`ff01412`](https://github.com/sairambabu979-sys/multistep-agent/commit/ff014128d4a21fb3cc9c4721f92ea407b875e61a))
+- **runtime:** keep pytest from collecting TesterExecutor as a test class ([`d71bfc4`](https://github.com/sairambabu979-sys/multistep-agent/commit/d71bfc48544d9a2af046532a5d029a7fdc03650e))
 
 ### Refactoring
 
@@ -40,6 +42,9 @@ by [git-cliff](https://git-cliff.org). Regenerate with `make changelog`; do not 
 - ADR-010 for preferences, and M5 status in PLAN and README ([`557ed9b`](https://github.com/sairambabu979-sys/multistep-agent/commit/557ed9b6db49165d7b9814226b2af00e3d4c0e68))
 - **changelog:** regenerate for M5 ([`8acb6a5`](https://github.com/sairambabu979-sys/multistep-agent/commit/8acb6a54033bd695b449ef61d2e75d0578542a3d))
 - ADR-011 for the first slice, and M6 status in PLAN and README ([`5dc6b89`](https://github.com/sairambabu979-sys/multistep-agent/commit/5dc6b892bdfd09cc627996dd8f004055628c9fa3))
+- **changelog:** regenerate for M6 ([`612eef3`](https://github.com/sairambabu979-sys/multistep-agent/commit/612eef3740d30804f5602422b6547f2b735cdc60))
+- mark I-01, I-02 and I-14 green in PLAN (CI run 42386339304) ([`a45f4ff`](https://github.com/sairambabu979-sys/multistep-agent/commit/a45f4ff652981f4cd7f90fd6c5e9391fbd023604))
+- ADR-012 for the Tester, and M7 status in PLAN and README ([`f0c9039`](https://github.com/sairambabu979-sys/multistep-agent/commit/f0c90392b9b77c41c15973137f8057ba5a7b8af5))
 
 ### Tests
 
