@@ -5,50 +5,25 @@ A role may write a path when the path matches one of its ``write`` globs, none o
 ``msa.tools.paths``), so an in-tree symlink cannot route a write into another role's files.
 The policy is fixed when a workspace is built for a role; nothing a model sends can widen it.
 
-Glob syntax, matched against the whole relative path:
-
-- ``**`` as a whole segment: any number of segments. ``a/**`` is everything under ``a``,
-  ``**/x.py`` is ``x.py`` at any depth, ``a/**/b`` includes ``a/b``.
-- ``*``: any run of characters within one segment. ``?``: exactly one character.
-- Everything else is literal. A newline is an ordinary character (filenames may hold
-  one), so ``**`` also spans it.
+Glob syntax is ``msa.globs``'s.
 """
 
 from __future__ import annotations
 
-import re
 import unicodedata
 from dataclasses import dataclass
-from functools import cache
 
+from msa import globs
 from msa.config import CapabilitiesConfig, Role
 from msa.tools.errors import CapabilityDenied
 
 
-@cache
-def glob_regex(pattern: str) -> re.Pattern[str]:
-    segments = pattern.split("/")
-    out: list[str] = []
-    for index, segment in enumerate(segments):
-        last = index == len(segments) - 1
-        if segment == "**":
-            out.append(".+" if last else "(?:[^/]+/)*")
-            continue
-        out.extend(
-            "[^/]*" if char == "*" else "[^/]" if char == "?" else re.escape(char)
-            for char in segment
-        )
-        if not last:
-            out.append("/")
-    return re.compile(r"\A" + "".join(out) + r"\Z", re.DOTALL)
-
-
-def _matches(globs: tuple[str, ...], key: str, *, case_insensitive: bool) -> bool:
+def _matches(patterns: tuple[str, ...], key: str, *, case_insensitive: bool) -> bool:
     """``key`` comes from ``Root.key``: NFC, and case-folded when the disk ignores case.
     Each glob gets the same treatment, so both sides compare in one form."""
-    for glob in globs:
+    for glob in patterns:
         normal = unicodedata.normalize("NFC", glob)
-        if glob_regex(normal.casefold() if case_insensitive else normal).match(key):
+        if globs.matches(normal.casefold() if case_insensitive else normal, key):
             return True
     return False
 
@@ -86,5 +61,5 @@ class WritePolicy:
             reason = f"{role} may write only {', '.join(self.config.roles[self.role].write)}"
         raise CapabilityDenied(f"{role} may not write {key!r}: {reason}")
 
-    def _any(self, globs: tuple[str, ...], key: str) -> bool:
-        return _matches(globs, key, case_insensitive=self.case_insensitive)
+    def _any(self, patterns: tuple[str, ...], key: str) -> bool:
+        return _matches(patterns, key, case_insensitive=self.case_insensitive)

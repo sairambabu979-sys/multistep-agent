@@ -30,6 +30,7 @@ from pydantic import (
     model_validator,
 )
 
+from msa import globs
 from msa.core._frozen import Frozen
 from msa.core.values import Escalation, Limits, PlanGate
 
@@ -174,18 +175,7 @@ class JournalConfig(Frozen):
 # ---------- capabilities (ADR-006) and the sandbox (ADR-009)
 
 
-def _glob(pattern: str) -> str:
-    """Path globs relative to the worktree: ``**`` spans segments, ``*`` and ``?`` stay
-    within one. The matching itself lives in ``msa.tools.capabilities``."""
-    segments = pattern.split("/")
-    if "\x00" in pattern or any(seg in {"", ".", ".."} for seg in segments):
-        raise ValueError(
-            f"{pattern!r}: use a relative path glob without empty, '.' or '..' segments"
-        )
-    return pattern
-
-
-Glob = Annotated[str, AfterValidator(_glob)]
+Glob = Annotated[str, AfterValidator(globs.validate)]  # syntax: msa.globs
 
 # Environment variables a sandboxed command may inherit. Names that look like credentials
 # are refused here, so no msa.toml edit can hand a key to repository code.

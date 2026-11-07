@@ -9,7 +9,8 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from msa.config import CapabilitiesConfig, ConfigError, Role, RoleCapability, load_config
-from msa.tools.capabilities import WritePolicy, glob_regex
+from msa.globs import regex as glob_regex
+from msa.tools.capabilities import WritePolicy
 from msa.tools.errors import CapabilityDenied
 
 ROOT = Path(__file__).resolve().parents[3]
