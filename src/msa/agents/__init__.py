@@ -1,4 +1,6 @@
-"""Agent roles (Planner, Coder, Tester, Reviewer, Arbiter) and their tool loop.
+"""Agent roles (PLAN §3): what each one is asked, with which tools, for which typed answer.
 
-Arrives in M6-M8. See docs/PLAN.md §3.
+A role here is a function from its inputs to an ``msa.llm.gateway.Invocation``; the loop
+itself is the gateway's. The Planner and Coder arrive in M6, the Tester, Reviewer and
+Arbiter in M7-M8. Executors in ``msa.runtime`` gather the inputs and run the invocations.
 """
