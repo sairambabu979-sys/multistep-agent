@@ -639,11 +639,12 @@ def run_task(
     quiet: Quiet = False,
     db: Db = None,
 ) -> None:
-    """Plan, implement and verify a change to a git repository (M6: Planner, Coder, VERIFYING).
+    """Plan, implement, verify and test a change to a git repository.
 
-    The Tester and the Reviewer arrive in M7 and M8; until then their stages pass through,
-    and the run report says so. The repository's checkout is never modified: the work
-    happens in a worktree under the state directory, and the result is a patch."""
+    The Planner, Coder and Tester are real; the Reviewer arrives in M8, and until then its
+    stage passes through and the run report says so. The repository's checkout is never
+    modified: the work happens in worktrees under the state directory, and the result is a
+    patch."""
     if (task is None) == (task_file is None):
         raise _fail("give exactly one of --task and --task-file")
     if record is not None and replay is not None:

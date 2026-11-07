@@ -8,9 +8,11 @@ preferences skill.
 **Status:** M0 (skeleton), M1 (the state machine), M2 (journal and interpreter), M4
 (tools, capabilities and the local sandbox) and M5 (preferences) are done. M3 (the LLM
 gateway) is built and contract-tested offline; its live cassette awaits a recording with an
-API key. M6 (the first end-to-end slice) is built: `msa run` plans, implements and verifies
-a change with the real Planner and Coder. The Tester (M7) and Reviewer (M8) stages pass
-through until they exist, and the run report says so. The full design is in [`docs/PLAN.md`](docs/PLAN.md), decisions are in
+API key. M6 (the first end-to-end slice) and M7 (the Tester) are built: `msa run` plans,
+implements, verifies and tests a change with the real Planner, Coder and Tester. The
+Reviewer stage (M8) passes through until it exists, and the run report says so.
+
+The full design is in [`docs/PLAN.md`](docs/PLAN.md), decisions are in
 [`docs/adr/`](docs/adr/), and the generated state diagram is in [`docs/fsm.md`](docs/fsm.md).
 
 ## Try it
@@ -103,8 +105,15 @@ ANTHROPIC_API_KEY=... uv run msa llm ping
   acceptance criteria a test can check;
 - the **Coder** implements it in the run's worktree with every tool, and revises when a
   check fails;
+- the **Tester** writes acceptance tests at the same time, in its own worktree at the base
+  tree, so it never sees the implementation it is testing;
 - **VERIFYING** runs ruff, the ruff format check, mypy, pytest and the preference checks on
-  the head tree, every one of them, and the failure report goes back to the Coder verbatim.
+  the head tree, every one of them, and the failure report goes back to the Coder verbatim;
+- **TESTING** proves the acceptance tests mean something: each must fail on the base tree
+  and pass on the head; a failing test is rerun alone, and a flaky one is reported and sent
+  back, never skipped; consistent failures are triaged to the Coder or the Tester; and a
+  Tester revision that drops a check is refused
+  ([ADR-012](docs/adr/012-tester-and-evidence.md)).
 
 The harness, not an agent, turns the worktree into the tree hashes evidence is bound to.
 
@@ -164,7 +173,7 @@ uv run msa prefs check
 | Symlink race | About 100k atomic directory/symlink swaps per run while tools work through them. Several hundred calls per run hit the race window, and all are refused. |
 | Preference merge laws | Associativity, identity, idempotence and right bias of the layer merge (Hypothesis) |
 | Conflict soundness | Scope overlap never misses a path both scopes apply to. The test fails when the overlap rule is weakened. |
-| End-to-end runs | I-01, I-02 and I-14 on a fixture repository: real intake, worktree, tool layer, ruff and pytest in the sandbox, and finalize, with only the model scripted. I-01's event sequence must match a golden file. |
+| End-to-end runs | I-01–I-04, I-14 and I-15 on a fixture repository: real intake, worktree, tool layer, ruff and pytest in the sandbox, and finalize, with only the model scripted. I-01's event sequence must match a golden file. |
 | Contracts | Core purity (AST allowlist), schema completeness, `docs/fsm.md` freshness, layering (`import-linter`), only `msa.llm` imports the SDK, no credential in any cassette |
 
 ## Develop

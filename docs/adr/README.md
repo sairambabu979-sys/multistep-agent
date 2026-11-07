@@ -17,4 +17,4 @@ the old one.
 | [009](009-tool-layer-and-local-sandbox.md) | The tool layer: race-free confinement, capabilities on resolved paths, an honest local sandbox | Accepted |
 | [010](010-preferences.md) | Preferences: field-level layers, sound conflict detection, checks before tokens | Accepted |
 | [011](011-first-slice-worktree-and-stand-ins.md) | The first slice: one run worktree, harness-made trees, honest stand-ins | Accepted |
-| [011](011-first-slice-worktree-and-stand-ins.md) | The first slice: one run worktree, harness-made trees, honest stand-ins | Accepted |
+| [012](012-tester-and-evidence.md) | The Tester: blind tests, evidence the harness decides, an owner for every failure | Accepted |
