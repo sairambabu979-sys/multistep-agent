@@ -71,7 +71,9 @@ snapshot_every = 50
 # directories, `*` and `?` stay within one. The tool layer checks the resolved path before
 # every write; no prompt can change this.
 [capabilities]
-protected = [".git/**", ".msa/**"]  # no role may write these
+# No role may write these. `**/.git` matters in a linked worktree (and a submodule),
+# where .git is a file naming the git directory: rewriting it would redirect git.
+protected = ["**/.git", "**/.git/**", ".msa/**"]
 
 [capabilities.roles]
 planner = { write = [] }

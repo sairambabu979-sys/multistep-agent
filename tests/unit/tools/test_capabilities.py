@@ -88,6 +88,8 @@ def test_coder_and_tester_never_both_own_a_path(path: str) -> None:
     [
         (Role.CODER, "tests/acceptance/test_login.py", "it belongs to tester"),
         (Role.TESTER, ".git/hooks/pre-commit", "it is protected: no role may write it"),
+        (Role.CODER, ".git", "it is protected: no role may write it"),
+        (Role.CODER, "vendor/lib/.git", "it is protected: no role may write it"),
         (Role.REVIEWER, "src/app.py", "it belongs to coder"),
         (Role.PLANNER, "notes.md", "it belongs to coder"),
         (Role.TESTER, "src/app.py", "it belongs to coder"),
@@ -127,7 +129,7 @@ def test_on_a_case_insensitive_disk_case_cannot_dodge_a_deny() -> None:
 @pytest.mark.parametrize("bad", ["/abs/**", "a//b", "a/../b", "./a", "a/", ""])
 def test_malformed_globs_are_rejected_in_settings(tmp_path: Path, bad: str) -> None:
     text = (ROOT / "msa.toml").read_text(encoding="utf-8")
-    old = 'protected = [".git/**", ".msa/**"]'
+    old = 'protected = ["**/.git", "**/.git/**", ".msa/**"]'
     path = tmp_path / "msa.toml"
     path.write_text(text.replace(old, f"protected = [{bad!r}]"), encoding="utf-8")
     with pytest.raises(ConfigError, match="use a relative path glob"):
