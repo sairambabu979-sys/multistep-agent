@@ -28,16 +28,19 @@ from msa.core.events import AnyEvent, CancelRequested
 from msa.core.graph import analyze, render_markdown
 from msa.core.ids import RunId
 from msa.core.transitions import TABLE
-from msa.core.values import Escalation, Phase, PlanGate
+from msa.core.values import Escalation, Limits, Phase, PlanGate
 from msa.llm.anthropic_client import AnthropicMessages
 from msa.llm.cassette import CassetteClient, CassetteMiss
 from msa.llm.client import MessagesClient
 from msa.llm.gateway import InvocationError
 from msa.llm.ping import TOKEN, PingReport, ping
+from msa.llm.store import SqliteResponseStore
+from msa.runtime import live
 from msa.runtime.checks import CheckError, CheckFinding, run_checks
 from msa.runtime.clock import LogicalClock, SystemClock
 from msa.runtime.interpreter import Interpreter, Observer
 from msa.runtime.journal import JournalError, SqliteJournal
+from msa.runtime.live import LiveEnvironment
 from msa.runtime.simulation import (
     Profile,
     SimulatedEnvironment,
@@ -559,6 +562,128 @@ def _interpreter(
     )
 
 
+def _client(settings: MsaConfig, environment: LiveEnvironment) -> MessagesClient:
+    if environment.cassette_mode == "replay" and environment.cassette is not None:
+        return CassetteClient(Path(environment.cassette), mode="replay")
+    live = _live_client(settings)
+    if environment.cassette_mode == "record" and environment.cassette is not None:
+        return CassetteClient(Path(environment.cassette), mode="record", inner=live)
+    return live
+
+
+async def _drive_live(
+    settings: MsaConfig,
+    journal: SqliteJournal,
+    environment: LiveEnvironment,
+    rid: RunId,
+    *,
+    quiet: bool,
+    limits: Limits | None,
+) -> RunState:
+    """Start the run with ``limits``, or resume it (``limits`` is None)."""
+    client = _client(settings, environment)
+    state_dir = Path(environment.state_dir)
+    with SqliteResponseStore(state_dir / "responses.db") as responses:
+        interpreter = live.interpreter(
+            environment,
+            settings,
+            run_id=rid,
+            journal=journal,
+            client=client,
+            store=responses,
+            clock=SystemClock(),
+            observer=Observer() if quiet else Timeline(),
+            on_report=lambda path: typer.echo(f"report: {path}"),
+        )
+        try:
+            if limits is None:
+                return await interpreter.resume(rid)
+            return await interpreter.start(
+                run_id=rid,
+                task_digest=environment.task_digest,
+                limits=limits,
+                environment=environment.model_dump(mode="json"),
+            )
+        finally:
+            close = getattr(client, "aclose", None)
+            if close is not None:
+                await close()
+
+
+@app.command(name="run")
+def run_task(
+    ctx: typer.Context,
+    task: Annotated[str | None, typer.Option(help="What to do, in plain words.")] = None,
+    task_file: Annotated[
+        Path | None,
+        typer.Option(help="Read the task from this file.", exists=True, dir_okay=False),
+    ] = None,
+    repo: Repo = Path("."),
+    pref: Pref = None,
+    run_id: Annotated[str | None, typer.Option(help="Defaults to run-<random>.")] = None,
+    budget_usd: Annotated[
+        float | None, typer.Option(min=0.000001, help="[default: msa.toml]")
+    ] = None,
+    record: Annotated[
+        Path | None,
+        typer.Option(
+            "--record", help="Also write every exchange to this cassette.", dir_okay=False
+        ),
+    ] = None,
+    replay: Annotated[
+        Path | None,
+        typer.Option(
+            "--replay", help="Answer from this cassette, offline.", exists=True, dir_okay=False
+        ),
+    ] = None,
+    quiet: Quiet = False,
+    db: Db = None,
+) -> None:
+    """Plan, implement and verify a change to a git repository (M6: Planner, Coder, VERIFYING).
+
+    The Tester and the Reviewer arrive in M7 and M8; until then their stages pass through,
+    and the run report says so. The repository's checkout is never modified: the work
+    happens in a worktree under the state directory, and the result is a patch."""
+    if (task is None) == (task_file is None):
+        raise _fail("give exactly one of --task and --task-file")
+    if record is not None and replay is not None:
+        raise _fail("--record and --replay cannot be combined")
+    settings = _settings(ctx)
+    if settings is None:
+        raise _fail("msa run needs msa.toml: model ids and prices live there")
+    if task_file is not None:
+        task = task_file.read_text(encoding="utf-8")
+    text = task or ""
+    if not text.strip():
+        raise _fail("the task is empty")
+    overrides: dict[str, Any] = {}
+    if budget_usd is not None:
+        overrides["budget_usd_micros"] = round(budget_usd * 1_000_000)
+    limits = settings.limits.to_limits(**overrides)
+    if limits.plan_gate is PlanGate.HUMAN:
+        raise _fail("plan_gate = human needs an approval command, which is not built yet")
+    journal_path = (db or settings.journal.path).resolve()
+    cassette = record or replay
+    environment = LiveEnvironment(
+        repo=str(repo.resolve()),
+        state_dir=str(journal_path.parent),
+        task=text,
+        overrides=tuple(pref or ()),
+        cassette=str(cassette.resolve()) if cassette else None,
+        cassette_mode="record" if record else "replay" if replay else None,
+    )
+    rid = RunId(run_id or f"run-{uuid.uuid4().hex[:8]}")
+    with SqliteJournal(journal_path) as journal:
+        try:
+            state = _drive(
+                rid,
+                _drive_live(settings, journal, environment, rid, quiet=quiet, limits=limits),
+            )
+        except (JournalError, ValidationError, CassetteMiss) as exc:
+            raise _fail(str(exc)) from exc
+    typer.echo(_outcome_line(state))
+
+
 @app.command()
 def simulate(
     ctx: typer.Context,
@@ -609,10 +734,39 @@ def resume(ctx: typer.Context, run_id: Run, db: Db = None, quiet: Quiet = False)
     with _journal(ctx, db) as journal:
         try:
             environment = journal.environment(rid)
-            state = _drive(rid, _interpreter(ctx, journal, environment, quiet=quiet).resume(rid))
+            if environment.get("kind") == "live":
+                state = _resume_live(ctx, journal, environment, rid, quiet=quiet)
+            else:
+                interpreter = _interpreter(ctx, journal, environment, quiet=quiet)
+                state = _drive(rid, interpreter.resume(rid))
         except JournalError as exc:
             raise _fail(str(exc)) from exc
     typer.echo(_outcome_line(state))
+
+
+def _resume_live(
+    ctx: typer.Context,
+    journal: SqliteJournal,
+    environment: dict[str, Any],
+    rid: RunId,
+    *,
+    quiet: bool,
+) -> RunState:
+    settings = _settings(ctx)
+    if settings is None:
+        raise _fail("resuming a live run needs msa.toml: model ids and prices live there")
+    try:
+        live_environment = LiveEnvironment.model_validate(environment)
+    except ValidationError as exc:
+        raise _fail(f"run {rid} has an unreadable environment: {exc}") from exc
+    if live_environment.cassette_mode == "record":
+        raise _fail(
+            "a run that was recording a cassette cannot be resumed: the cassette would hold "
+            "only the resumed half. Record it again from the start."
+        )
+    return _drive(
+        rid, _drive_live(settings, journal, live_environment, rid, quiet=quiet, limits=None)
+    )
 
 
 @app.command()

@@ -1,5 +1,31 @@
 {
   "$defs": {
+    "AgentsConfig": {
+      "additionalProperties": false,
+      "description": "Bounds on one agent invocation, on top of its effect's budget reservation.",
+      "properties": {
+        "coder_max_turns": {
+          "default": 60,
+          "exclusiveMinimum": 0,
+          "title": "Coder Max Turns",
+          "type": "integer"
+        },
+        "planner_max_turns": {
+          "default": 30,
+          "exclusiveMinimum": 0,
+          "title": "Planner Max Turns",
+          "type": "integer"
+        },
+        "repo_map_max_paths": {
+          "default": 400,
+          "exclusiveMinimum": 0,
+          "title": "Repo Map Max Paths",
+          "type": "integer"
+        }
+      },
+      "title": "AgentsConfig",
+      "type": "object"
+    },
     "ApiConfig": {
       "additionalProperties": false,
       "properties": {
@@ -448,11 +474,49 @@
       },
       "title": "SandboxConfig",
       "type": "object"
+    },
+    "VerifyCommand": {
+      "enum": [
+        "pytest",
+        "ruff_check",
+        "ruff_format_check",
+        "mypy"
+      ],
+      "type": "string"
+    },
+    "VerifyConfig": {
+      "additionalProperties": false,
+      "description": "VERIFYING (PLAN \u00a72): deterministic checks on the head tree, in this order. Each runs\nover the whole worktree. Hard preference checks always run as well.",
+      "properties": {
+        "commands": {
+          "default": [
+            "ruff_check",
+            "ruff_format_check",
+            "mypy",
+            "pytest"
+          ],
+          "items": {
+            "$ref": "#/$defs/VerifyCommand"
+          },
+          "title": "Commands",
+          "type": "array"
+        }
+      },
+      "title": "VerifyConfig",
+      "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {
+    "agents": {
+      "$ref": "#/$defs/AgentsConfig",
+      "default": {
+        "coder_max_turns": 60,
+        "planner_max_turns": 30,
+        "repo_map_max_paths": 400
+      }
+    },
     "api": {
       "$ref": "#/$defs/ApiConfig"
     },
@@ -552,6 +616,17 @@
         "search_limit_matches": 200,
         "timeout_seconds": 600.0,
         "view_limit_chars": 100000
+      }
+    },
+    "verify": {
+      "$ref": "#/$defs/VerifyConfig",
+      "default": {
+        "commands": [
+          "ruff_check",
+          "ruff_format_check",
+          "mypy",
+          "pytest"
+        ]
       }
     }
   },

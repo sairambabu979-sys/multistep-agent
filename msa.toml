@@ -94,3 +94,14 @@ search_limit_matches = 200
 cpu_seconds = 1800
 max_file_bytes = 1073741824
 env_passthrough = ["PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "TERM"]
+
+# VERIFYING: deterministic checks on the head tree, in order, over the whole worktree
+# (allowlisted sandbox commands). The machine checks of hard preferences always run too.
+[verify]
+commands = ["ruff_check", "ruff_format_check", "mypy", "pytest"]
+
+# Bounds on one agent invocation, on top of its effect's budget reservation.
+[agents]
+planner_max_turns = 30
+coder_max_turns = 60
+repo_map_max_paths = 400

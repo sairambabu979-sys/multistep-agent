@@ -15,6 +15,7 @@ from msa.core.graph import render_markdown
 from msa.core.table import TransitionTable
 from msa.core.transitions import TABLE
 from msa.runtime.journal import SqliteJournal
+from msa.runtime.live import LiveEnvironment
 from msa.runtime.simulation import Profile, SimulationConfig, digest
 from tests.support.factory import run_started
 
@@ -150,10 +151,57 @@ def test_resume_drives_a_live_run_to_completion(db: str) -> None:
 def test_resume_refuses_an_environment_it_has_no_executors_for(db: str) -> None:
     first = run_started(run_id="real")
     with SqliteJournal(db) as journal:
-        journal.create({"kind": "live", "model": "x"}, first, start(first).state)
+        journal.create({"kind": "container"}, first, start(first).state)
     result = msa("resume", "real", "--db", db)
     assert result.exit_code == 1
-    assert "no executors for environment kind 'live'" in result.output
+    assert "no executors for environment kind 'container'" in result.output
+
+
+@pytest.mark.parametrize(
+    ("environment", "message"),
+    [
+        ({"kind": "live", "model": "x"}, "run real has an unreadable environment"),
+        (
+            LiveEnvironment(
+                repo="/r", state_dir="/s", task="t", cassette="/c.json", cassette_mode="record"
+            ).model_dump(mode="json"),
+            "a run that was recording a cassette cannot be resumed",
+        ),
+    ],
+)
+def test_resume_refuses_a_live_run_it_cannot_rebuild(
+    db: str, environment: dict[str, Any], message: str
+) -> None:
+    first = run_started(run_id="real")
+    with SqliteJournal(db) as journal:
+        journal.create(environment, first, start(first).state)
+    result = msa("resume", "real", "--db", db)
+    assert result.exit_code == 1
+    assert message in result.output
+
+
+@pytest.mark.parametrize(
+    ("arguments", "message"),
+    [
+        ([], "give exactly one of --task and --task-file"),
+        (["--task", "x", "--task-file", "msa.toml"], "give exactly one of --task and --task-file"),
+        (["--task", "   "], "the task is empty"),
+        (["--task", "x", "--record", "a.json", "--replay", "msa.toml"], "cannot be combined"),
+    ],
+)
+def test_run_refuses_unusable_arguments(db: str, arguments: list[str], message: str) -> None:
+    result = msa("run", *arguments, "--db", db)
+    assert result.exit_code == 1
+    assert message in result.output
+
+
+def test_run_refuses_a_human_plan_gate_it_has_no_approver_for(db: str, tmp_path: Path) -> None:
+    text = (Path("msa.toml")).read_text(encoding="utf-8")
+    custom = tmp_path / "msa.toml"
+    custom.write_text(text.replace('plan_gate = "auto"', 'plan_gate = "human"'), encoding="utf-8")
+    result = runner.invoke(cli.app, ["--config", str(custom), "run", "--task", "x", "--db", db])
+    assert result.exit_code == 1
+    assert "plan_gate = human needs an approval command" in result.output
 
 
 def test_cancel_journals_an_aborted_outcome_once(db: str) -> None:

@@ -45,7 +45,7 @@ packages = ["src/msa"]
 line-length = 100
 target-version = "py312"
 src = ["src", "tests", "scripts"]
-extend-exclude = ["*.md"]  # docs keep their hand-aligned code samples
+extend-exclude = ["*.md", "tests/fixtures"]  # docs keep hand-aligned samples; fixtures are data
 
 [tool.ruff.lint]
 select = [
@@ -90,6 +90,7 @@ warn_unreachable = true
 enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool", "possibly-undefined"]
 plugins = ["pydantic.mypy"]
 files = ["src", "tests", "scripts"]
+exclude = ["^tests/fixtures/"]  # fixture repositories are checked by their own runs
 mypy_path = ["src"]
 explicit_package_bases = true
 

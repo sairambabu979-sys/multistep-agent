@@ -28,3 +28,6 @@ settings.register_profile(
     "mutation", max_examples=40, derandomize=True, database=None, deadline=None
 )
 settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "dev"))
+
+# Fixture repositories hold their own tests, run only inside a sandboxed worktree.
+collect_ignore = ["fixtures"]

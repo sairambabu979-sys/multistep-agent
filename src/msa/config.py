@@ -17,7 +17,7 @@ from datetime import timedelta
 from decimal import ROUND_CEILING, Decimal
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated, Any, Self
+from typing import Annotated, Any, Literal, Self
 
 from pydantic import (
     AfterValidator,
@@ -246,6 +246,32 @@ class SandboxConfig(Frozen):
     env_passthrough: tuple[EnvName, ...] = ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "TERM")
 
 
+# The sandbox's allowlisted commands (msa.tools.sandbox.COMMANDS; a contract test keeps the
+# two in step). Named here because config sits below the tool layer.
+type VerifyCommand = Literal["pytest", "ruff_check", "ruff_format_check", "mypy"]
+
+
+class VerifyConfig(Frozen):
+    """VERIFYING (PLAN §2): deterministic checks on the head tree, in this order. Each runs
+    over the whole worktree. Hard preference checks always run as well."""
+
+    commands: tuple[VerifyCommand, ...] = ("ruff_check", "ruff_format_check", "mypy", "pytest")
+
+    @model_validator(mode="after")
+    def _unique(self) -> Self:
+        if len(set(self.commands)) != len(self.commands):
+            raise ValueError("[verify].commands lists a command twice")
+        return self
+
+
+class AgentsConfig(Frozen):
+    """Bounds on one agent invocation, on top of its effect's budget reservation."""
+
+    planner_max_turns: PositiveInt = 30
+    coder_max_turns: PositiveInt = 60
+    repo_map_max_paths: PositiveInt = 400  # files listed in the Planner's prompt
+
+
 class MsaConfig(Frozen):
     models: ModelsConfig
     api: ApiConfig
@@ -254,6 +280,8 @@ class MsaConfig(Frozen):
     journal: JournalConfig = JournalConfig()
     capabilities: CapabilitiesConfig = CapabilitiesConfig()
     sandbox: SandboxConfig = SandboxConfig()
+    verify: VerifyConfig = VerifyConfig()
+    agents: AgentsConfig = AgentsConfig()
 
     @model_validator(mode="after")
     def _every_model_is_priced(self) -> Self:
