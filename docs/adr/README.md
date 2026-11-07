@@ -16,3 +16,5 @@ the old one.
 | [008](008-llm-gateway.md) | The LLM gateway: append-only requests, a hard budget, replayable turns | Accepted |
 | [009](009-tool-layer-and-local-sandbox.md) | The tool layer: race-free confinement, capabilities on resolved paths, an honest local sandbox | Accepted |
 | [010](010-preferences.md) | Preferences: field-level layers, sound conflict detection, checks before tokens | Accepted |
+| [011](011-first-slice-worktree-and-stand-ins.md) | The first slice: one run worktree, harness-made trees, honest stand-ins | Accepted |
+| [011](011-first-slice-worktree-and-stand-ins.md) | The first slice: one run worktree, harness-made trees, honest stand-ins | Accepted |

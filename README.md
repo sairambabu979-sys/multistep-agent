@@ -8,8 +8,9 @@ preferences skill.
 **Status:** M0 (skeleton), M1 (the state machine), M2 (journal and interpreter), M4
 (tools, capabilities and the local sandbox) and M5 (preferences) are done. M3 (the LLM
 gateway) is built and contract-tested offline; its live cassette awaits a recording with an
-API key. Real agents arrive in M6–M8; until then every effect runs against deterministic
-stub executors. The full design is in [`docs/PLAN.md`](docs/PLAN.md), decisions are in
+API key. M6 (the first end-to-end slice) is built: `msa run` plans, implements and verifies
+a change with the real Planner and Coder. The Tester (M7) and Reviewer (M8) stages pass
+through until they exist, and the run report says so. The full design is in [`docs/PLAN.md`](docs/PLAN.md), decisions are in
 [`docs/adr/`](docs/adr/), and the generated state diagram is in [`docs/fsm.md`](docs/fsm.md).
 
 ## Try it
@@ -36,6 +37,16 @@ uv run msa replay demo
 past event. `replay` re-folds the whole journal from scratch and checks every snapshot
 against it. Interrupt a run with Ctrl-C and `msa resume <run>` continues it: completed
 effects are never executed again.
+
+Run the agent on a repository of your own (it needs `ANTHROPIC_API_KEY`):
+
+```bash
+uv run msa run --repo path/to/repo --task "Add a --verbose flag to the CLI"
+```
+
+The checkout is never modified. The work happens in a git worktree under `.msa/worktrees/`,
+and the result is a patch plus a report in `.msa/runs/<run>/` (`patch.diff`, `report.md`).
+Apply the patch with `git apply`, or don't.
 
 ## What exists today
 
@@ -84,6 +95,18 @@ ANTHROPIC_API_KEY=... uv run msa llm ping
 
 `--record PATH` also writes a cassette and `--replay PATH` answers from one offline; see
 [`tests/cassettes/README.md`](tests/cassettes/README.md).
+
+**The agents** (`src/msa/agents`, `src/msa/runtime/live.py`,
+[ADR-011](docs/adr/011-first-slice-worktree-and-stand-ins.md)):
+
+- the **Planner** reads the base tree with read-only tools and answers a typed `Plan`, with
+  acceptance criteria a test can check;
+- the **Coder** implements it in the run's worktree with every tool, and revises when a
+  check fails;
+- **VERIFYING** runs ruff, the ruff format check, mypy, pytest and the preference checks on
+  the head tree, every one of them, and the failure report goes back to the Coder verbatim.
+
+The harness, not an agent, turns the worktree into the tree hashes evidence is bound to.
 
 **The tool layer** (`src/msa/tools`, [ADR-009](docs/adr/009-tool-layer-and-local-sandbox.md))
 is what agents act through: `read_file`, `search`, `edit`, `create_file`, `run` and
@@ -141,6 +164,7 @@ uv run msa prefs check
 | Symlink race | About 100k atomic directory/symlink swaps per run while tools work through them. Several hundred calls per run hit the race window, and all are refused. |
 | Preference merge laws | Associativity, identity, idempotence and right bias of the layer merge (Hypothesis) |
 | Conflict soundness | Scope overlap never misses a path both scopes apply to. The test fails when the overlap rule is weakened. |
+| End-to-end runs | I-01, I-02 and I-14 on a fixture repository: real intake, worktree, tool layer, ruff and pytest in the sandbox, and finalize, with only the model scripted. I-01's event sequence must match a golden file. |
 | Contracts | Core purity (AST allowlist), schema completeness, `docs/fsm.md` freshness, layering (`import-linter`), only `msa.llm` imports the SDK, no credential in any cassette |
 
 ## Develop
