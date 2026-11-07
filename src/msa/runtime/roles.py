@@ -163,6 +163,8 @@ class TesterExecutor:
     worktree at the base tree) and revisions of its own tests (``revise_changes`` with
     owner ``tester``, in the build worktree, behind the weakened-test guard)."""
 
+    __test__ = False  # not a pytest test class, whatever its name
+
     def __init__(self, context: RunContext) -> None:
         self.context = context
 
