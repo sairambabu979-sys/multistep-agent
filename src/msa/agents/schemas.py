@@ -10,6 +10,7 @@ stored plan), and the executors keep the full answers as run artifacts.
 
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -66,4 +67,42 @@ class ImplementationSummary(_Answer):
     )
     open_issues: list[str] = Field(
         description="Anything left undone, uncertain, or that a reviewer should know; [] if none."
+    )
+
+
+class TestSuiteSummary(_Answer):
+    """The Tester's answer after writing or revising acceptance tests."""
+
+    __test__ = False  # not a pytest test class
+    summary: Text = Field(description="What the tests check, in two or three sentences.")
+    tests: list[str] = Field(
+        description="Every test you wrote or changed, as pytest node ids "
+        '("tests/acceptance/test_x.py::test_y").'
+    )
+    criteria_covered: list[str] = Field(
+        description="The acceptance criteria your tests check, quoted from the plan."
+    )
+    open_issues: list[str] = Field(description="Criteria you could not test, and why; [] if none.")
+
+
+class TriageKind(StrEnum):
+    IMPL_BUG = "impl_bug"
+    TEST_BUG = "test_bug"
+    ENVIRONMENT = "environment"
+
+
+class TestTriage(_Answer):
+    """The Tester's diagnosis of a consistent test failure (flakes are told apart by the
+    harness, by rerunning, before any model is asked)."""
+
+    __test__ = False  # not a pytest test class
+    kind: TriageKind = Field(
+        description=(
+            "impl_bug: the implementation is wrong and the test is right; test_bug: the test "
+            "is wrong; environment: neither can fix it (a missing tool or service)."
+        )
+    )
+    test_id: Text = Field(description="The pytest node id of the failure you diagnosed.")
+    diagnosis: Text = Field(
+        description="What is wrong and where, specific enough for its owner to fix it."
     )

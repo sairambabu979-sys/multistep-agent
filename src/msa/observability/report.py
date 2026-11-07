@@ -67,6 +67,8 @@ def render(
     summaries: Sequence[Mapping[str, Any]],
     stand_ins: Mapping[str, str],
     patch: str | None,
+    tests: Sequence[Mapping[str, Any]] = (),
+    last_test_report: str | None = None,
 ) -> str:
     outcome = state.outcome
     verdict = f"{state.phase.name}: {outcome.reason}" if outcome else f"{state.phase.name} (live)"
@@ -92,45 +94,79 @@ def render(
         out += used
 
     if plan:
-        out += ["", plan.rstrip("\n").replace("## Plan", "## Plan", 1)]
+        out += ["", plan.rstrip("\n")]
 
     out += ["", "## Timeline", "", *_fence("\n".join(timeline(events)))]
 
-    if invocations:
+    out += _invocations(invocations)
+    out += _summaries(summaries)
+    out += _checks(verifications, tests, last_test_report)
+    if patch is not None:
+        out += ["", "## Patch", "", *(_fence(patch, "diff") if patch.strip() else ["(empty)"])]
+    return "\n".join(out) + "\n"
+
+
+def _invocations(invocations: Sequence[Mapping[str, Any]]) -> list[str]:
+    if not invocations:
+        return []
+    out = [
+        "",
+        "## Agent invocations",
+        "",
+        "| effect | role | status | turns | replayed | spend | in | out | cache read |",
+        "|---|---|---|---|---|---|---|---|---|",
+    ]
+    out.extend(
+        f"| `{i.get('effect')}` | {i.get('role')} | {i.get('status')} | {i.get('turns')} "
+        f"| {i.get('replayed')} | {_usd(int(i.get('usd_micros', 0)))} "
+        f"| {i.get('input_tokens')} | {i.get('output_tokens')} "
+        f"| {i.get('cache_read_tokens')} |"
+        for i in invocations
+    )
+    return out
+
+
+SUMMARY_LISTS = (
+    ("Files", "files_changed"),
+    ("Tests", "tests"),
+    ("Criteria covered", "criteria_covered"),
+    ("Checks", "checks_run"),
+    ("Open issues", "open_issues"),
+)
+
+
+def _summaries(summaries: Sequence[Mapping[str, Any]]) -> list[str]:
+    if not summaries:
+        return []
+    out = ["", "## Agent summaries"]
+    for s in summaries:
+        out += ["", f"### `{s.get('effect')}` ({s.get('kind')})", "", str(s.get("summary", ""))]
         out += [
-            "",
-            "## Agent invocations",
-            "",
-            "| effect | role | status | turns | replayed | spend | in | out | cache read |",
-            "|---|---|---|---|---|---|---|---|---|",
+            f"- {label}: " + "; ".join(str(v) for v in values)
+            for label, key in SUMMARY_LISTS
+            if (values := s.get(key) or [])
         ]
-        for i in invocations:
-            out.append(
-                f"| `{i.get('effect')}` | {i.get('role')} | {i.get('status')} | {i.get('turns')} "
-                f"| {i.get('replayed')} | {_usd(int(i.get('usd_micros', 0)))} "
-                f"| {i.get('input_tokens')} | {i.get('output_tokens')} "
-                f"| {i.get('cache_read_tokens')} |"
-            )
+    return out
 
-    if summaries:
-        out += ["", "## Coder summaries"]
-        for s in summaries:
-            out += ["", f"### `{s.get('effect')}` ({s.get('kind')})", "", str(s.get("summary", ""))]
-            for label, key in (
-                ("Files", "files_changed"),
-                ("Checks", "checks_run"),
-                ("Open issues", "open_issues"),
-            ):
-                values = s.get(key) or []
-                if values:
-                    out.append(f"- {label}: " + "; ".join(str(v) for v in values))
 
+def _checks(
+    verifications: Sequence[Mapping[str, Any]],
+    tests: Sequence[Mapping[str, Any]],
+    last_test_report: str | None,
+) -> list[str]:
+    out: list[str] = []
     if verifications:
         out += ["", "## Verifications", ""]
         for v in verifications:
             status = "passed" if v.get("passed") else "failed: " + ", ".join(v.get("failed", []))
             out.append(f"- `{v.get('tree')}`: {status} (report `{v.get('report')}`)")
-
-    if patch is not None:
-        out += ["", "## Patch", "", *(_fence(patch, "diff") if patch.strip() else ["(empty)"])]
-    return "\n".join(out) + "\n"
+    if tests:
+        out += ["", "## Test runs", ""]
+        for t in tests:
+            status = "passed" if t.get("verdict") == "passed" else f"failed: {t.get('kind')}"
+            out.append(f"- `{t.get('tree')}`: {status} (report `{t.get('report')}`)")
+    if last_test_report:
+        # The latest run's matrix (fail before / pass after) and problems, one level down.
+        body = last_test_report.rstrip("\n").replace("\n## ", "\n#### ").replace("# ", "### ", 1)
+        out += ["", body]
+    return out

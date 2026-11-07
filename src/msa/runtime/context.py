@@ -43,24 +43,24 @@ class RunContext:
     task: str
     config: MsaConfig
     gateway: Gateway
-    worktree: RunWorktree
+    worktree: RunWorktree  # the build: the Coder's while BUILDING, the head tree after
+    tester_worktree: RunWorktree  # the Tester's, at the base tree while BUILDING (blind)
+    base_worktree: RunWorktree  # scratch, for running acceptance tests against the base
     files: RunFiles
     preferences: Callable[[], Resolved]  # resolved at INTAKE, or again on resume
     on_violation: Callable[[Violation], None] = log_violation
     _block: dict[TreeHash, str] = field(default_factory=dict)
 
-    # ---------- the tool layer, bound to the worktree for one role
+    # ---------- the tool layer, bound to one worktree for one role
 
-    def root(self) -> Root:
-        return Root.at(self.worktree.path)
-
-    def sandbox(self, role: Role) -> LocalSandbox:
+    def sandbox(self, role: Role, *, worktree: RunWorktree | None = None) -> LocalSandbox:
+        root = Root.at((worktree or self.worktree).path)
         return LocalSandbox(
-            self.root(), self.config.sandbox, role=role.value, on_violation=self.on_violation
+            root, self.config.sandbox, role=role.value, on_violation=self.on_violation
         )
 
-    def workspace(self, role: Role) -> Workspace:
-        root = self.root()
+    def workspace(self, role: Role, *, worktree: RunWorktree | None = None) -> Workspace:
+        root = Root.at((worktree or self.worktree).path)
         policy = WritePolicy(role, self.config.capabilities, root.case_insensitive)
         return Workspace(root, policy, self.config.sandbox, on_violation=self.on_violation)
 

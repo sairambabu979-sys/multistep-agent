@@ -224,6 +224,15 @@ class CapabilitiesConfig(Frozen):
             raise ValueError(f"[capabilities.roles] is missing {missing}")
         return self
 
+    def owned_directories(self, role: Role) -> tuple[str, ...]:
+        """The directories a role owns outright: its ``<dir>/**`` write globs. VERIFYING
+        leaves these to their owner's own checks (the Tester's tests run in TESTING)."""
+        return tuple(
+            glob.removesuffix("/**")
+            for glob in self.roles[role].write
+            if glob.endswith("/**") and glob != "**" and not any(c in glob[:-3] for c in "*?[")
+        )
+
 
 class SandboxConfig(Frozen):
     """How commands run in the local worktree sandbox (PLAN §8, ADR-009)."""
@@ -269,7 +278,16 @@ class AgentsConfig(Frozen):
 
     planner_max_turns: PositiveInt = 30
     coder_max_turns: PositiveInt = 60
+    tester_max_turns: PositiveInt = 60
+    triage_max_turns: PositiveInt = 20
     repo_map_max_paths: PositiveInt = 400  # files listed in the Planner's prompt
+
+
+class TestingConfig(Frozen):
+    """TESTING (PLAN §6.1): how failures are told apart."""
+
+    __test__ = False  # not a pytest test class
+    flake_reruns: PositiveInt = 3  # each failing test, rerun alone: mixed results are flaky
 
 
 class MsaConfig(Frozen):
@@ -281,6 +299,7 @@ class MsaConfig(Frozen):
     capabilities: CapabilitiesConfig = CapabilitiesConfig()
     sandbox: SandboxConfig = SandboxConfig()
     verify: VerifyConfig = VerifyConfig()
+    testing: TestingConfig = TestingConfig()
     agents: AgentsConfig = AgentsConfig()
 
     @model_validator(mode="after")

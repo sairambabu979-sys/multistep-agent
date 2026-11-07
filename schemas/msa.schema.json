@@ -21,6 +21,18 @@
           "exclusiveMinimum": 0,
           "title": "Repo Map Max Paths",
           "type": "integer"
+        },
+        "tester_max_turns": {
+          "default": 60,
+          "exclusiveMinimum": 0,
+          "title": "Tester Max Turns",
+          "type": "integer"
+        },
+        "triage_max_turns": {
+          "default": 20,
+          "exclusiveMinimum": 0,
+          "title": "Triage Max Turns",
+          "type": "integer"
         }
       },
       "title": "AgentsConfig",
@@ -475,6 +487,20 @@
       "title": "SandboxConfig",
       "type": "object"
     },
+    "TestingConfig": {
+      "additionalProperties": false,
+      "description": "TESTING (PLAN \u00a76.1): how failures are told apart.",
+      "properties": {
+        "flake_reruns": {
+          "default": 3,
+          "exclusiveMinimum": 0,
+          "title": "Flake Reruns",
+          "type": "integer"
+        }
+      },
+      "title": "TestingConfig",
+      "type": "object"
+    },
     "VerifyCommand": {
       "enum": [
         "pytest",
@@ -514,7 +540,9 @@
       "default": {
         "coder_max_turns": 60,
         "planner_max_turns": 30,
-        "repo_map_max_paths": 400
+        "repo_map_max_paths": 400,
+        "tester_max_turns": 60,
+        "triage_max_turns": 20
       }
     },
     "api": {
@@ -616,6 +644,12 @@
         "search_limit_matches": 200,
         "timeout_seconds": 600.0,
         "view_limit_chars": 100000
+      }
+    },
+    "testing": {
+      "$ref": "#/$defs/TestingConfig",
+      "default": {
+        "flake_reruns": 3
       }
     },
     "verify": {

@@ -95,8 +95,8 @@ cpu_seconds = 1800
 max_file_bytes = 1073741824
 env_passthrough = ["PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "TERM"]
 
-# VERIFYING: deterministic checks on the head tree, in order, over the whole worktree
-# (allowlisted sandbox commands). The machine checks of hard preferences always run too.
+# VERIFYING: deterministic checks on the head tree, in order, over the whole worktree except
+# the Tester's directories, which TESTING checks. The preference checks always run too.
 [verify]
 commands = ["ruff_check", "ruff_format_check", "mypy", "pytest"]
 
@@ -104,4 +104,11 @@ commands = ["ruff_check", "ruff_format_check", "mypy", "pytest"]
 [agents]
 planner_max_turns = 30
 coder_max_turns = 60
+tester_max_turns = 60
+triage_max_turns = 20
 repo_map_max_paths = 400
+
+# TESTING: each failing test is rerun alone this many times; mixed results mean flaky.
+# A flaky test is reported and sent back to the Tester, never skipped.
+[testing]
+flake_reruns = 3

@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -90,9 +91,11 @@ class RunWorktree:
     excludes: Path  # generated-file patterns, for core.excludesFile
 
     @classmethod
-    def for_run(cls, repo: Path, state_dir: Path, run_id: str) -> RunWorktree:
+    def for_run(cls, repo: Path, state_dir: Path, run_id: str, name: str = "work") -> RunWorktree:
+        """A run's worktrees: ``work`` holds the build (the Coder's, then the head), ``tests``
+        the Tester's blind authoring, ``base`` the fail-before checks."""
         home = state_dir / "worktrees" / run_id
-        return cls(repo=repo, path=home / "work", excludes=home / "exclude")
+        return cls(repo=repo, path=home / name, excludes=home / "exclude")
 
     async def _git(self, *args: str, identity: bool = False) -> str:
         return await git(self.path, *args, excludes=self.excludes, identity=identity)
@@ -134,8 +137,11 @@ class RunWorktree:
         out = await self._git("ls-tree", "-r", "-z", "--name-only", tree)
         return sorted(p for p in out.split("\0") if p)
 
-    async def changed_files(self, base: TreeHash, head: TreeHash) -> list[str]:
-        """Paths added or modified from ``base`` to ``head`` (deletions are not files)."""
+    async def changed_files(
+        self, base: TreeHash, head: TreeHash, directories: Sequence[str] = ()
+    ) -> list[str]:
+        """Paths added or modified from ``base`` to ``head`` (deletions are not files),
+        optionally only those inside ``directories``."""
         out = await self._git(
             "diff",
             "--no-ext-diff",
@@ -145,8 +151,35 @@ class RunWorktree:
             "--diff-filter=d",
             base,
             head,
+            "--",
+            *_pathspecs(directories),
         )
         return sorted(p for p in out.split("\0") if p)
+
+    async def overlay(self, tree: TreeHash, base: TreeHash, directories: Sequence[str]) -> None:
+        """Bring the changes ``tree`` made to ``directories`` since ``base`` into this
+        worktree. Path ownership guarantees nobody else changed them, so this never
+        conflicts: it is how the Tester's tests join the Coder's tree."""
+        if not directories:
+            return
+        out = await self._git(
+            "diff",
+            "--no-ext-diff",
+            "--name-status",
+            "-z",
+            "--no-renames",
+            base,
+            tree,
+            "--",
+            *_pathspecs(directories),
+        )
+        fields = [f for f in out.split("\0") if f]
+        changes = list(zip(fields[::2], fields[1::2], strict=True))
+        if kept := [path for status, path in changes if status != "D"]:
+            await self._git("checkout", tree, "--", *kept)
+        for status, path in changes:
+            if status == "D":
+                (self.path / path).unlink(missing_ok=True)
 
     async def diff(self, base: TreeHash, head: TreeHash) -> str:
         """A patch from ``base`` to ``head`` that ``git apply`` accepts."""
@@ -160,3 +193,8 @@ class RunWorktree:
             base,
             head,
         )
+
+
+def _pathspecs(directories: Sequence[str]) -> list[str]:
+    """Literal directory pathspecs: a directory name is never read as a glob."""
+    return [f":(literal){d}" for d in directories] if directories else []

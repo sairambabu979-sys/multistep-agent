@@ -8,6 +8,11 @@ the tree it was produced for). Then it runs, in order:
    (``msa.runtime.checks``). Hard findings fail verification; soft and info findings are
    reported but do not.
 
+Both leave out the Tester's directories (``tests/acceptance``, ``tests/repro``). A failure
+here is the Coder's to fix, and the Coder may not edit those paths: TESTING checks them
+instead, and sends their failures to the Tester. The acceptance tests themselves run in
+TESTING too, where fail-before/pass-after and flakes are judged.
+
 Every check runs even after one fails, so a single revision can fix them all. The report
 is stored as an artifact either way: ``VerificationFailed`` names it, and the Coder's
 revision reads it.
@@ -19,10 +24,13 @@ code's fault and no revision can fix it. It raises, and the interpreter turns th
 
 from __future__ import annotations
 
+import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from typing import assert_never
 
-from msa.config import Role
+from msa.config import Role, VerifyCommand
 from msa.core.effects import Effect, RunVerification
 from msa.core.events import AnyEvent, VerificationFailed, VerificationPassed
 from msa.runtime.checks import CheckFinding, run_checks
@@ -42,10 +50,33 @@ class CheckResult:
         return f"## {self.name}: {'passed' if self.passed else 'FAILED'}\n\n{self.output.strip()}\n"
 
 
-def _passed(command: str, done: Completed) -> bool:
+def passed(command: str, done: Completed) -> bool:
     if done.exit_code == 0:
         return True
     return command == "pytest" and done.exit_code == PYTEST_NO_TESTS
+
+
+def check_argv(command: VerifyCommand, excluded: Sequence[str]) -> list[str]:
+    """The harness's own command line for a check over the worktree, minus ``excluded``
+    directories. Fixed arguments only: nothing here comes from a model."""
+    match command:
+        case "ruff_check":
+            skip = ["--extend-exclude", ",".join(excluded)] if excluded else []
+            return ["ruff", "check", "--no-fix", "--no-cache", *skip, "."]
+        case "ruff_format_check":
+            skip = ["--extend-exclude", ",".join(excluded)] if excluded else []
+            return ["ruff", "format", "--check", "--diff", "--no-cache", *skip, "."]
+        case "mypy":
+            pattern = "^(" + "|".join(re.escape(d) for d in excluded) + ")/"
+            return ["mypy", *(["--exclude", pattern] if excluded else []), "."]
+        case "pytest":
+            return ["pytest", "-q", "-p", "no:cacheprovider", *(f"--ignore={d}" for d in excluded)]
+        case _:  # pragma: no cover - exhaustive over VerifyCommand
+            assert_never(command)
+
+
+def outside(paths: Sequence[str], directories: Sequence[str]) -> list[str]:
+    return [p for p in paths if not any(p == d or p.startswith(f"{d}/") for d in directories)]
 
 
 def _preference_result(findings: list[CheckFinding], checked: int) -> CheckResult:
@@ -70,19 +101,24 @@ class VerifyExecutor:
                 f"the worktree holds tree {current}, but verification was asked for {command.tree}"
             )
         sandbox = ctx.sandbox(Role.CODER)
+        # The Tester's directories are checked in TESTING, where a failure goes to the
+        # Tester: here it would go to the Coder, who may not edit them.
+        tester = ctx.config.capabilities.owned_directories(Role.TESTER)
         results: list[CheckResult] = []
         for name in ctx.config.verify.commands:
-            done = await sandbox.run(name, ["."])
-            results.append(CheckResult(name, _passed(name, done), done.render()))
-        changed = await ctx.worktree.changed_files(await ctx.worktree.base_tree(), command.tree)
+            argv = check_argv(name, tester)
+            done = await sandbox.execute([*sandbox.config.launcher, *argv], shown=" ".join(argv))
+            results.append(CheckResult(name, passed(name, done), done.render()))
+        base = await ctx.worktree.base_tree()
+        changed = outside(await ctx.worktree.changed_files(base, command.tree), tester)
         if changed:
             findings = await run_checks(sandbox, ctx.preferences(), changed)
             results.append(_preference_result(findings, len(changed)))
 
-        passed = all(r.passed for r in results)
+        ok = all(r.passed for r in results)
         failed = [r.name for r in results if not r.passed]
         heading = f"# Verification of tree {command.tree}: " + (
-            "passed" if passed else f"FAILED ({', '.join(failed)})"
+            "passed" if ok else f"FAILED ({', '.join(failed)})"
         )
         report = "\n".join([heading, "", *(r.render() for r in results)])
         digest = ctx.files.put(report)
@@ -91,11 +127,11 @@ class VerifyExecutor:
             {
                 "effect": effect.id,
                 "tree": command.tree,
-                "passed": passed,
+                "passed": ok,
                 "failed": failed,
                 "report": digest,
             },
         )
-        if passed:
+        if ok:
             return VerificationPassed(at=now, effect_id=effect.id, tree=command.tree)
         return VerificationFailed(at=now, effect_id=effect.id, tree=command.tree, report=digest)
