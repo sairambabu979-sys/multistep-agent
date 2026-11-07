@@ -14,6 +14,7 @@ classifiers = [
 dependencies = [
     "anthropic>=0.80",
     "pydantic>=2.11,<3",
+    "ruamel-yaml>=0.18",
     "typer>=0.16",
 ]
 
