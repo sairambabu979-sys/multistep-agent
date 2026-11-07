@@ -5,12 +5,12 @@ planner → coder ∥ blind tester → deterministic verification → reviewer �
 negotiation with executable arbitration → finalize, all shaped by a layered
 preferences skill.
 
-**Status:** M0 (skeleton), M1 (the state machine), M2 (journal and interpreter) and M4
-(tools, capabilities and the local sandbox) are done. M3 (the LLM gateway) is built and
-contract-tested offline; its live cassette awaits a recording with an API key. Real agents
-arrive in M6–M8; until then every effect runs against deterministic stub executors. The
-full design is in [`docs/PLAN.md`](docs/PLAN.md), decisions are in [`docs/adr/`](docs/adr/),
-and the generated state diagram is in [`docs/fsm.md`](docs/fsm.md).
+**Status:** M0 (skeleton), M1 (the state machine), M2 (journal and interpreter), M4
+(tools, capabilities and the local sandbox) and M5 (preferences) are done. M3 (the LLM
+gateway) is built and contract-tested offline; its live cassette awaits a recording with an
+API key. Real agents arrive in M6–M8; until then every effect runs against deterministic
+stub executors. The full design is in [`docs/PLAN.md`](docs/PLAN.md), decisions are in
+[`docs/adr/`](docs/adr/), and the generated state diagram is in [`docs/fsm.md`](docs/fsm.md).
 
 ## Try it
 
@@ -101,6 +101,30 @@ is what agents act through: `read_file`, `search`, `edit`, `create_file`, `run` 
 The local sandbox is for trusted repositories: it confines paths, but it is not a network
 or syscall boundary.
 
+**Preferences** (`src/msa/skills/preferences`, [ADR-010](docs/adr/010-preferences.md)) are
+your coding rules. Each one has a scope, an enforcement level (hard, soft, info or off) and,
+where a linter can enforce it, a check. They come in layers, lowest first:
+
+1. built-in defaults;
+2. your user layer, `~/.config/msa/preferences.yaml`;
+3. the repo layer, `.msa/preferences.yaml`;
+4. `--pref <id>=<level>` for a single run.
+
+Layers merge field by field, and a run fails at intake if two hard rules contradict each
+other where both apply.
+
+```bash
+uv run msa prefs list
+```
+
+```bash
+uv run msa prefs explain src/app.py:42
+```
+
+```bash
+uv run msa prefs check
+```
+
 ## How it's verified
 
 | Layer | What it shows |
@@ -115,6 +139,8 @@ or syscall boundary.
 | SDK adapter | A mock transport serving SSE streams pins paths, headers, error classes and mid-stream failures at the locked SDK version |
 | Path confinement | Fuzzed hostile paths agree with a reference resolver and never read, write or change anything they must not. Every known escape is always tried. Each property was shown to fail with its defence removed. |
 | Symlink race | About 100k atomic directory/symlink swaps per run while tools work through them. Several hundred calls per run hit the race window, and all are refused. |
+| Preference merge laws | Associativity, identity, idempotence and right bias of the layer merge (Hypothesis) |
+| Conflict soundness | Scope overlap never misses a path both scopes apply to. The test fails when the overlap rule is weakened. |
 | Contracts | Core purity (AST allowlist), schema completeness, `docs/fsm.md` freshness, layering (`import-linter`), only `msa.llm` imports the SDK, no credential in any cassette |
 
 ## Develop

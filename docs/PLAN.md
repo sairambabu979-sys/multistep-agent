@@ -298,15 +298,15 @@ The layers, from lowest to highest precedence:
 
 `built-in defaults < user global (~/.config/msa/preferences.yaml) < repo (.msa/preferences.yaml) < run overrides (--pref)`
 
-- The merge is a right-biased map union keyed by `id`. It is associative and has an identity, and both laws are property-tested.
-- **Conflict detection at load time.** If two `hard` preferences with overlapping scopes contradict each other (declared through `conflicts_with`), the run fails in `INTAKE` with a precise error.
+- The merge is a right-biased map union keyed by `id`, then by field: a layer entry may set only the fields it changes, such as `--pref <id>=off`. It is associative, has an identity and is idempotent, and all three laws are property-tested (ADR-010). `enforcement: off` switches an inherited preference off without breaking the laws.
+- **Conflict detection at load time.** If two `hard` preferences with overlapping scopes contradict each other (declared through `conflicts_with`), the run fails in `INTAKE` with a precise error. Overlap is decided soundly: it may ask you to narrow a scope that doesn't truly overlap, but it never misses one that does.
 - **Scope selection** is by language and path glob, matched against the plan's `files_expected`. Selection happens once per run, so the rendered block stays byte-stable for caching.
 
 ### 5.4 Enforcement split
 
 | Preference has… | Enforced by | Cost |
 |---|---|---|
-| a `check` (ruff rule, regex, AST visitor, custom checker) | `VERIFYING`, deterministically | zero tokens |
+| a `check` (`ruff` rule, or a `regex` that must not occur; AST visitors and custom checkers later) | `VERIFYING`, deterministically (`msa prefs check` runs the same checks by hand) | zero tokens |
 | no `check` | Coder (as guidance) and Reviewer (as `kind: preference` findings) | LLM tokens |
 
 **Design rule:** if a linter can enforce a preference, no LLM is used for it. `msa prefs lint` warns when a `hard` preference has no `check` and could have one.
@@ -317,7 +317,7 @@ When a dispute is decided by a human ruling, or the same `style` finding is dism
 
 ### 5.6 CLI
 
-`msa prefs list | show <id> | add | explain <file:line> | lint | review | diff-layers`
+`msa prefs list | show <id> | add | explain <file[:line]> | lint | review | diff-layers | check [paths]`
 
 ---
 
@@ -441,8 +441,9 @@ multistep-agent/
 │   │   ├── planner.py coder.py tester.py reviewer.py arbiter.py
 │   │   ├── schemas.py             # Plan, Review, Finding, Ruling, TestTriage …
 │   │   └── prompts/               # versioned .md templates, hashed into the cassette key
-│   ├── skills/preferences/
-│   │   ├── SKILL.md  schema.py  store.py  resolve.py  checks.py  learn.py
+│   ├── globs.py                   # one glob language for capabilities and preference scopes
+│   ├── skills/preferences/        # ADR-010
+│   │   ├── SKILL.md  defaults.yaml  schema.py  resolve.py  render.py  store.py  lint.py
 │   ├── tools/                     # ADR-009: paths.py capabilities.py workspace.py sandbox.py audit.py
 │   ├── config.py                  # msa.toml: models, betas, prices, limits (PLAN §12)
 │   ├── llm/                       # ADR-008: the only package that imports the SDK
@@ -451,6 +452,7 @@ multistep-agent/
 │   ├── runtime/
 │   │   ├── interpreter.py         # effect executor (anyio TaskGroups for parallel regions)
 │   │   ├── journal.py  clock.py  codec.py  simulation.py
+│   │   ├── intake.py  checks.py  executors.py  # INTAKE, preference checks, routing
 │   ├── observability/             # logging.py tracing.py report.py
 │   └── cli.py                     # typer: run, resume, replay, inspect, prefs, fsm, eval
 ├── tests/
@@ -466,7 +468,7 @@ multistep-agent/
 
 **Import contract (enforced):**
 
-`core ← config ← skills | tools | observability ← llm ← agents ← runtime ← cli`
+`core ← globs ← config ← skills | tools | observability ← llm ← agents ← runtime ← cli`
 
 - `skills`, `tools` and `observability` depend only on `config` and `core`, never on each other.
 - Nothing imports `cli`.
@@ -545,7 +547,7 @@ Each milestone is a vertical slice that merges green. The sizes are relative [Gu
 | **M2** ✅ | **Journal + interpreter** with stub effects: resume, replay, inspect | Chaos test: 100 random kill points, all resume to an identical final state | M |
 | **M3** 🟡 | **LLM gateway:** streaming, structured outputs, retries, refusal fallback, budget ledger, FakeLLM, cassettes, append-only `Transcript` | Contract tests green ✅. One cassette recorded and replayed offline: the replay is wired, and the recording needs an API key (`msa llm ping --record`, tests/cassettes/README.md). | M |
 | **M4** ✅ | **Sandbox + tools + capabilities** | I-12 and I-13 green. Fuzzed path-confinement property test. | M |
-| **M5** | **Preferences skill:** schema, layered store, conflict detection, checkers, rendering, CLI | Merge-law properties. I-16 green. `msa prefs` commands work. | M |
+| **M5** ✅ | **Preferences skill:** schema, layered store, conflict detection, checkers, rendering, CLI | Merge-law properties. I-16 green. `msa prefs` commands work. | M |
 | **M6** | **Planner + Coder + VERIFYING:** first end-to-end slice | I-01 and I-02 green against a FakeLLM. One live run resolves a fixture task. | L |
 | **M7** | **Tester:** blind authoring, fail-before/pass-after, flakes, triage, weakened-test guard, parallel BUILDING | I-03, I-04, and I-15 green | L |
 | **M8** | **Reviewer + negotiation + arbitration** | I-05 to I-10 green. Negotiation invariants hold under property tests. | L |
