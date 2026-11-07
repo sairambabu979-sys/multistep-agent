@@ -19,6 +19,7 @@ from msa.config import (
     LimitsConfig,
     MsaConfig,
     Role,
+    SandboxConfig,
     json_schema,
     load_config,
 )
@@ -33,6 +34,7 @@ from msa.llm.cassette import CassetteClient, CassetteMiss
 from msa.llm.client import MessagesClient
 from msa.llm.gateway import InvocationError
 from msa.llm.ping import TOKEN, PingReport, ping
+from msa.runtime.checks import CheckError, CheckFinding, run_checks
 from msa.runtime.clock import LogicalClock, SystemClock
 from msa.runtime.interpreter import Interpreter, Observer
 from msa.runtime.journal import JournalError, SqliteJournal
@@ -42,14 +44,23 @@ from msa.runtime.simulation import (
     SimulationConfig,
     digest,
 )
+from msa.skills.preferences import Preference, PreferenceError, Resolved, Scope, store
+from msa.skills.preferences.lint import lint
+from msa.skills.preferences.resolve import Layer, resolve
+from msa.skills.preferences.schema import FIELDS, Examples, RegexCheck, RuffCheck
+from msa.tools.errors import ToolError
+from msa.tools.paths import Root
+from msa.tools.sandbox import LocalSandbox
 
 app = typer.Typer(no_args_is_help=True, add_completion=False, help="Multistep coding agent.")
 fsm_app = typer.Typer(no_args_is_help=True, help="Inspect the orchestrator state machine.")
 config_app = typer.Typer(no_args_is_help=True, help="Validate msa.toml and export its schema.")
 llm_app = typer.Typer(no_args_is_help=True, help="Check and record the model API connection.")
+prefs_app = typer.Typer(no_args_is_help=True, help="Inspect, check and change coding preferences.")
 app.add_typer(fsm_app, name="fsm")
 app.add_typer(config_app, name="config")
 app.add_typer(llm_app, name="llm")
+app.add_typer(prefs_app, name="prefs")
 
 Db = Annotated[
     Path | None,
@@ -236,6 +247,251 @@ def llm_ping(
             else f"expected token {TOKEN!r}"
         )
         raise _fail(problem)
+
+
+# ---------- preferences (PLAN §5)
+
+Repo = Annotated[
+    Path, typer.Option("--repo", help="Repository root.", file_okay=False, exists=True)
+]
+Pref = Annotated[
+    list[str] | None,
+    typer.Option("--pref", help="Run override, <id>=hard|soft|info|off (repeatable)."),
+]
+
+
+def _layers(repo: Path, pref: list[str] | None) -> list[Layer]:
+    try:
+        return store.load_layers(repo.resolve(), pref or ())
+    except PreferenceError as exc:
+        raise _fail(str(exc)) from exc
+
+
+def _resolved(repo: Path, pref: list[str] | None) -> Resolved:
+    try:
+        return resolve(_layers(repo, pref))
+    except PreferenceError as exc:
+        raise _fail(str(exc)) from exc
+
+
+def _check_label(p: Preference) -> str:
+    if isinstance(p.check, RuffCheck):
+        return f"ruff {p.check.rule}"
+    if isinstance(p.check, RegexCheck):
+        return "regex"
+    return "-"
+
+
+@prefs_app.command(name="list")
+def prefs_list(repo: Repo = Path("."), pref: Pref = None) -> None:
+    """Every preference after merging the layers, with where each came from."""
+    resolved = _resolved(repo, pref)
+    width = max((len(p.id) for p in resolved.preferences), default=10)
+    for p in resolved.preferences:
+        typer.echo(
+            f"{p.id:<{width}}  {p.enforcement:<5} {_check_label(p):<10} "
+            f"{p.scope.describe():<28} {resolved.origin(p.id)}"
+        )
+
+
+@prefs_app.command(name="show")
+def prefs_show(
+    preference_id: Annotated[str, typer.Argument(metavar="ID")],
+    repo: Repo = Path("."),
+    pref: Pref = None,
+) -> None:
+    """One preference in full, and the layer that set each of its fields."""
+    resolved = _resolved(repo, pref)
+    found = resolved.get(preference_id)
+    if found is None:
+        raise _fail(f"no preference {preference_id!r}; see msa prefs list")
+    data = found.model_dump(mode="json", exclude_defaults=True)
+    origins = resolved.provenance[preference_id]
+    typer.echo(preference_id)
+    for name in FIELDS:
+        if name in data:
+            typer.echo(f"  {name:<15}{data[name]!s:<60} [{origins.get(name, 'default')}]")
+
+
+@prefs_app.command(name="explain")
+def prefs_explain(
+    ctx: typer.Context,
+    target: Annotated[str, typer.Argument(metavar="PATH[:LINE]")],
+    repo: Repo = Path("."),
+    pref: Pref = None,
+) -> None:
+    """The preferences that apply to a file and, with a line, what its checks find there."""
+    path, _, line_text = target.partition(":")
+    line = int(line_text) if line_text.isdigit() else None
+    resolved = _resolved(repo, pref)
+    applicable = resolved.select([path])
+    if not applicable:
+        typer.echo(f"{path}: no preference applies")
+        return
+    typer.echo(f"{path}: {len(applicable)} preference(s) apply")
+    for p in applicable:
+        typer.echo(f"  {p.id} ({p.enforcement}, {p.scope.describe()}) from {resolved.origin(p.id)}")
+    if line is not None:
+        findings = [f for f in _run_checks(ctx, repo, resolved, [path]) if f.line == line]
+        typer.echo(f"line {line}: " + ("; ".join(f.render() for f in findings) or "no findings"))
+
+
+@prefs_app.command(name="add")
+def prefs_add(
+    preference_id: Annotated[str, typer.Argument(metavar="ID")],
+    rule: Annotated[str, typer.Option(help="The rule, in one or two sentences.")],
+    enforcement: Annotated[str, typer.Option(help="hard, soft or info.")] = "soft",
+    language: Annotated[str | None, typer.Option(help="Limit to one language.")] = None,
+    path: Annotated[
+        list[str] | None, typer.Option("--path", help="Path glob (repeatable).")
+    ] = None,
+    rationale: Annotated[str | None, typer.Option(help="Why the rule exists.")] = None,
+    ruff: Annotated[str | None, typer.Option(help="Enforce with this ruff rule code.")] = None,
+    regex: Annotated[str | None, typer.Option(help="Enforce: this pattern must not occur.")] = None,
+    good: Annotated[str | None, typer.Option(help="An example that follows the rule.")] = None,
+    bad: Annotated[str | None, typer.Option(help="An example that breaks it.")] = None,
+    user: Annotated[bool, typer.Option("--user", help="Add to your user layer.")] = False,
+    repo: Repo = Path("."),
+) -> None:
+    """Add a preference to the repo layer (or --user), keeping the file's comments.
+
+    Refused if it would leave the preferences unresolvable (a hard conflict, say)."""
+    if ruff is not None and regex is not None:
+        raise _fail("--ruff and --regex cannot be combined")
+    check: dict[str, str] | None = (
+        {"kind": "ruff", "rule": ruff}
+        if ruff
+        else {"kind": "regex", "pattern": regex}
+        if regex
+        else None
+    )
+    try:
+        preference = Preference.model_validate(
+            {
+                "id": preference_id,
+                "rule": rule,
+                "enforcement": enforcement,
+                "scope": Scope.model_validate({"language": language, "paths": path or []}),
+                "rationale": rationale,
+                "check": check,
+                "examples": Examples(good=good, bad=bad) if good or bad else None,
+            }
+        )
+    except ValidationError as exc:
+        raise _fail(f"{preference_id}: " + "; ".join(e["msg"] for e in exc.errors())) from exc
+    target = store.user_path() if user else repo.resolve() / store.REPO_FILE
+    try:
+        store.add(target, preference, others=_layers(repo, None), name="user" if user else "repo")
+    except PreferenceError as exc:
+        raise _fail(str(exc)) from exc
+    typer.echo(f"added {preference_id} to {target}")
+
+
+@prefs_app.command(name="lint")
+def prefs_lint(repo: Repo = Path("."), pref: Pref = None) -> None:
+    """Problems resolution lets through: unchecked hard rules, checks that miss their examples."""
+    findings = lint(_resolved(repo, pref))
+    for finding in findings:
+        typer.echo(finding.render())
+    errors = sum(f.level == "error" for f in findings)
+    typer.echo(f"{errors} error(s), {len(findings) - errors} warning(s)")
+    if errors:
+        raise typer.Exit(code=1)
+
+
+@prefs_app.command(name="review")
+def prefs_review(
+    approve: Annotated[
+        str | None, typer.Option(help="Apply this proposal to the repo layer.")
+    ] = None,
+    reject: Annotated[str | None, typer.Option(help="Discard this proposal.")] = None,
+    repo: Repo = Path("."),
+) -> None:
+    """Learned preferences wait in .msa/proposals/ until a human approves them (PLAN §5.5)."""
+    root = repo.resolve()
+    try:
+        pending = {p.preference.id: p for p in store.proposals(root)}
+    except PreferenceError as exc:
+        raise _fail(str(exc)) from exc
+    chosen = approve or reject
+    if chosen is None:
+        if not pending:
+            typer.echo("no proposals")
+        for p in pending.values():
+            typer.echo(f"{p.preference.id} ({p.preference.enforcement}): {p.preference.rule}")
+            typer.echo(f"  why proposed: {p.reason}")
+        return
+    if approve and reject:
+        raise _fail("--approve and --reject cannot be combined")
+    if chosen not in pending:
+        raise _fail(f"no proposal {chosen!r}; run msa prefs review to list them")
+    if reject:
+        store.reject(pending[chosen])
+        typer.echo(f"rejected {chosen}")
+        return
+    try:
+        store.approve(root, pending[chosen], others=_layers(repo, None))
+    except PreferenceError as exc:
+        raise _fail(str(exc)) from exc
+    typer.echo(f"approved {chosen} into {root / store.REPO_FILE}")
+
+
+@prefs_app.command(name="diff-layers")
+def prefs_diff_layers(repo: Repo = Path("."), pref: Pref = None) -> None:
+    """Which layer sets which field of each preference; later layers win."""
+    layers = _layers(repo, pref)
+    resolved = _resolved(repo, pref)
+    for p in resolved.preferences:
+        typer.echo(p.id)
+        for layer in layers:
+            fields = layer.patches.get(p.id)
+            if fields:
+                shown = ", ".join(f"{k}={v}" for k, v in sorted(fields.items()) if k != "id")
+                typer.echo(f"  {layer.name:<9}{shown}")
+
+
+@prefs_app.command(name="check")
+def prefs_check(
+    ctx: typer.Context,
+    paths: Annotated[list[str] | None, typer.Argument(help="Files to check; default: all.")] = None,
+    repo: Repo = Path("."),
+    pref: Pref = None,
+) -> None:
+    """Run the machine checks (ruff rules, patterns) of the preferences that apply."""
+    resolved = _resolved(repo, pref)
+    files = paths or _all_files(ctx, repo)
+    findings = _run_checks(ctx, repo, resolved, files)
+    for finding in findings:
+        typer.echo(finding.render())
+    hard = sum(f.enforcement == "hard" for f in findings)
+    typer.echo(f"{len(findings)} finding(s), {hard} hard, in {len(files)} file(s)")
+    if hard:
+        raise typer.Exit(code=1)
+
+
+def _sandbox(ctx: typer.Context, repo: Path) -> LocalSandbox:
+    settings = _settings(ctx)
+    config = settings.sandbox if settings else SandboxConfig()
+    return LocalSandbox(Root.at(repo), config, role="cli")
+
+
+def _run_checks(
+    ctx: typer.Context, repo: Path, resolved: Resolved, files: list[str]
+) -> list[CheckFinding]:
+    try:
+        return asyncio.run(run_checks(_sandbox(ctx, repo), resolved, files))
+    except (CheckError, ToolError) as exc:
+        raise _fail(str(exc)) from exc
+
+
+def _all_files(ctx: typer.Context, repo: Path) -> list[str]:
+    try:
+        done = asyncio.run(
+            _sandbox(ctx, repo).execute(["rg", "--files", "--sort=path"], shown="rg", merge=False)
+        )
+    except ToolError as exc:
+        raise _fail(str(exc)) from exc
+    return done.stdout.splitlines()
 
 
 # ---------- version and state machine
