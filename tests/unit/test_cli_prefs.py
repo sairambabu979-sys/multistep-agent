@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import shutil
 import sys
+from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 import pytest
 from typer.testing import CliRunner, Result
 
 from msa import cli
 from msa.skills.preferences import store
+from msa.tools.sandbox import Completed, LocalSandbox
 
 runner = CliRunner()
 ROOT = Path(__file__).resolve().parents[2]
@@ -263,6 +266,41 @@ def test_check_without_ripgrep_says_so(
     result = msa("--config", settings, "prefs", "check", "--repo", str(repo))
     assert result.exit_code == 1
     assert "rg is not installed" in result.output
+
+
+@pytest.mark.parametrize(
+    ("completed", "message"),
+    [
+        (Completed("rg", 2, 0.0, "src/todo.py\n", "enumeration failed", 0), "enumeration failed"),
+        (Completed("rg", 1, 0.0, "", "", 0), "rg --files failed"),
+        (Completed("rg", None, 1.0, "src/todo.py\n", "", 0), "timed out"),
+        (Completed("rg", 0, 0.0, "src/todo.py\n", "", 100), "output was elided"),
+    ],
+)
+def test_incomplete_file_enumeration_is_a_cli_error(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, completed: Completed, message: str
+) -> None:
+    async def execute(self: LocalSandbox, argv: Sequence[str], **kwargs: Any) -> Completed:
+        assert argv == ["rg", "--files", "--sort=path"]
+        return completed
+
+    monkeypatch.setattr(LocalSandbox, "execute", execute)
+    result = msa("prefs", "check", "--repo", str(repo))
+    assert result.exit_code == 1
+    assert message in result.output
+    assert "finding(s)" not in result.output
+
+
+def test_empty_successful_file_enumeration_is_allowed(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def execute(self: LocalSandbox, argv: Sequence[str], **kwargs: Any) -> Completed:
+        return Completed("rg", 0, 0.0, "", "", 0)
+
+    monkeypatch.setattr(LocalSandbox, "execute", execute)
+    result = msa("prefs", "check", "--repo", str(repo))
+    assert result.exit_code == 0, result.output
+    assert "0 finding(s), 0 hard, in 0 file(s)" in result.output
 
 
 def test_a_broken_layer_file_is_reported_by_every_command(repo: Path) -> None:

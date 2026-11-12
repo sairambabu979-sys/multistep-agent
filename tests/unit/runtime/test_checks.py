@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
 import sys
 from collections.abc import Sequence
@@ -109,3 +110,135 @@ def test_a_ruff_report_that_is_not_a_list_is_a_check_error(repo: Path) -> None:
     printer = (sys.executable, "-c", "print('{}')")  # the args after it are ignored
     with pytest.raises(CheckError, match="ruff did not produce a report"):
         check(repo, resolve([store.builtin_layer()]), ["src/app.py"], launcher=printer)
+
+
+class ReportSandbox(LocalSandbox):
+    def __init__(self, repo: Path, completed: Completed) -> None:
+        super().__init__(Root.at(repo), sandbox_config())
+        self.completed = completed
+
+    async def execute(self, argv: Sequence[str], **kwargs: Any) -> Completed:
+        return self.completed
+
+
+def report(repo: Path, kind: str, completed: Completed) -> list[CheckFinding]:
+    config = (
+        {"kind": "ruff", "rule": "T201"} if kind == "ruff" else {"kind": "regex", "pattern": "TODO"}
+    )
+    layer = Layer.from_document(
+        "repo",
+        "report.yaml",
+        {
+            "version": 1,
+            "preferences": [
+                {
+                    "id": "test.report",
+                    "rule": "No debug output.",
+                    "enforcement": "hard",
+                    "check": config,
+                }
+            ],
+        },
+    )
+    return asyncio.run(run_checks(ReportSandbox(repo, completed), resolve([layer]), ["src/app.py"]))
+
+
+@pytest.mark.parametrize("tool", ["ruff", "rg"])
+def test_elision_is_rejected_even_when_the_remaining_report_is_valid_json(
+    repo: Path, tool: str
+) -> None:
+    stdout = "[]" if tool == "ruff" else '{"type":"summary","data":{}}'
+    with pytest.raises(CheckError, match=f"{tool} report is incomplete: output was elided"):
+        report(repo, tool, Completed(tool, 0, 0.0, stdout, "", 100))
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    [
+        "",
+        "[",
+        "{}",
+        "null",
+        "[null]",
+        "[{}]",
+        '[{"filename":42}]',
+        '[{"filename":"src/app.py","code":"T201","message":"print","location":{"row":[]}}]',
+    ],
+)
+def test_malformed_ruff_reports_raise_check_errors(repo: Path, stdout: str) -> None:
+    with pytest.raises(CheckError, match="ruff did not produce a report"):
+        report(repo, "ruff", Completed("ruff", 0, 0.0, stdout, "", 0))
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    [
+        "",
+        "{",
+        "[]",
+        "null",
+        "{}",
+        '{"type":"match","data":{}}',
+        '{"type":"unknown","data":{}}',
+        '{"type":"begin","data":{}}',
+        '{"type":"summary","data":{}}\n{"type":"end","data":{}}',
+    ],
+)
+def test_malformed_or_truncated_rg_reports_raise_check_errors(repo: Path, stdout: str) -> None:
+    with pytest.raises(CheckError, match="rg did not produce a complete, valid JSON report"):
+        report(repo, "rg", Completed("rg", 0, 0.0, stdout, "", 0))
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"path": {}, "lines": {"text": "TODO"}, "line_number": 1},
+        {"path": {"text": "src/app.py"}, "lines": {}, "line_number": 1},
+        {"path": {"text": "src/app.py"}, "lines": {"text": "TODO"}, "line_number": []},
+    ],
+)
+def test_malformed_rg_matches_raise_check_errors(repo: Path, data: dict[str, Any]) -> None:
+    stdout = json.dumps({"type": "match", "data": data}) + '\n{"type":"summary","data":{}}'
+    with pytest.raises(CheckError, match="rg did not produce a complete, valid JSON report"):
+        report(repo, "rg", Completed("rg", 0, 0.0, stdout, "", 0))
+
+
+def test_rg_bytes_reports_remain_supported(repo: Path) -> None:
+    stdout = (
+        json.dumps(
+            {
+                "type": "match",
+                "data": {
+                    "path": {"bytes": "bm9uLXV0Zjg="},
+                    "lines": {"text": "TODO"},
+                    "line_number": 1,
+                },
+            }
+        )
+        + '\n{"type":"summary","data":{}}'
+    )
+    assert report(repo, "rg", Completed("rg", 0, 0.0, stdout, "", 0)) == []
+
+
+@pytest.mark.parametrize("tool", ["ruff", "rg"])
+def test_complete_empty_reports_have_no_findings(repo: Path, tool: str) -> None:
+    stdout = "[]" if tool == "ruff" else '{"type":"summary","data":{}}'
+    assert report(repo, tool, Completed(tool, 1, 0.0, stdout, "", 0)) == []
+
+
+@pytest.mark.parametrize("tool", ["ruff", "rg"])
+def test_timed_out_reports_fail_closed(repo: Path, tool: str) -> None:
+    with pytest.raises(CheckError, match=f"(?s){tool} failed: .*timed out"):
+        report(repo, tool, Completed(tool, None, 1.0, "", "", 0))
+
+
+@pytest.mark.parametrize(
+    ("tool", "path", "content"),
+    [("ruff", "src/app.py", 'print("debug")\n'), ("rg", "notes.md", "<<<<<<< HEAD\n")],
+)
+def test_real_capped_reports_raise_check_errors(
+    repo: Path, tool: str, path: str, content: str
+) -> None:
+    (repo / path).write_text(content * 100)
+    with pytest.raises(CheckError, match=f"{tool} report is incomplete: output was elided"):
+        check(repo, resolve([store.builtin_layer()]), [path], output_limit_bytes=1000)
