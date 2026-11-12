@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import random
+import re
+import subprocess
 from typing import Any
 
 import pytest
@@ -322,6 +324,53 @@ def test_patterns_ripgrep_cannot_run_are_refused_at_load(pattern: str, refused: 
         ):
             Layer.from_document("repo", "repo.yaml", data)
     else:
+        Layer.from_document("repo", "repo.yaml", data)
+
+
+@pytest.mark.parametrize(
+    ("pattern", "accepted"),
+    [
+        (r"(a)?(?(1)b|c)", False),
+        (r"(?a)word", False),
+        (r"(?#comment)word", False),
+        (r"(?P<word>TODO|FIXME)\b", True),
+        (r"^$", True),
+    ],
+)
+def test_python_patterns_are_also_validated_by_ripgrep(pattern: str, accepted: bool) -> None:
+    re.compile(pattern)
+    data = {
+        "version": 1,
+        "preferences": [{"id": "a.b", "check": {"kind": "regex", "pattern": pattern}}],
+    }
+    if accepted:
+        Layer.from_document("repo", "repo.yaml", data)
+    else:
+        with pytest.raises(PreferenceError, match="not a valid ripgrep regular expression"):
+            Layer.from_document("repo", "repo.yaml", data)
+
+
+@pytest.mark.parametrize(
+    ("failure", "message"),
+    [
+        (FileNotFoundError(), "rg is not installed"),
+        (subprocess.TimeoutExpired("rg", 5), "ripgrep regex validation timed out"),
+    ],
+)
+def test_regex_validation_fails_closed_when_the_engine_cannot_run(
+    monkeypatch: pytest.MonkeyPatch, failure: Exception, message: str
+) -> None:
+    def fail(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise failure
+
+    monkeypatch.setattr(subprocess, "run", fail)
+    data = {
+        "version": 1,
+        "preferences": [
+            {"id": "a.b", "check": {"kind": "regex", "pattern": "uncached-validation"}}
+        ],
+    }
+    with pytest.raises(PreferenceError, match=message):
         Layer.from_document("repo", "repo.yaml", data)
 
 
