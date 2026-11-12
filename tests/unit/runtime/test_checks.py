@@ -79,6 +79,49 @@ def test_switched_off_and_unchecked_preferences_run_nothing(repo: Path) -> None:
     assert check(repo, resolve([store.builtin_layer()]), []) == []
 
 
+@pytest.mark.parametrize("selector", ["E722", "E7"])
+def test_ruff_exact_and_prefix_selectors_attribute_findings(repo: Path, selector: str) -> None:
+    resolved = resolve(
+        [
+            Layer(
+                "repo",
+                "repo",
+                {
+                    "team.errors": {
+                        "rule": "No bare except.",
+                        "enforcement": "hard",
+                        "check": {"kind": "ruff", "rule": selector},
+                    }
+                },
+            )
+        ]
+    )
+    found = check(repo, resolved, ["src/app.py"])
+    assert [(f.preference, f.line, f.enforcement) for f in found] == [("team.errors", 4, "hard")]
+    assert found[0].message.startswith("E722 ")
+    assert check(repo, resolved, ["scripts/tool.py"]) == []
+
+
+def test_an_unknown_ruff_selector_fails_closed(repo: Path) -> None:
+    resolved = resolve(
+        [
+            Layer(
+                "repo",
+                "repo",
+                {
+                    "team.errors": {
+                        "rule": "No bare except.",
+                        "enforcement": "hard",
+                        "check": {"kind": "ruff", "rule": "ZZ999"},
+                    }
+                },
+            )
+        ]
+    )
+    with pytest.raises(CheckError, match="ruff failed"):
+        check(repo, resolved, ["src/app.py"])
+
+
 def test_a_checker_that_does_not_run_fails_closed(repo: Path) -> None:
     """A launcher that exits 1 with no report must not read as 'no violations'."""
     with pytest.raises(CheckError, match="ruff did not produce a report"):

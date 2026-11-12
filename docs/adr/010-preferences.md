@@ -43,6 +43,8 @@ left open.
    - A `ruff` check runs `ruff check --isolated --select <codes>`. `--isolated` stops the
      project's ruff config from quietly disabling the owner's rule; an inline `# noqa` is
      still honoured, because it is deliberate and visible.
+     Numeric rule prefixes (such as `E7`) select and attribute all matching codes,
+     just as Ruff's `--select` does; unknown selectors fail the check.
    - A `regex` check runs through ripgrep, so a pattern cannot hang the run. Patterns
      that ripgrep's engine cannot run (lookaround, backreferences) are refused when the
      preferences load, not when a check runs.
