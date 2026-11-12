@@ -1,0 +1,40 @@
+name: record cassettes
+
+# Records tests/cassettes/live/ against the real API with the repository secret
+# ANTHROPIC_API_KEY, replays the result offline, and uploads it as an artifact to review
+# and commit. Manual only: it spends (well under a cent per ping).
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install (locked)
+        run: uv sync --locked
+
+      - name: Record the ping
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: uv run msa llm ping --record tests/cassettes/live/ping.json
+
+      - name: Replay it offline
+        run: |
+          uv run msa llm ping --replay tests/cassettes/live/ping.json
+          uv run pytest tests/contract/test_live_cassettes.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: live-cassettes
+          path: tests/cassettes/live/*.json
+          if-no-files-found: error

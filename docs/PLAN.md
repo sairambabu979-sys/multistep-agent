@@ -1,6 +1,6 @@
 # Multistep Agent: Engineering Plan
 
-> Status: **Draft for review** · Owner: sairambabu979-sys · Last updated: 2026-11-02
+> Status: **M0, M1 and M2 complete** · Owner: sairambabu979-sys · Last updated: 2026-11-03
 >
 > This document is the build contract. Every milestone below has exit criteria a CI job can check.
 > If a section here and the code disagree later, one of them is a bug.
@@ -153,10 +153,13 @@ def transition(state: RunState, event: Event) -> Step:
 2. **Finalization gate.** `FINALIZING` is reachable only if, for the *current* `head_tree`: verify passed, tests passed, fail-before/pass-after held, and there are zero open `blocker` or `major` findings.
 3. **Bounded work.** `revisions ≤ max_revisions`, `negotiation_round ≤ max_rounds`, and `replans ≤ 2`.
 4. **Negotiation progress.** In every round, the count of open findings strictly decreases, or the round emits `Deadlocked`. The system never loops silently.
-5. **Budget safety.** `ledger.spent ≤ budget.limit` after every step. The check runs *before* each LLM effect is issued, not after.
+5. **Budget safety.** For every live run, `spent + reserved ≤ limit`. Each spending effect is issued with a *reservation*: a slice of the remaining budget it must not exceed. Concurrent effects get disjoint slices, so parallel regions cannot overspend together. Reported overspend is recorded truthfully and ends the run.
 6. **Replay determinism.** `fold(transition, journal.events) == live_state` for every run in the test corpus.
-7. **Liveness (static).** In the transition graph, every non-terminal phase can reach a terminal phase. This is checked by graph search over the table, not by sampling.
+7. **Liveness.** Statically, every live phase can reach `DONE` through rules alone (global escapes don't count). Exhaustively, every *reachable state* can still reach `DONE` (EF DONE), checked by model checking at the default limits. This check found a real bug in M1: at the revision cap, a run that had already accepted a change kept negotiating, and paged a human, toward an outcome that was already decided. It now fails fast.
 8. **No dead entries.** Every phase is reachable from `INTAKE`.
+9. **Never stuck.** A live run always has at least one pending effect, so it can never wait on nothing.
+
+All state-level invariants run on **every transition in production**, not only in tests. A violation raises `InvariantViolation` at the step that caused it.
 
 ---
 
@@ -186,23 +189,23 @@ Because ownership splits the paths, the two BUILDING regions run in **separate g
 - **Model:** `claude-opus-5-5` for every role in v1. Only `output_config.effort` varies by role. We stay on one model because caches are model-scoped and a multi-model cascade gives up cache reuse. We move off a single model only if the evals show a cheaper model holds quality on a specific role.
 - **Thinking:** adaptive. It cannot be disabled on Opus 5.5, and that is fine.
 - **Structured final answer:** `output_config.format` (JSON schema generated from the Pydantic model) together with `strict: true` tools. We never use forced `tool_choice`: `any` and `tool` return a 400 on this model.
-- **Transcripts are append-only, enforced by type.** The `Transcript` type has `append()` and nothing else. Mid-run instructions, such as a preference added during the run, go in as appended `role: "system"` messages. The top-level `system` prompt and the tool list are frozen for the life of the invocation. This keeps the prompt cache warm and satisfies the API's history-editing check on thinking blocks. A CI contract test sends replayed transcripts with `thinking.block_binding.prefix_mismatch_behavior: "error"` under beta `thinking-binding-controls-2026-08-01`, so any accidental history edit fails loudly.
+- **Transcripts are append-only, enforced by type.** The `Transcript` type has `append()` and nothing else. Mid-run instructions, such as a preference added during the run, go in as appended `role: "system"` messages. The top-level `system` prompt and the tool list are frozen for the life of the invocation. This keeps the prompt cache warm and satisfies the API's history-editing check on thinking blocks. Every request sends `thinking.block_binding.prefix_mismatch_behavior: "error"` under beta `thinking-binding-controls-2026-08-01`, so any accidental history edit fails loudly, and the recorded `msa llm ping` cassette proves it against the real API (ADR-008).
 - **Prompt caching:** tools are serialized sorted by name, the system prompt is byte-stable, and preferences are rendered in a deterministic order. Every live run records `cache_read_input_tokens`, and the eval report flags a hit rate below the threshold.
 - **Streaming:** always `messages.stream(...)` + `get_final_message()`, with `max_tokens` set to 64k.
 - **Stop reasons are handled exhaustively:** `end_turn`, `tool_use`, `max_tokens`, `pause_turn`, and `refusal`. On `refusal` the request uses server-side `fallbacks: "default"` (beta `server-side-fallback-2026-07-01`). If the whole chain refuses, the gateway emits `AgentRefused(category)`, which leads to `FAILED` with a clear report.
 - **Task budgets:** each invocation passes `output_config.task_budget` (beta `task-budgets-2026-03-13`) so the model paces itself. The harness ledger enforces the hard limit separately.
-- **Errors:** the handler catches a chain, most specific first: rate limit → retry with backoff; 5xx/connection → retry; 4xx → non-retryable `AgentFailed`. Retries happen inside one effect and do not cause state transitions.
+- **Errors:** errors are classified most specific first. Before a response starts, the SDK retries rate limits, 5xx and connection errors, with backoff and `retry-after`. After the stream starts, the gateway retries what the SDK cannot: mid-stream `error` events, transport failures while reading the body, and cut-off streams. Everything else, including 4xx, is a non-retryable `AgentFailed`. Retries happen inside one effect and do not cause state transitions (ADR-008).
 
 ### 3.2 Tool surface
 
 | Tool | Notes |
 |---|---|
-| `read_file(path, range?)` | Returns content plus a `content_hash`. Paths are resolved and confined to the worktree root, and symlink escapes are rejected. |
-| `search(pattern, glob?)` | Uses ripgrep. Read-only, so it is safe to run in parallel. |
-| `edit(path, old, new, expected_hash)` | **Staleness check:** rejected if the file changed since it was read. The capability check runs first. |
-| `create_file(path, content)` | Capability-checked. |
-| `run(cmd_id, args)` | `cmd_id` comes from an **allowlist** (`pytest`, `ruff`, `mypy`, …) with argument schemas. The tool never accepts a raw shell string. It runs with a timeout, an output cap, a scrubbed environment, and no network by default. |
-| `git_diff(base?)` | Read-only. |
+| `read_file(path, start_line?, end_line?)` | Returns numbered lines plus the whole file's `content_hash`. Paths are resolved once, confined to the worktree, then opened component by component without following symlinks, so a symlink swapped in mid-call is refused (ADR-009). |
+| `search(pattern, glob?)` | ripgrep: linear-time regexes, `.gitignore`-aware, never follows symlinks, results sorted so replays stay byte-identical. Read-only, so it runs in parallel. |
+| `edit(path, old, new, expected_hash)` | **Staleness check:** rejected if the file changed since it was read. The capability check runs first, on the *resolved* path. Atomic: temp file, fsync, rename. |
+| `create_file(path, content)` | Capability-checked on the resolved path. Atomic, and never replaces an existing file. |
+| `run(command, paths, keyword?)` | `command` comes from an **allowlist** (`pytest`, `ruff_check`, `ruff_format_check`, `mypy`) with typed arguments. The tool never accepts a raw shell string. It runs with a timeout, an output cap, rlimits, a scrubbed environment, and network steered to a dead proxy. |
+| `git_diff(base?)` | Read-only. Repository config cannot run programs: fsmonitor, hooks, external diff and textconv are off. |
 
 Read-only calls run concurrently. Writes run serially. All `tool_result`s for one turn go back in a single user message.
 
@@ -295,15 +298,15 @@ The layers, from lowest to highest precedence:
 
 `built-in defaults < user global (~/.config/msa/preferences.yaml) < repo (.msa/preferences.yaml) < run overrides (--pref)`
 
-- The merge is a right-biased map union keyed by `id`. It is associative and has an identity, and both laws are property-tested.
-- **Conflict detection at load time.** If two `hard` preferences with overlapping scopes contradict each other (declared through `conflicts_with`), the run fails in `INTAKE` with a precise error.
+- The merge is a right-biased map union keyed by `id`, then by field: a layer entry may set only the fields it changes, such as `--pref <id>=off`. It is associative, has an identity and is idempotent, and all three laws are property-tested (ADR-010). `enforcement: off` switches an inherited preference off without breaking the laws.
+- **Conflict detection at load time.** If two `hard` preferences with overlapping scopes contradict each other (declared through `conflicts_with`), the run fails in `INTAKE` with a precise error. Overlap is decided soundly: it may ask you to narrow a scope that doesn't truly overlap, but it never misses one that does.
 - **Scope selection** is by language and path glob, matched against the plan's `files_expected`. Selection happens once per run, so the rendered block stays byte-stable for caching.
 
 ### 5.4 Enforcement split
 
 | Preference has… | Enforced by | Cost |
 |---|---|---|
-| a `check` (ruff rule, regex, AST visitor, custom checker) | `VERIFYING`, deterministically | zero tokens |
+| a `check` (`ruff` rule, or a `regex` that must not occur; AST visitors and custom checkers later) | `VERIFYING`, deterministically (`msa prefs check` runs the same checks by hand) | zero tokens |
 | no `check` | Coder (as guidance) and Reviewer (as `kind: preference` findings) | LLM tokens |
 
 **Design rule:** if a linter can enforce a preference, no LLM is used for it. `msa prefs lint` warns when a `hard` preference has no `check` and could have one.
@@ -314,7 +317,7 @@ When a dispute is decided by a human ruling, or the same `style` finding is dism
 
 ### 5.6 CLI
 
-`msa prefs list | show <id> | add | explain <file:line> | lint | review | diff-layers`
+`msa prefs list | show <id> | add | explain <file[:line]> | lint | review | diff-layers | check [paths]`
 
 ---
 
@@ -335,11 +338,13 @@ When a dispute is decided by a human ruling, or the same `style` finding is dism
 | **Unit** | Tools, path confinement, preference merge, cost ledger, prompt rendering | pytest | every push |
 | **Property** | FSM invariants (§2.4), preference merge laws, edit/apply round-trips, journal encode/decode | Hypothesis | every push |
 | **Model-based** | `RuleBasedStateMachine` sends random legal and illegal event sequences to `transition` and checks every invariant after each step | Hypothesis stateful | every push |
+| **Model check** | BFS over *every* reachable state at the production default limits (about 81k states across 4 configurations). Checks: no stuck states, EF DONE, every declared edge exercised, every rule-driven outcome reachable. | `tests/support/explorer.py` | every push |
 | **Static FSM** | Reachability, liveness, global-event coverage, diagram up to date | graph checks over the table | every push |
 | **Contract** | Every output schema is strict-compatible, every prompt renders byte-stable, and transcripts are append-only (prefix-extension check) | pytest | every push |
 | **Integration** | The full pipeline on fixture repos with a **scripted FakeLLM** and a **real sandbox** (see the scenarios below) | pytest, subprocess | every push |
 | **Replay** | Recorded real-model runs (cassettes keyed by a canonical request hash) replay with no network | pytest | every push |
-| **Chaos** | `kill -9` the process at random effect boundaries, resume, and assert the final state equals an uninterrupted run | pytest, subprocess | nightly |
+| **Chaos** | A forked child `SIGKILL`s itself at a random boundary (effect started, transition computed but not durable, event durable) one to three times per run. Each run must resume to *exactly* the uninterrupted final state, and no journaled effect may execute again. | pytest, fork + SIGKILL | every push (25 trials), nightly (100) |
+| **Mutation** | Every mutant of `core/` must be killed by the fast suites (zero-survivor budget) | `mutmut`, `scripts/mutation_gate.py` | nightly, `make mutation` |
 | **Live eval** | The real model on the task corpus, with ablations (§11) | `msa eval` | nightly / manual, budget-capped |
 
 **Integration scenarios** (each is a named test with a fixture repo and a FakeLLM script):
@@ -367,13 +372,26 @@ When a dispute is decided by a human ruling, or the same `style` finding is dism
 
 ## 7. Durability: journal, resume, replay
 
-- **Storage:** SQLite in WAL mode at `.msa/runs.db`. Tables: `events(run_id, seq, type, v, payload_json, causation_seq, recorded_at)` and `snapshots(run_id, seq, state_json)`. A snapshot is taken every 50 events.
-- **Write discipline:** event first, then transition. An effect is issued only after its causing event is durable.
-- **Idempotency:** `effect_id = hash(run_id, causation_seq, effect_kind)`. LLM responses and tool results are stored as events, so on resume a completed effect is **replayed from the journal, not re-executed**. Its tokens are not paid for twice.
+- **Storage:** SQLite (WAL, `synchronous=FULL`) at `.msa/runs.db`. Tables:
+  - `runs`: id, environment (how to rebuild executors on resume), head seq, phase, outcome;
+  - `events(run_id, seq, kind, v, payload, recorded_at)`;
+  - `snapshots(run_id, seq, v, state)`, written every 50 events and at the end of every run.
+- **The commit point** is the event append, a compare-and-set on the run's head seq inside `BEGIN IMMEDIATE`. The transition is computed first (it is pure), then the event is appended, then new effects are launched. See [ADR-007](adr/007-commit-point-and-crash-semantics.md).
+- **Crash semantics:**
+  - An effect whose completion is journaled is **never executed again**, so its tokens are never paid for twice.
+  - An effect that was in flight at the crash runs again on resume (at-least-once). Executors get the deterministic effect id as an idempotency key.
+  - An interrupted process (crash or Ctrl-C) leaves the run live and resumable. `msa cancel` journals a terminal outcome, and a process still driving the run sees `JournalConflict` and adopts it.
+- **Time** is stamped by the interpreter at commit, so it is monotonic even when concurrent effects finish out of order. Simulations use a logical clock, which is what makes crash recovery reproducible bit for bit.
+- **Executor failures** (exception, malformed answer, answer the core rejects) become `AgentFailed` or `EffectFailed`. The run fails fast with a reason, never stalls.
+- **Schema evolution:** every event row carries `v`, and upcasters migrate old payloads on load. Snapshots of another state version are ignored and rebuilt from events. A journal from a newer `msa` is refused, not misread.
+- **Snapshots are caches:** `load` trusts the newest one, and `verify` re-folds all of history and audits every snapshot.
 - **Commands:**
-  - `msa resume <run>`: rebuild state from the latest snapshot plus the events after it, then continue.
-  - `msa replay <run>`: re-fold the events and diff against the recorded states.
-  - `msa inspect <run> --at <seq>`: time-travel view of the state at any event.
+  - `msa simulate`: a full run against deterministic stub executors.
+  - `msa runs`: list journaled runs.
+  - `msa resume <run>`: continue from snapshot plus tail.
+  - `msa inspect <run> [--at <seq>] [--json]`: time travel.
+  - `msa replay <run>`: re-fold the whole journal and verify every snapshot.
+  - `msa cancel <run>`: journal a terminal cancellation.
 
 ---
 
@@ -382,8 +400,8 @@ When a dispute is decided by a human ruling, or the same `style` finding is dism
 | Threat | Control |
 |---|---|
 | Destructive or unexpected commands | Command allowlist with typed arguments. No raw shell. Timeouts, an output cap, and `RLIMIT_*` limits. |
-| Filesystem escape | All paths are resolved against the worktree root. Symlink targets are checked. Writes outside the root are impossible. |
-| Network exfiltration | Network off by default. Per-command opt-in through the allowlist, e.g. `pip install` from a configured index only. |
+| Filesystem escape | Paths are resolved once and confined, then opened by descriptor without following symlinks, so the check and the use cannot be raced apart. Writes are atomic renames, which also break hard links. Fuzzed and race-tested (ADR-009). |
+| Network exfiltration | `ContainerSandbox` runs with `--network none`. `LocalSandbox` only steers HTTP clients to a dead proxy and sets package tools offline: that stops well-behaved clients, not a hostile one, so it is no boundary (ADR-009). |
 | Secrets in prompts | The environment is scrubbed before any subprocess runs. A secret scanner runs over outgoing prompt payloads in debug builds. |
 | Prompt injection from repo content | Capabilities are enforced by the harness (§3). Tool results are wrapped as data. The agent cannot change its own permissions, budget, or phase. |
 | Untrusted repos | The `SandboxPort` has two adapters: `LocalWorktreeSandbox` (default, trusted repos) and `ContainerSandbox` (Docker or Podman, required for untrusted repos). |
@@ -418,16 +436,23 @@ multistep-agent/
 │   │   ├── negotiation.py         # protocol rules as pure functions
 │   │   └── budget.py
 │   ├── agents/
+│   │   ├── toolset.py             # the tools of §3.2, bound to one role's workspace (M4)
 │   │   ├── runtime.py             # manual tool loop, append-only Transcript
 │   │   ├── planner.py coder.py tester.py reviewer.py arbiter.py
 │   │   ├── schemas.py             # Plan, Review, Finding, Ruling, TestTriage …
 │   │   └── prompts/               # versioned .md templates, hashed into the cassette key
-│   ├── skills/preferences/
-│   │   ├── SKILL.md  schema.py  store.py  resolve.py  checks.py  learn.py
-│   ├── tools/                     # fs.py search.py edit.py run.py git.py capabilities.py
+│   ├── globs.py                   # one glob language for capabilities and preference scopes
+│   ├── skills/preferences/        # ADR-010
+│   │   ├── SKILL.md  defaults.yaml  schema.py  resolve.py  render.py  store.py  lint.py
+│   ├── tools/                     # ADR-009: paths.py capabilities.py workspace.py sandbox.py audit.py
+│   ├── config.py                  # msa.toml: models, betas, prices, limits (PLAN §12)
+│   ├── llm/                       # ADR-008: the only package that imports the SDK
+│   │   ├── gateway.py  transcript.py  accounting.py  schema.py  store.py
+│   │   ├── client.py  anthropic_client.py  cassette.py  fake.py  ping.py
 │   ├── runtime/
 │   │   ├── interpreter.py         # effect executor (anyio TaskGroups for parallel regions)
-│   │   ├── journal.py  sandbox.py  gateway.py  cassette.py  fake_llm.py
+│   │   ├── journal.py  clock.py  codec.py  simulation.py
+│   │   ├── intake.py  checks.py  executors.py  # INTAKE, preference checks, routing
 │   ├── observability/             # logging.py tracing.py report.py
 │   └── cli.py                     # typer: run, resume, replay, inspect, prefs, fsm, eval
 ├── tests/
@@ -443,11 +468,11 @@ multistep-agent/
 
 **Import contract (enforced):**
 
-`core ← agents ← runtime ← cli`
+`core ← globs ← config ← skills | tools | observability ← llm ← agents ← runtime ← cli`
 
-- `skills` and `tools` depend only on `core`.
+- `skills`, `tools` and `observability` depend only on `config` and `core`, never on each other.
 - Nothing imports `cli`.
-- Only `runtime/gateway.py` imports `anthropic`.
+- Only `msa.llm` imports `anthropic` or `httpx2` (ADR-008). The gateway sits below `agents`, because agents call it.
 
 ---
 
@@ -484,7 +509,14 @@ Effort levels per role are tuned on this corpus too: sweep `low → xhigh` per r
 ## 12. Engineering standards
 
 - **Tooling:** Python 3.12+, `uv`, `ruff` (lint and format), `mypy --strict`, `pytest`, `hypothesis`, `anyio`, `pydantic` v2, `typer`, `structlog`, `import-linter`, `pre-commit`.
-- **Coverage:** branch coverage ≥ 95% on `core/`, ≥ 85% overall. Mutation testing (`mutmut`) on `core/` runs nightly, with a surviving-mutant budget.
+- **Coverage:** branch coverage ≥ 95% on `core/`, ≥ 85% overall (both are at 100%).
+- **Mutation testing** (`make mutation`, nightly):
+  - `mutmut` mutates `core/`. 1,070 mutants: 1,067 are killed and 3 are caught by timeout (they make a loop run forever).
+  - The surviving-mutant budget is **zero**, enforced by `scripts/mutation_gate.py`. A survivor means new behavior arrived without a test that would notice it breaking.
+  - The first run left 170 survivors. Closing them took:
+    - about 60 tests, pinning operator-facing messages, the deadline boundary, edge metadata, and one-sided invariant corruptions;
+    - one new invariant: build progress must match pending work;
+    - four simplifications: dead code, a boolean flag argument, a redundant condition, and an unused default.
 - **CI (`ci.yml`, every push):** lint → types → import contracts → unit → property → model-based → contract → integration → replay → FSM diagram freshness.
 - **Nightly (`nightly.yml`):** chaos, mutation, and live eval when the `ANTHROPIC_API_KEY` secret exists (manual dispatch otherwise).
 - **ADRs** in `docs/adr/`:
@@ -494,8 +526,13 @@ Effort levels per role are tuned on this corpus too: sweep `low → xhigh` per r
   - 004 executable arbitration
   - 005 single model with per-role effort
   - 006 path-ownership capabilities
-- **Conventional commits.** `CHANGELOG.md` is generated.
-- **Config:** a single `msa.toml` with a JSON Schema. Every model ID, beta flag, price, and limit lives here, so when the API changes we edit one file.
+- **Conventional commits:**
+  - `CHANGELOG.md` is generated by `git-cliff` (`make changelog`).
+  - Subjects are checked by `scripts/conventional_commits.py`, both in a `commit-msg` hook and in CI on pull requests, so no commit silently drops out of the changelog.
+- **Config:** a single `msa.toml`, validated in CI (`msa config check`), with a generated JSON Schema (`schemas/msa.schema.json`) for editor completion.
+  - Every model ID, beta flag, price, limit, and journal setting lives there, so when the API changes we edit one file.
+  - A contract test fails if a model ID appears anywhere in `src/`.
+  - Prices compute spend in integer micro-dollars, rounded up, so the ledger never under-reports.
 
 ---
 
@@ -505,12 +542,12 @@ Each milestone is a vertical slice that merges green. The sizes are relative [Gu
 
 | M | Deliverable | Exit criteria (CI-checkable) | Size |
 |---|---|---|---|
-| **M0** | Skeleton: pyproject, tooling, CI, import contracts, ADR-001..006, empty packages | CI green on an empty suite. Import-linter enforced. | S |
-| **M1** | **Pure FSM:** state, events, effects, transition table, invariants, diagram generator | All §2.4 invariants pass under Hypothesis (≥ 10k examples). Static liveness check passes. `docs/fsm.md` generated. | M |
-| **M2** | **Journal + interpreter** with stub effects: resume, replay, inspect | Chaos test: 100 random kill points, all resume to an identical final state | M |
-| **M3** | **LLM gateway:** streaming, structured outputs, retries, refusal fallback, budget ledger, FakeLLM, cassettes, append-only `Transcript` | Contract tests green. One cassette recorded and replayed offline. | M |
-| **M4** | **Sandbox + tools + capabilities** | I-12 and I-13 green. Fuzzed path-confinement property test. | M |
-| **M5** | **Preferences skill:** schema, layered store, conflict detection, checkers, rendering, CLI | Merge-law properties. I-16 green. `msa prefs` commands work. | M |
+| **M0** ✅ | Skeleton: pyproject, tooling, CI, import contracts, ADR-001..006, empty packages | CI green on an empty suite. Import-linter enforced. | S |
+| **M1** ✅ | **Pure FSM:** state, events, effects, transition table, invariants, diagram generator | All §2.4 invariants pass under Hypothesis (≥ 10k examples, nightly profile). Exhaustive model check at the default limits. Static liveness check passes. `docs/fsm.md` generated. 100% branch coverage on `core`. | M |
+| **M2** ✅ | **Journal + interpreter** with stub effects: resume, replay, inspect | Chaos test: 100 random kill points, all resume to an identical final state | M |
+| **M3** 🟡 | **LLM gateway:** streaming, structured outputs, retries, refusal fallback, budget ledger, FakeLLM, cassettes, append-only `Transcript` | Contract tests green ✅. One cassette recorded and replayed offline: the replay is wired, and the recording needs an API key (`msa llm ping --record`, tests/cassettes/README.md). | M |
+| **M4** ✅ | **Sandbox + tools + capabilities** | I-12 and I-13 green. Fuzzed path-confinement property test. | M |
+| **M5** ✅ | **Preferences skill:** schema, layered store, conflict detection, checkers, rendering, CLI | Merge-law properties. I-16 green. `msa prefs` commands work. | M |
 | **M6** | **Planner + Coder + VERIFYING:** first end-to-end slice | I-01 and I-02 green against a FakeLLM. One live run resolves a fixture task. | L |
 | **M7** | **Tester:** blind authoring, fail-before/pass-after, flakes, triage, weakened-test guard, parallel BUILDING | I-03, I-04, and I-15 green | L |
 | **M8** | **Reviewer + negotiation + arbitration** | I-05 to I-10 green. Negotiation invariants hold under property tests. | L |

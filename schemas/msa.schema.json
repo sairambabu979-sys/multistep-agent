@@ -1,0 +1,567 @@
+{
+  "$defs": {
+    "ApiConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "base_url": {
+          "pattern": "^https://[a-z0-9.-]+(:\\d+)?/?$",
+          "title": "Base Url",
+          "type": "string"
+        },
+        "betas": {
+          "$ref": "#/$defs/BetasConfig"
+        },
+        "fallbacks": {
+          "title": "Fallbacks",
+          "type": "string"
+        },
+        "max_retries": {
+          "default": 2,
+          "minimum": 0,
+          "title": "Max Retries",
+          "type": "integer"
+        },
+        "max_tokens": {
+          "exclusiveMinimum": 0,
+          "title": "Max Tokens",
+          "type": "integer"
+        },
+        "min_output_tokens": {
+          "default": 1024,
+          "exclusiveMinimum": 0,
+          "title": "Min Output Tokens",
+          "type": "integer"
+        },
+        "retry_backoff_seconds": {
+          "default": 2.0,
+          "exclusiveMinimum": 0,
+          "title": "Retry Backoff Seconds",
+          "type": "number"
+        },
+        "timeout_seconds": {
+          "default": 600.0,
+          "exclusiveMinimum": 0,
+          "title": "Timeout Seconds",
+          "type": "number"
+        }
+      },
+      "required": [
+        "base_url",
+        "max_tokens",
+        "fallbacks",
+        "betas"
+      ],
+      "title": "ApiConfig",
+      "type": "object"
+    },
+    "BetasConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "server_side_fallback": {
+          "pattern": "^[a-z0-9-]+-\\d{4}-\\d{2}-\\d{2}$",
+          "title": "Server Side Fallback",
+          "type": "string"
+        },
+        "task_budgets": {
+          "pattern": "^[a-z0-9-]+-\\d{4}-\\d{2}-\\d{2}$",
+          "title": "Task Budgets",
+          "type": "string"
+        },
+        "thinking_binding": {
+          "pattern": "^[a-z0-9-]+-\\d{4}-\\d{2}-\\d{2}$",
+          "title": "Thinking Binding",
+          "type": "string"
+        }
+      },
+      "required": [
+        "server_side_fallback",
+        "task_budgets",
+        "thinking_binding"
+      ],
+      "title": "BetasConfig",
+      "type": "object"
+    },
+    "CapabilitiesConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "protected": {
+          "default": [
+            ".git",
+            ".git/**",
+            ".msa",
+            ".msa/**"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "title": "Protected",
+          "type": "array"
+        },
+        "roles": {
+          "additionalProperties": {
+            "$ref": "#/$defs/RoleCapability"
+          },
+          "propertyNames": {
+            "$ref": "#/$defs/Role"
+          },
+          "title": "Roles",
+          "type": "object"
+        }
+      },
+      "title": "CapabilitiesConfig",
+      "type": "object"
+    },
+    "Effort": {
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "title": "Effort",
+      "type": "string"
+    },
+    "Escalation": {
+      "description": "Who rules on findings the negotiation could not settle.",
+      "enum": [
+        "human",
+        "arbiter"
+      ],
+      "title": "Escalation",
+      "type": "string"
+    },
+    "JournalConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "default": ".msa/runs.db",
+          "format": "path",
+          "title": "Path",
+          "type": "string"
+        },
+        "snapshot_every": {
+          "default": 50,
+          "exclusiveMinimum": 0,
+          "title": "Snapshot Every",
+          "type": "integer"
+        }
+      },
+      "title": "JournalConfig",
+      "type": "object"
+    },
+    "LimitsConfig": {
+      "additionalProperties": false,
+      "description": "Defaults for every run. The loop bounds default to the core's own defaults, which are\nthe limits the state machine is exhaustively model-checked at.",
+      "properties": {
+        "budget_usd": {
+          "default": 5.0,
+          "exclusiveMinimum": 0,
+          "title": "Budget Usd",
+          "type": "number"
+        },
+        "escalation": {
+          "$ref": "#/$defs/Escalation",
+          "default": "human"
+        },
+        "max_negotiation_rounds": {
+          "default": 3,
+          "exclusiveMinimum": 0,
+          "title": "Max Negotiation Rounds",
+          "type": "integer"
+        },
+        "max_replans": {
+          "default": 2,
+          "minimum": 0,
+          "title": "Max Replans",
+          "type": "integer"
+        },
+        "max_revisions": {
+          "default": 4,
+          "minimum": 0,
+          "title": "Max Revisions",
+          "type": "integer"
+        },
+        "plan_gate": {
+          "$ref": "#/$defs/PlanGate",
+          "default": "auto"
+        },
+        "wall_clock_minutes": {
+          "default": 45,
+          "exclusiveMinimum": 0,
+          "title": "Wall Clock Minutes",
+          "type": "integer"
+        }
+      },
+      "title": "LimitsConfig",
+      "type": "object"
+    },
+    "ModelsConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "default": {
+          "pattern": "^claude-[a-z]+(?:-\\d{1,2})+$",
+          "title": "Default",
+          "type": "string"
+        },
+        "roles": {
+          "additionalProperties": {
+            "$ref": "#/$defs/RoleConfig"
+          },
+          "propertyNames": {
+            "$ref": "#/$defs/Role"
+          },
+          "title": "Roles",
+          "type": "object"
+        }
+      },
+      "required": [
+        "default",
+        "roles"
+      ],
+      "title": "ModelsConfig",
+      "type": "object"
+    },
+    "PlanGate": {
+      "description": "Whether a produced plan needs a human's approval before building starts.",
+      "enum": [
+        "auto",
+        "human"
+      ],
+      "title": "PlanGate",
+      "type": "string"
+    },
+    "Pricing": {
+      "additionalProperties": false,
+      "description": "US dollars per million tokens, as published.",
+      "properties": {
+        "cache_read": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "title": "Cache Read"
+        },
+        "cache_write_1h": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "title": "Cache Write 1H"
+        },
+        "cache_write_5m": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "title": "Cache Write 5M"
+        },
+        "input": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "title": "Input"
+        },
+        "output": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "title": "Output"
+        }
+      },
+      "required": [
+        "input",
+        "output",
+        "cache_read",
+        "cache_write_5m",
+        "cache_write_1h"
+      ],
+      "title": "Pricing",
+      "type": "object"
+    },
+    "Role": {
+      "enum": [
+        "planner",
+        "coder",
+        "tester",
+        "reviewer",
+        "arbiter"
+      ],
+      "title": "Role",
+      "type": "string"
+    },
+    "RoleCapability": {
+      "additionalProperties": false,
+      "description": "What one role may write: paths matching ``write`` and not ``deny``.",
+      "properties": {
+        "deny": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Deny",
+          "type": "array"
+        },
+        "write": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Write",
+          "type": "array"
+        }
+      },
+      "required": [
+        "write"
+      ],
+      "title": "RoleCapability",
+      "type": "object"
+    },
+    "RoleConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "effort": {
+          "$ref": "#/$defs/Effort"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "pattern": "^claude-[a-z]+(?:-\\d{1,2})+$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model"
+        }
+      },
+      "required": [
+        "effort"
+      ],
+      "title": "RoleConfig",
+      "type": "object"
+    },
+    "SandboxConfig": {
+      "additionalProperties": false,
+      "description": "How commands run in the local worktree sandbox (PLAN \u00a78, ADR-009).",
+      "properties": {
+        "cpu_seconds": {
+          "default": 1800,
+          "exclusiveMinimum": 0,
+          "title": "Cpu Seconds",
+          "type": "integer"
+        },
+        "env_passthrough": {
+          "default": [
+            "PATH",
+            "HOME",
+            "LANG",
+            "LC_ALL",
+            "TMPDIR",
+            "TERM"
+          ],
+          "items": {
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+            "type": "string"
+          },
+          "title": "Env Passthrough",
+          "type": "array"
+        },
+        "launcher": {
+          "default": [
+            "uv",
+            "run",
+            "--frozen",
+            "python",
+            "-m"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Launcher",
+          "type": "array"
+        },
+        "max_file_bytes": {
+          "default": 1073741824,
+          "exclusiveMinimum": 0,
+          "title": "Max File Bytes",
+          "type": "integer"
+        },
+        "output_limit_bytes": {
+          "default": 65536,
+          "exclusiveMinimum": 0,
+          "title": "Output Limit Bytes",
+          "type": "integer"
+        },
+        "read_limit_bytes": {
+          "default": 2097152,
+          "exclusiveMinimum": 0,
+          "title": "Read Limit Bytes",
+          "type": "integer"
+        },
+        "search_limit_matches": {
+          "default": 200,
+          "exclusiveMinimum": 0,
+          "title": "Search Limit Matches",
+          "type": "integer"
+        },
+        "timeout_seconds": {
+          "default": 600.0,
+          "exclusiveMinimum": 0,
+          "title": "Timeout Seconds",
+          "type": "number"
+        },
+        "view_limit_chars": {
+          "default": 100000,
+          "exclusiveMinimum": 0,
+          "title": "View Limit Chars",
+          "type": "integer"
+        }
+      },
+      "title": "SandboxConfig",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "api": {
+      "$ref": "#/$defs/ApiConfig"
+    },
+    "capabilities": {
+      "$ref": "#/$defs/CapabilitiesConfig",
+      "default": {
+        "protected": [
+          ".git",
+          ".git/**",
+          ".msa",
+          ".msa/**"
+        ],
+        "roles": {
+          "arbiter": {
+            "deny": [],
+            "write": []
+          },
+          "coder": {
+            "deny": [
+              "tests/acceptance/**",
+              "tests/repro/**"
+            ],
+            "write": [
+              "**"
+            ]
+          },
+          "planner": {
+            "deny": [],
+            "write": []
+          },
+          "reviewer": {
+            "deny": [],
+            "write": []
+          },
+          "tester": {
+            "deny": [],
+            "write": [
+              "tests/acceptance/**",
+              "tests/repro/**"
+            ]
+          }
+        }
+      }
+    },
+    "journal": {
+      "$ref": "#/$defs/JournalConfig",
+      "default": {
+        "path": ".msa/runs.db",
+        "snapshot_every": 50
+      }
+    },
+    "limits": {
+      "$ref": "#/$defs/LimitsConfig",
+      "default": {
+        "budget_usd": 5.0,
+        "escalation": "human",
+        "max_negotiation_rounds": 3,
+        "max_replans": 2,
+        "max_revisions": 4,
+        "plan_gate": "auto",
+        "wall_clock_minutes": 45
+      }
+    },
+    "models": {
+      "$ref": "#/$defs/ModelsConfig"
+    },
+    "pricing": {
+      "patternProperties": {
+        "^claude-[a-z]+(?:-\\d{1,2})+$": {
+          "$ref": "#/$defs/Pricing"
+        }
+      },
+      "title": "Pricing",
+      "type": "object"
+    },
+    "sandbox": {
+      "$ref": "#/$defs/SandboxConfig",
+      "default": {
+        "cpu_seconds": 1800,
+        "env_passthrough": [
+          "PATH",
+          "HOME",
+          "LANG",
+          "LC_ALL",
+          "TMPDIR",
+          "TERM"
+        ],
+        "launcher": [
+          "uv",
+          "run",
+          "--frozen",
+          "python",
+          "-m"
+        ],
+        "max_file_bytes": 1073741824,
+        "output_limit_bytes": 65536,
+        "read_limit_bytes": 2097152,
+        "search_limit_matches": 200,
+        "timeout_seconds": 600.0,
+        "view_limit_chars": 100000
+      }
+    }
+  },
+  "required": [
+    "models",
+    "api",
+    "pricing"
+  ],
+  "title": "msa.toml",
+  "type": "object"
+}

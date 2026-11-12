@@ -1,0 +1,37 @@
+# Built-in preferences: the lowest layer. Every user, repo and --pref layer overrides these
+# by id, field by field; set `enforcement: off` in a higher layer to switch one off.
+version: 1
+preferences:
+  - id: general.no-merge-markers
+    rule: "Never commit unresolved merge-conflict markers."
+    rationale: "They break the file for every reader and tool, often silently in prose."
+    enforcement: hard
+    # Git labels its start, end and diff3 markers ("<<<<<<< HEAD"). A bare "=======" is
+    # left out: it is also a Markdown heading underline.
+    check: { kind: regex, pattern: "^(<{7}|>{7}|[|]{7}) " }
+    examples:
+      bad: "<<<<<<< HEAD"
+
+  - id: py.errors.no-bare-except
+    scope: { language: python }
+    rule: "Never use a bare `except:`; catch the narrowest exception type."
+    rationale: "A bare except swallows KeyboardInterrupt and SystemExit and hides bugs."
+    enforcement: hard
+    check: { kind: ruff, rule: E722 }
+    examples:
+      good: "except FileNotFoundError:"
+      bad: "except:"
+
+  - id: py.debug.no-breakpoints
+    scope: { language: python }
+    rule: "Leave no debugger calls (`breakpoint()`, `pdb.set_trace()`) in committed code."
+    rationale: "A stray breakpoint hangs tests and production processes."
+    enforcement: hard
+    check: { kind: ruff, rule: T100 }
+
+  - id: py.output.no-print
+    scope: { language: python, paths: ["src/**"] }
+    rule: "Use logging, or the CLI framework's output helpers, instead of print()."
+    rationale: "print() bypasses log levels and redirection, and is easy to leave behind."
+    enforcement: soft
+    check: { kind: ruff, rule: T201 }

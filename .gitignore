@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Environments
+.venv/
+
+# Tooling caches
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.hypothesis/
+.import_linter_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Mutation testing workspace
+mutants/
+
+# Runtime state (journals, reports) produced by `msa`
+.msa/runs/
+.msa/runs.db*
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store

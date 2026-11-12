@@ -1,0 +1,94 @@
+#:schema ./schemas/msa.schema.json
+#
+# The one place for model ids, beta flags, prices, and limits (PLAN §12).
+# When the API changes, edit this file and nothing else. Validate with: uv run msa config check
+
+[models]
+default = "claude-opus-5-5"
+
+# One model for every role; only effort varies (ADR-005). Opus 5.5 defaults to "medium",
+# so effort is always set explicitly. These are starting points; the M9 eval tunes them.
+[models.roles]
+planner = { effort = "high" }
+coder = { effort = "xhigh" }
+tester = { effort = "high" }
+reviewer = { effort = "high" }
+arbiter = { effort = "high" }
+
+[api]
+base_url = "https://api.anthropic.com"  # explicit, so ANTHROPIC_BASE_URL is never picked up
+max_tokens = 64000      # streamed, so large outputs do not hit HTTP timeouts
+min_output_tokens = 1024
+max_retries = 2         # SDK retries before a response starts; gateway retries mid-stream
+retry_backoff_seconds = 2.0  # the gateway's wait before a mid-stream retry, doubling
+timeout_seconds = 600
+fallbacks = "default"   # on a refusal, the server re-runs on a model chosen by category
+
+[api.betas]
+server_side_fallback = "server-side-fallback-2026-07-01"
+task_budgets = "task-budgets-2026-03-13"
+thinking_binding = "thinking-binding-controls-2026-08-01"
+
+# US dollars per million tokens. A served model missing here is priced at the highest rate
+# of each component (over-states spend, never under-states it).
+[pricing.claude-opus-5-5]
+input = 4.00
+output = 20.00
+cache_read = 0.20
+cache_write_5m = 5.00
+cache_write_1h = 8.00
+
+# Server-side refusal fallback targets. Input/output as published; the cache rates assume
+# the standard 0.1x read and 1.25x / 2x write multipliers: verify on the pricing page.
+[pricing.claude-opus-5]
+input = 5.00
+output = 25.00
+cache_read = 0.50
+cache_write_5m = 6.25
+cache_write_1h = 10.00
+
+[pricing.claude-opus-4-8]
+input = 5.00
+output = 25.00
+cache_read = 0.50
+cache_write_5m = 6.25
+cache_write_1h = 10.00
+
+[limits]
+budget_usd = 5.0
+wall_clock_minutes = 45
+max_replans = 2
+max_revisions = 4
+max_negotiation_rounds = 3
+plan_gate = "auto"
+escalation = "human"
+
+[journal]
+path = ".msa/runs.db"
+snapshot_every = 50
+
+# Who may write what (ADR-006). Paths are globs relative to the worktree: `**` spans
+# directories, `*` and `?` stay within one. The tool layer checks the resolved path before
+# every write; no prompt can change this.
+[capabilities]
+protected = [".git", ".git/**", ".msa", ".msa/**"]  # no role may write these
+
+[capabilities.roles]
+planner = { write = [] }
+coder = { write = ["**"], deny = ["tests/acceptance/**", "tests/repro/**"] }
+tester = { write = ["tests/acceptance/**", "tests/repro/**"] }
+reviewer = { write = [] }
+arbiter = { write = [] }
+
+# Commands in the local worktree sandbox (ADR-009). It confines paths and scrubs the
+# environment; it is not a network or syscall boundary. Untrusted repos need a container.
+[sandbox]
+launcher = ["uv", "run", "--frozen", "python", "-m"]  # `<launcher> pytest ...`
+timeout_seconds = 600
+output_limit_bytes = 65536
+read_limit_bytes = 2097152
+view_limit_chars = 100000
+search_limit_matches = 200
+cpu_seconds = 1800
+max_file_bytes = 1073741824
+env_passthrough = ["PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "TERM"]

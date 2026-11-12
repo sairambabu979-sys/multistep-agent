@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  commits:
+    # The changelog is generated from commit subjects, so they must parse.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Conventional commit subjects
+        env:
+          BASE: ${{ github.base_ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/conventional_commits.py --range "origin/$BASE..$HEAD_SHA"
+
+  check:
+    name: check (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13"]
+    env:
+      HYPOTHESIS_PROFILE: ci
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python }}
+          enable-cache: true
+
+      - name: Install (locked)
+        run: uv sync --locked
+
+      - name: ripgrep (the search tool runs it)
+        run: command -v rg || { sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep; }
+
+      - name: Lint
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+
+      - name: Types (mypy --strict)
+        run: uv run mypy
+
+      - name: Architecture contracts
+        run: uv run lint-imports
+
+      - name: State machine static analysis
+        run: uv run msa fsm check
+
+      - name: Settings file
+        run: uv run msa config check
+
+      - name: Tests (unit, property, model-based, exhaustive model check, contracts)
+        run: uv run pytest --cov --cov-report=term-missing
+
+      - name: Core coverage gate (95% branch)
+        run: uv run coverage report --include='src/msa/core/*' --fail-under=95

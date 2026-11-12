@@ -1,0 +1,49 @@
+name: Nightly
+
+# Deep randomized testing: 10,000 examples per property, longer stateful runs.
+# Plus 100 crash-recovery trials and mutation testing of the core.
+# The live eval (M9) joins later.
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  thorough:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      HYPOTHESIS_PROFILE: nightly
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+          enable-cache: true
+
+      - name: Install (locked)
+        run: uv sync --locked
+
+      - name: ripgrep (the search tool runs it)
+        run: command -v rg || { sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep; }
+
+      - name: Property and model-based tests (nightly profile)
+        run: uv run pytest tests/property tests/model_based tests/unit
+
+      - name: Crash recovery (100 SIGKILL trials)
+        env:
+          MSA_CHAOS_TRIALS: "100"
+        run: uv run pytest tests/chaos
+
+      - name: Mutation testing of msa.core (zero survivors)
+        env:
+          HYPOTHESIS_PROFILE: mutation
+        run: |
+          uv run mutmut run
+          uv run mutmut export-cicd-stats
+          uv run python scripts/mutation_gate.py || (uv run mutmut results; exit 1)
