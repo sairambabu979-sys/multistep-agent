@@ -41,20 +41,34 @@ def python(box: LocalSandbox, code: str, **kwargs: Any) -> Completed:
 def test_the_environment_is_scrubbed_to_the_passthrough_list(
     tree: Tree, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-must-not-leak")
+    excluded = {
+        "ANTHROPIC_API_KEY",
+        "GITHUB_TOKEN",
+        "DB_PASSWORD",
+        "MSA_UNEXPECTED_PARENT",
+        "GIT_UNEXPECTED_PARENT",
+        "UNEXPECTED_PROXY",
+    }
+    for name in excluded:
+        monkeypatch.setenv(name, "must-not-leak")
     monkeypatch.setenv("LANG", "C.UTF-8")
     done = python(sandbox(tree), "import json, os; print(json.dumps(dict(os.environ)))")
     env = json.loads(done.stdout)
-    assert "ANTHROPIC_API_KEY" not in env
+    assert excluded.isdisjoint(env)
     assert env["LANG"] == "C.UTF-8"
     assert env["HTTPS_PROXY"] == env["http_proxy"] == DEAD_PROXY
     assert env["UV_OFFLINE"] == "1"
     assert env["GIT_CONFIG_NOSYSTEM"] == "1"
     allowed = set(sandbox_config().env_passthrough)
     fixed = {"PYTHONDONTWRITEBYTECODE", "NO_COLOR", "UV_OFFLINE", "PIP_NO_INDEX", "NO_PROXY"}
-    git = {k for k in env if k.startswith("GIT_")}
-    proxies = {k for k in env if k.lower().endswith("_proxy")}
-    assert set(env) - allowed - fixed - git - proxies - {"no_proxy", "LC_CTYPE"} == set()
+    git = {"GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL", "GIT_TERMINAL_PROMPT", "GIT_OPTIONAL_LOCKS"}
+    proxies = {"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"}
+    proxies |= {k.lower() for k in proxies}
+    # Python may coerce LC_CTYPE; macOS may add its Core Foundation encoding setting.
+    platform_added = {"LC_CTYPE"}
+    if sys.platform == "darwin":
+        platform_added.add("__CF_USER_TEXT_ENCODING")
+    assert set(env) - allowed - fixed - git - proxies - platform_added == set()
 
 
 def test_a_command_that_needs_the_network_keeps_the_real_proxies(tree: Tree) -> None:

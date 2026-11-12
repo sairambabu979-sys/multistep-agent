@@ -491,6 +491,12 @@ def _all_files(ctx: typer.Context, repo: Path) -> list[str]:
         )
     except ToolError as exc:
         raise _fail(str(exc)) from exc
+    if done.exit_code == 1 and not done.stdout and not done.stderr.strip():
+        return []  # rg --files exits 1, silently, when there are no files to list
+    if done.exit_code != 0:
+        raise _fail(f"rg --files failed: {done.stderr.strip() or done.render()}")
+    if done.elided_bytes:
+        raise _fail("rg --files output was elided; cannot enumerate all files, specify paths")
     return done.stdout.splitlines()
 
 
