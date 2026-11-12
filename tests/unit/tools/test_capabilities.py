@@ -77,6 +77,16 @@ def test_the_committed_policy(role: Role, path: str, allowed: bool) -> None:
     assert policy(role).allows(path) is allowed
 
 
+@pytest.mark.parametrize("config", [CapabilitiesConfig(), COMMITTED])
+@pytest.mark.parametrize("role", list(Role))
+@pytest.mark.parametrize("path", [".git", ".git/config", ".msa", ".msa/runs.db"])
+def test_control_paths_are_protected_for_every_role(
+    config: CapabilitiesConfig, role: Role, path: str
+) -> None:
+    with pytest.raises(CapabilityDenied, match="it is protected: no role may write it"):
+        WritePolicy(role, config).check(path)
+
+
 @given(st.from_regex(r"\A[a-z_./]{1,40}\Z"))
 def test_coder_and_tester_never_both_own_a_path(path: str) -> None:
     """The two BUILDING regions write disjoint paths (ADR-006), so they merge cleanly."""
@@ -127,7 +137,8 @@ def test_on_a_case_insensitive_disk_case_cannot_dodge_a_deny() -> None:
 @pytest.mark.parametrize("bad", ["/abs/**", "a//b", "a/../b", "./a", "a/", ""])
 def test_malformed_globs_are_rejected_in_settings(tmp_path: Path, bad: str) -> None:
     text = (ROOT / "msa.toml").read_text(encoding="utf-8")
-    old = 'protected = [".git/**", ".msa/**"]'
+    old = 'protected = [".git", ".git/**", ".msa", ".msa/**"]'
+    assert old in text
     path = tmp_path / "msa.toml"
     path.write_text(text.replace(old, f"protected = [{bad!r}]"), encoding="utf-8")
     with pytest.raises(ConfigError, match="use a relative path glob"):

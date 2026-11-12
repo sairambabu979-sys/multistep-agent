@@ -205,7 +205,7 @@ _TESTER_PATHS = ("tests/acceptance/**", "tests/repro/**")
 
 class CapabilitiesConfig(Frozen):
     # No role may write these, whatever its own globs say.
-    protected: tuple[Glob, ...] = (".git/**", ".msa/**")
+    protected: tuple[Glob, ...] = (".git", ".git/**", ".msa", ".msa/**")
     roles: dict[Role, RoleCapability] = Field(
         default_factory=lambda: {
             Role.PLANNER: RoleCapability(write=()),
