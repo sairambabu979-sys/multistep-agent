@@ -71,7 +71,7 @@ snapshot_every = 50
 # directories, `*` and `?` stay within one. The tool layer checks the resolved path before
 # every write; no prompt can change this.
 [capabilities]
-protected = [".git/**", ".msa/**"]  # no role may write these
+protected = [".git", ".git/**", ".msa", ".msa/**"]  # no role may write these
 
 [capabilities.roles]
 planner = { write = [] }

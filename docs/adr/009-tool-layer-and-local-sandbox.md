@@ -32,7 +32,9 @@ swapped in between the check and the open redirects the open anywhere.
    write into another role's files. On a case-insensitive disk, paths and globs are
    compared NFC-normalised and case-folded, so `Tests/Acceptance/` cannot dodge a deny.
    Globs live in `msa.toml` `[capabilities]`. A role's policy is fixed when its workspace
-   is built, and no tool input names it.
+   is built, and no tool input names it. The protected paths are `.git`, `.git/**`, `.msa`
+   and `.msa/**`: no role may write the control paths themselves (including a linked
+   worktree's `.git` pointer file) or their contents.
 3. **Writes are atomic and never write through.**
    - Every write goes to a temporary file in the same directory, is fsynced, and is
      renamed into place. That breaks hard links, so a write never reaches an inode shared

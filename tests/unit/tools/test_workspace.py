@@ -5,12 +5,14 @@ from __future__ import annotations
 import os
 import re
 import stat
+import subprocess
 from pathlib import Path
 
 import pytest
 
-from msa.config import Role
+from msa.config import CapabilitiesConfig, Role, SandboxConfig
 from msa.tools.audit import Violation, log_violation
+from msa.tools.capabilities import WritePolicy
 from msa.tools.errors import (
     CapabilityDenied,
     EditMismatch,
@@ -22,6 +24,7 @@ from msa.tools.errors import (
     TooLarge,
     ToolError,
 )
+from msa.tools.paths import Root
 from msa.tools.workspace import Workspace, content_hash
 from tests.support.tools import APP, Tree, build_tree
 
@@ -206,6 +209,26 @@ def test_a_denied_edit_reveals_nothing_about_the_file(tree: Tree, coder: Workspa
     """The capability check runs before the hash check, so a wrong hash is not reported."""
     with pytest.raises(CapabilityDenied):
         coder.edit("tests/acceptance/test_login.py", "pass", "x", "sha256:wrong")
+
+
+def test_a_linked_worktrees_git_pointer_cannot_be_edited(tree: Tree) -> None:
+    env = {"PATH": os.environ["PATH"], "HOME": str(tree.repo), "GIT_CONFIG_NOSYSTEM": "1"}
+    commands = (
+        ("init", "-q", "-b", "main"),
+        ("-c", "user.name=t", "-c", "user.email=t@t", "commit", "--allow-empty", "-qm", "base"),
+        ("worktree", "add", "--detach", str(tree.base / "linked")),
+    )
+    for args in commands:
+        subprocess.run(["git", *args], cwd=tree.repo, env=env, check=True, capture_output=True)
+    root = Root.at(tree.base / "linked")
+    workspace = Workspace(
+        root, WritePolicy(Role.CODER, CapabilitiesConfig(), root.case_insensitive), SandboxConfig()
+    )
+    pointer = workspace.read_file(".git")
+    assert pointer.text.startswith("gitdir: ")
+    with pytest.raises(CapabilityDenied, match="it is protected: no role may write it"):
+        workspace.edit(".git", pointer.text, "gitdir: /other/repo\n", pointer.content_hash)
+    assert workspace.read_file(".git") == pointer
 
 
 def test_security_refusals_are_recorded_as_violations(tree: Tree) -> None:

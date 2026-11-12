@@ -86,7 +86,9 @@
       "properties": {
         "protected": {
           "default": [
+            ".git",
             ".git/**",
+            ".msa",
             ".msa/**"
           ],
           "items": {
@@ -459,7 +461,9 @@
       "$ref": "#/$defs/CapabilitiesConfig",
       "default": {
         "protected": [
+          ".git",
           ".git/**",
+          ".msa",
           ".msa/**"
         ],
         "roles": {
