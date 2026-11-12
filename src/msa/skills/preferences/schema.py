@@ -9,6 +9,8 @@ for one id must form a complete ``Preference``.
 from __future__ import annotations
 
 import re
+import subprocess
+from functools import lru_cache
 from typing import Annotated, Any, Literal
 
 from pydantic import AfterValidator, Field, StringConstraints, field_validator
@@ -85,6 +87,27 @@ class RuffCheck(Frozen):
 _UNSUPPORTED = re.compile(r"(?<!\\)(?:\\\\)*(?:\(\?<?[=!]|\(\?P=|\\[1-9])")
 
 
+@lru_cache(maxsize=256)
+def _validate_ripgrep(pattern: str) -> None:
+    try:
+        done = subprocess.run(
+            ["rg", "--no-config", "--engine", "default", "--quiet", "--regexp", pattern, "--", "-"],
+            input="",
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except OSError:
+        raise ValueError(
+            "rg is not installed or cannot be started to validate regex checks"
+        ) from None
+    except subprocess.TimeoutExpired:
+        raise ValueError("ripgrep regex validation timed out") from None
+    if done.returncode not in {0, 1}:
+        raise ValueError(f"not a valid ripgrep regular expression: {done.stderr.strip()}")
+
+
 class RegexCheck(Frozen):
     """A pattern that must not occur in files the preference applies to."""
 
@@ -103,6 +126,7 @@ class RegexCheck(Frozen):
                 "lookaround and backreferences are not supported: checks run with "
                 "ripgrep's linear-time regex engine"
             )
+        _validate_ripgrep(value)
         return value
 
 

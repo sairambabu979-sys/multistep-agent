@@ -14,7 +14,8 @@ stub executors. The full design is in [`docs/PLAN.md`](docs/PLAN.md), decisions 
 
 ## Try it
 
-Requires [uv](https://docs.astral.sh/uv/).
+Requires [uv](https://docs.astral.sh/uv/). Preference commands also require
+[ripgrep](https://github.com/BurntSushi/ripgrep) to validate regex checks when loading them.
 
 ```bash
 uv sync

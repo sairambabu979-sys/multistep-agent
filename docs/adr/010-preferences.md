@@ -46,6 +46,9 @@ left open.
    - A `regex` check runs through ripgrep, so a pattern cannot hang the run. Patterns
      that ripgrep's engine cannot run (lookaround, backreferences) are refused when the
      preferences load, not when a check runs.
+     Loading validates against ripgrep's default engine with config disabled and empty
+     stdin, under a five-second timeout; successful validations are cached. Ripgrep must
+     be installed. Patterns must also compile in Python, which checks the rule's examples.
    - Checkers fail closed: a ruff run that produces no report is an error, not "no
      findings".
 5. **Files are read safely and written faithfully.**
