@@ -104,7 +104,11 @@ async def _ruff(
         path = item.filename.removeprefix(root + "/")
         for p in preferences:
             assert isinstance(p.check, RuffCheck)
-            if p.check.rule == item.code and p.scope.applies_to(path):
+            if (
+                item.code is not None
+                and item.code.startswith(p.check.rule)
+                and p.scope.applies_to(path)
+            ):
                 found.append(
                     CheckFinding(
                         path,
