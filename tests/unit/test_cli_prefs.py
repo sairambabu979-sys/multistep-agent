@@ -272,7 +272,8 @@ def test_check_without_ripgrep_says_so(
     ("completed", "message"),
     [
         (Completed("rg", 2, 0.0, "src/todo.py\n", "enumeration failed", 0), "enumeration failed"),
-        (Completed("rg", 1, 0.0, "", "", 0), "rg --files failed"),
+        (Completed("rg", 1, 0.0, "", "rg: broken.txt: Permission denied", 0), "Permission denied"),
+        (Completed("rg", 1, 0.0, "src/todo.py\n", "", 0), "rg --files failed"),
         (Completed("rg", None, 1.0, "src/todo.py\n", "", 0), "timed out"),
         (Completed("rg", 0, 0.0, "src/todo.py\n", "", 100), "output was elided"),
     ],
@@ -295,9 +296,18 @@ def test_empty_successful_file_enumeration_is_allowed(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     async def execute(self: LocalSandbox, argv: Sequence[str], **kwargs: Any) -> Completed:
-        return Completed("rg", 0, 0.0, "", "", 0)
+        return Completed("rg", 1, 0.0, "", "", 0)  # what rg --files really does with no files
 
     monkeypatch.setattr(LocalSandbox, "execute", execute)
+    result = msa("prefs", "check", "--repo", str(repo))
+    assert result.exit_code == 0, result.output
+    assert "0 finding(s), 0 hard, in 0 file(s)" in result.output
+
+
+@needs_rg
+def test_a_repo_with_no_files_checks_clean_with_real_ripgrep(repo: Path) -> None:
+    for path in (repo / "src").iterdir():
+        path.unlink()
     result = msa("prefs", "check", "--repo", str(repo))
     assert result.exit_code == 0, result.output
     assert "0 finding(s), 0 hard, in 0 file(s)" in result.output
