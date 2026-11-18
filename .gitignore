@@ -25,6 +25,8 @@ mutants/
 # Runtime state (journals, reports) produced by `msa`
 .msa/runs/
 .msa/runs.db*
+.msa/responses.db*
+.msa/worktrees/
 
 # Editors / OS
 .idea/

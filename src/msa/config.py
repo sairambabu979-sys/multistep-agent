@@ -17,7 +17,7 @@ from datetime import timedelta
 from decimal import ROUND_CEILING, Decimal
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated, Any, Self
+from typing import Annotated, Any, Literal, Self
 
 from pydantic import (
     AfterValidator,
@@ -204,8 +204,9 @@ _TESTER_PATHS = ("tests/acceptance/**", "tests/repro/**")
 
 
 class CapabilitiesConfig(Frozen):
-    # No role may write these, whatever its own globs say.
-    protected: tuple[Glob, ...] = (".git", ".git/**", ".msa", ".msa/**")
+    # No role may write these, whatever its own globs say. `**/.git` matters in a linked
+    # worktree (and a submodule), where .git is a file naming the git directory.
+    protected: tuple[Glob, ...] = ("**/.git", "**/.git/**", ".msa", ".msa/**")
     roles: dict[Role, RoleCapability] = Field(
         default_factory=lambda: {
             Role.PLANNER: RoleCapability(write=()),
@@ -222,6 +223,15 @@ class CapabilitiesConfig(Frozen):
         if missing:
             raise ValueError(f"[capabilities.roles] is missing {missing}")
         return self
+
+    def owned_directories(self, role: Role) -> tuple[str, ...]:
+        """The directories a role owns outright: its ``<dir>/**`` write globs. VERIFYING
+        leaves these to their owner's own checks (the Tester's tests run in TESTING)."""
+        return tuple(
+            glob.removesuffix("/**")
+            for glob in self.roles[role].write
+            if glob.endswith("/**") and glob != "**" and not any(c in glob[:-3] for c in "*?[")
+        )
 
 
 class SandboxConfig(Frozen):
@@ -245,6 +255,41 @@ class SandboxConfig(Frozen):
     env_passthrough: tuple[EnvName, ...] = ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "TERM")
 
 
+# The sandbox's allowlisted commands (msa.tools.sandbox.COMMANDS; a contract test keeps the
+# two in step). Named here because config sits below the tool layer.
+type VerifyCommand = Literal["pytest", "ruff_check", "ruff_format_check", "mypy"]
+
+
+class VerifyConfig(Frozen):
+    """VERIFYING (PLAN §2): deterministic checks on the head tree, in this order. Each runs
+    over the whole worktree. Hard preference checks always run as well."""
+
+    commands: tuple[VerifyCommand, ...] = ("ruff_check", "ruff_format_check", "mypy", "pytest")
+
+    @model_validator(mode="after")
+    def _unique(self) -> Self:
+        if len(set(self.commands)) != len(self.commands):
+            raise ValueError("[verify].commands lists a command twice")
+        return self
+
+
+class AgentsConfig(Frozen):
+    """Bounds on one agent invocation, on top of its effect's budget reservation."""
+
+    planner_max_turns: PositiveInt = 30
+    coder_max_turns: PositiveInt = 60
+    tester_max_turns: PositiveInt = 60
+    triage_max_turns: PositiveInt = 20
+    repo_map_max_paths: PositiveInt = 400  # files listed in the Planner's prompt
+
+
+class TestingConfig(Frozen):
+    """TESTING (PLAN §6.1): how failures are told apart."""
+
+    __test__ = False  # not a pytest test class
+    flake_reruns: PositiveInt = 3  # each failing test, rerun alone: mixed results are flaky
+
+
 class MsaConfig(Frozen):
     models: ModelsConfig
     api: ApiConfig
@@ -253,6 +298,9 @@ class MsaConfig(Frozen):
     journal: JournalConfig = JournalConfig()
     capabilities: CapabilitiesConfig = CapabilitiesConfig()
     sandbox: SandboxConfig = SandboxConfig()
+    verify: VerifyConfig = VerifyConfig()
+    testing: TestingConfig = TestingConfig()
+    agents: AgentsConfig = AgentsConfig()
 
     @model_validator(mode="after")
     def _every_model_is_priced(self) -> Self:

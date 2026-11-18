@@ -71,7 +71,9 @@ snapshot_every = 50
 # directories, `*` and `?` stay within one. The tool layer checks the resolved path before
 # every write; no prompt can change this.
 [capabilities]
-protected = [".git", ".git/**", ".msa", ".msa/**"]  # no role may write these
+# No role may write these. `**/.git` matters in a linked worktree (and a submodule),
+# where .git is a file naming the git directory: rewriting it would redirect git.
+protected = ["**/.git", "**/.git/**", ".msa", ".msa/**"]
 
 [capabilities.roles]
 planner = { write = [] }
@@ -92,3 +94,21 @@ search_limit_matches = 200
 cpu_seconds = 1800
 max_file_bytes = 1073741824
 env_passthrough = ["PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "TERM"]
+
+# VERIFYING: deterministic checks on the head tree, in order, over the whole worktree except
+# the Tester's directories, which TESTING checks. The preference checks always run too.
+[verify]
+commands = ["ruff_check", "ruff_format_check", "mypy", "pytest"]
+
+# Bounds on one agent invocation, on top of its effect's budget reservation.
+[agents]
+planner_max_turns = 30
+coder_max_turns = 60
+tester_max_turns = 60
+triage_max_turns = 20
+repo_map_max_paths = 400
+
+# TESTING: each failing test is rerun alone this many times; mixed results mean flaky.
+# A flaky test is reported and sent back to the Tester, never skipped.
+[testing]
+flake_reruns = 3
