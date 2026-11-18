@@ -1,22 +1,32 @@
 """TESTING (PLAN §6.1): is the change proven by tests that mean something?
 
-``run_test_suite(tree, base_tree)`` first proves the build worktree holds ``tree``. Then:
+``run_test_suite(tree, base_tree)`` first removes every file the tree leaves out and proves
+the build worktree holds ``tree``. Then:
 
-1. **There are acceptance tests.** The Tester's new test files (under its own directories)
-   must exist: a plan's acceptance criteria with no tests prove nothing.
+1. **There are acceptance tests.** The Tester's new test modules (``test_*.py`` or
+   ``*_test.py`` under its own directories) must exist, and each must define tests: a
+   plan's acceptance criteria with no tests prove nothing.
 2. **They are clean.** ``ruff check`` and ``ruff format --check`` on the Tester's files, and
    the preference checks: VERIFYING left these to TESTING, where a failure goes to their
    owner.
-3. **Everything passes after the change (pass-after).** The whole suite runs on ``tree``.
-4. **Flakes are told apart, never skipped.** Each failing test is rerun alone, up to
+3. **Everything passes after the change (pass-after).** The repository's own tests run on
+   ``tree``; the acceptance tests run on it in a pytest process of their own, so nothing
+   else in the suite (another module, another directory's conftest.py) shares their
+   session. VERIFYING has already refused any change to the conftest.py files and pytest
+   configuration above them.
+4. **Every acceptance test ran and passed.** Each test the Tester wrote (found in its
+   source, as pytest finds tests) must appear in that run as *passed*: skipped, xfailed and
+   never-collected tests are not evidence, whatever made them so.
+5. **Flakes are told apart, never skipped.** Each failing test is rerun alone, up to
    ``[testing].flake_reruns`` times. A test with mixed results is ``flaky``: it is reported
    and goes back to the Tester. It is never quarantined to get a green run.
-5. **Every acceptance test fails before the change (fail-before).** The acceptance tests
+6. **Every acceptance test fails before the change (fail-before).** The acceptance tests
    run against the base tree in a scratch worktree. A test that passes there would pass
-   whatever the Coder did, so it is rejected (I-03).
-6. **Consistent failures are triaged** by the Tester role, read-only: ``impl_bug`` goes to
+   whatever the Coder did, so it is rejected (I-03); so is one that is skipped there or does
+   not run. A collection error counts as failing, the usual way a test of new code fails.
+7. **Consistent failures are triaged** by the Tester role, read-only: ``impl_bug`` goes to
    the Coder, ``test_bug`` to the Tester, ``environment`` fails the run (no agent can fix
-   it). Flaky and rejected tests are the Tester's without asking a model.
+   it). Flaky, rejected and non-running tests are the Tester's without asking a model.
 
 Problems that need no model are reported first, so a model is paid only to diagnose what a
 rule cannot. The report (a test matrix of before/after per acceptance test, plus every
@@ -29,10 +39,12 @@ errors, a timeout) is an environment failure.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
+from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath
+from typing import Literal
 from xml.etree import ElementTree
 
 from msa.agents import tester
@@ -46,13 +58,17 @@ from msa.core.values import FailureKind, Owner, Triage
 from msa.llm.gateway import InvocationResult
 from msa.runtime.checks import run_checks
 from msa.runtime.context import RunContext, reservation
+from msa.runtime.guard import find_tests
 from msa.runtime.roles import PLAN_FILE
-from msa.runtime.verify import PYTEST_NO_TESTS
+from msa.runtime.verify import PYTEST_NO_TESTS, removed_section
 from msa.runtime.worktree import RunWorktree
 from msa.tools.sandbox import Completed, LocalSandbox
 
 PYTEST_FAILED = 1
 PYTEST_COLLECTION_ERRORS = 2
+TEST_MODULES = ("test_*.py", "*_test.py")  # pytest's default python_files
+
+type Outcome = Literal["passed", "failed", "skipped"]  # skipped: pytest.skip or xfail
 
 TRIAGE_OWNERS: dict[TriageKind, tuple[FailureKind, Owner | None]] = {
     TriageKind.IMPL_BUG: (FailureKind.IMPL_BUG, Owner.CODER),
@@ -67,11 +83,18 @@ class SuiteUnrunnable(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class Case:
-    """One test's outcome in one pytest run."""
+    """One test's outcome in one pytest run. A module that fails to import (or is skipped
+    whole) is one case whose nodeid is the module's path, without ``::``."""
 
     nodeid: str
-    passed: bool  # passed, skipped or xfailed: nothing to fix
+    outcome: Outcome
     message: str = ""
+
+    @property
+    def passed(self) -> bool:
+        """Nothing to fix: passed, skipped or xfailed. Enough for the repository's own
+        tests; an acceptance test must have outcome ``passed`` (see ``_evidence``)."""
+        return self.outcome != "failed"
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,10 +123,15 @@ class Findings:
 
 
 def _nodeid(case: ElementTree.Element) -> str:
-    """``path::Class::name`` from an xunit1 testcase (its ``file`` attribute)."""
+    """``path::Class::name`` from an xunit1 testcase (its ``file`` attribute). A module-level
+    problem (a collection error, a module skipped whole) has an empty classname and the
+    dotted module as its name: its nodeid is the module's path, which is what pytest
+    accepts to rerun it."""
     name, classname, file = case.get("name", ""), case.get("classname", ""), case.get("file")
     if not file:
         return f"{classname}::{name}" if classname else name
+    if not classname:
+        return file
     module = str(PurePosixPath(file).with_suffix("")).replace("/", ".")
     classes = classname.removeprefix(module).strip(".")
     return "::".join(p for p in (file, *classes.split("."), name) if p)
@@ -113,23 +141,45 @@ def parse_junit(text: str) -> tuple[Case, ...]:
     root = ElementTree.fromstring(text)  # pytest's own output; it declares no entities
     cases = []
     for case in root.iter("testcase"):
+        outcome: Outcome = "passed"
         problem = case.find("failure")
         if problem is None:
             problem = case.find("error")
+        if problem is not None:
+            outcome = "failed"
+        elif (problem := case.find("skipped")) is not None:
+            outcome = "skipped"
         message = ""
         if problem is not None:
             lines = (problem.get("message") or problem.text or "").strip().splitlines()
             message = lines[0] if lines else problem.tag
-        cases.append(Case(_nodeid(case), problem is None, message))
+            if problem.get("type") == "pytest.xfail":
+                message = f"xfail: {message}"
+        cases.append(Case(_nodeid(case), outcome, message))
     return tuple(sorted(cases, key=lambda c: c.nodeid))
 
 
-async def run_pytest(sandbox: LocalSandbox, targets: Sequence[str], junit: Path) -> Run:
+def is_test_module(path: str) -> bool:
+    return any(fnmatchcase(PurePosixPath(path).name, pattern) for pattern in TEST_MODULES)
+
+
+def cases_of(run: Run, module: str, test: str) -> list[Case]:
+    """``test``'s cases in ``run`` (one per parametrization), or else the case of its
+    whole module (a collection error, a module skipped whole), or []."""
+    nodeid = f"{module}::{test}"
+    mine = [c for c in run.cases if c.nodeid == nodeid or c.nodeid.startswith(f"{nodeid}[")]
+    return mine or [c for c in run.cases if c.nodeid == module]
+
+
+async def run_pytest(
+    sandbox: LocalSandbox, targets: Sequence[str], junit: Path, *, ignore: Sequence[str] = ()
+) -> Run:
     junit.parent.mkdir(parents=True, exist_ok=True)
     junit.unlink(missing_ok=True)
     argv = ["pytest", "-q", "-p", "no:cacheprovider", "-o", "junit_family=xunit1"]
-    argv += [f"--junitxml={junit}", "--", *targets]
-    shown = " ".join(["pytest", "-q", *targets])
+    skipped = [f"--ignore={p}" for p in ignore]
+    argv += [*skipped, f"--junitxml={junit}", "--", *targets]
+    shown = " ".join(["pytest", "-q", *skipped, *targets])
     done = await sandbox.execute([*sandbox.config.launcher, *argv], shown=shown)
     if done.timed_out:
         raise SuiteUnrunnable(f"the test suite timed out:\n{done.render()}")
@@ -140,8 +190,72 @@ async def run_pytest(sandbox: LocalSandbox, targets: Sequence[str], junit: Path)
         not c.passed for c in cases
     ):
         # A failure pytest did not attribute to a test (a broken conftest, say).
-        cases = (*cases, Case("<collection>", False, "pytest failed outside any test"))
+        cases = (*cases, Case("<collection>", "failed", "pytest failed outside any test"))
     return Run(done, cases)
+
+
+# ---------- what makes an acceptance test evidence
+
+
+def after_text(cases: Sequence[Case], flaky: Mapping[str, str]) -> str:
+    """One acceptance test's outcome on the head tree, over its parametrizations."""
+    if not cases:
+        return "not run"
+    if any(c.nodeid in flaky for c in cases):
+        return "flaky"
+    if any(c.outcome == "failed" for c in cases):
+        return "fail"
+    if skipped := [c for c in cases if c.outcome == "skipped"]:
+        return f"skipped ({skipped[0].message or 'no reason given'})"
+    return "pass"
+
+
+def before_text(cases: Sequence[Case]) -> str:
+    """One acceptance test's outcome on the base tree, over its parametrizations."""
+    if not cases:
+        return "not run"
+    if any(c.outcome == "failed" for c in cases):
+        return "fail"
+    if any(c.outcome == "skipped" for c in cases):
+        return "skipped"
+    return "pass"
+
+
+def judge(authored: Mapping[str, list[str]], after: Run, before: Run, found: Findings) -> None:
+    """Each authored test is evidence only if it failed before the change and passed after
+    it. Failing after is for triage; anything else is the Tester's to fix, without a model."""
+    for module, names in sorted(authored.items()):
+        for name in names:
+            test = f"{module}::{name}"
+            now = after_text(cases_of(after, module, name), found.flaky)
+            then = before_text(cases_of(before, module, name))
+            found.matrix.append((test, then, now))
+            if now == "not run":
+                found.tester.append(
+                    f"`{test}` did not run on the head tree: pytest collected no test of that "
+                    "name. An acceptance test must run and pass."
+                )
+                continue
+            if now.startswith("skipped"):
+                found.tester.append(
+                    f"`{test}` was {now} on the head tree: an acceptance test must run and "
+                    "pass, so it may not be skipped, xfailed or conditional on the environment."
+                )
+                continue
+            if then == "fail":
+                continue
+            found.rejected.append(test)
+            if then == "pass":
+                found.tester.append(
+                    f"`{test}` passes on the base tree, before the change: it cannot tell "
+                    "whether the change works. Make it test what the plan adds."
+                )
+            else:
+                found.tester.append(
+                    f"`{test}` was {then} on the base tree, so it does not show that the "
+                    "change is needed: it must fail there. Make it test what the plan adds, "
+                    "unconditionally."
+                )
 
 
 # ---------- the executor
@@ -158,6 +272,7 @@ class TestSuiteExecutor:
         if not isinstance(command, RunTestSuite):
             raise TypeError(f"the test suite cannot execute {command.kind}")
         ctx = self.context
+        removed = await ctx.worktree.prune()
         current = await ctx.worktree.snapshot()
         if current != command.tree:
             raise RuntimeError(
@@ -166,6 +281,8 @@ class TestSuiteExecutor:
         tree = command.tree
         try:
             found = await self._examine(effect, tree, command.base_tree)
+            if removed:
+                found.sections.append(removed_section(removed))
         except SuiteUnrunnable as exc:
             report = f"# Tests of tree {tree}: cannot run\n\n{exc}\n"
             environment = Triage(kind=FailureKind.ENVIRONMENT, owner=None)
@@ -197,25 +314,46 @@ class TestSuiteExecutor:
     async def _examine(self, effect: Effect, tree: TreeHash, base: TreeHash) -> Findings:
         ctx = self.context
         owned = ctx.config.capabilities.owned_directories(Role.TESTER)
-        acceptance = [
+        written = [
             p for p in await ctx.worktree.changed_files(base, tree, owned) if p.endswith(".py")
         ]
+        modules = [p for p in written if is_test_module(p)]
+        authored = {m: find_tests(await ctx.worktree.read(tree, m) or "") for m in modules}
         found = Findings()
         sandbox = ctx.sandbox(Role.TESTER)
         junit = ctx.files.directory.resolve() / "junit" / effect.id.replace(":", "-")
 
-        if not acceptance:
+        if not modules:
+            where = ", ".join(f"{d}/" for d in owned) or "the tester paths"
             found.tester.append(
                 "No acceptance tests were written: every acceptance criterion in the plan "
-                f"needs a test under {', '.join(f'{d}/' for d in owned) or 'the tester paths'}."
+                f"needs a test in a test module (`test_*.py`) under {where}."
             )
-        else:
-            await self._lint(sandbox, acceptance, found)
+        for module, names in authored.items():
+            if not names:
+                found.tester.append(
+                    f"`{module}` defines no tests: pytest would collect nothing from it. "
+                    "Write `test_*` functions (or methods of a `Test*` class) that check the "
+                    "acceptance criteria."
+                )
+        if written:
+            await self._lint(sandbox, written, found)
 
-        after = await run_pytest(sandbox, [], junit / "after.xml")
-        found.sections.append(f"## Full suite on the head tree\n\n{after.done.render()}\n")
-        for case in after.failed:
-            if "::" not in case.nodeid:  # a collection error: nothing to rerun on its own
+        suite = await run_pytest(sandbox, [], junit / "after.xml", ignore=modules)
+        found.sections.append(
+            f"## The repository's tests on the head tree\n\n{suite.done.render()}\n"
+        )
+        failed = suite.failed
+        accepted = Run(suite.done, ())
+        if modules:
+            accepted = await run_pytest(sandbox, modules, junit / "acceptance.xml")
+            found.sections.append(
+                "## The acceptance tests on the head tree, in a session of their own\n\n"
+                f"{accepted.done.render()}\n"
+            )
+            failed += accepted.failed
+        for case in failed:
+            if "::" not in case.nodeid:  # a module that does not import: one failure
                 found.failures.append(case)
                 continue
             results = await self._rerun(sandbox, case.nodeid, junit)
@@ -231,30 +369,9 @@ class TestSuiteExecutor:
                 "skipped: make them deterministic.\n\n" + "\n".join(lines) + "\n"
             )
 
-        if acceptance:
-            before = await self._before(base, tree, owned, acceptance, junit)
-            # On the base tree, acceptance tests often fail at import, as one collection
-            # error for the file; that is a failure for every test in it.
-            passed_before = {c.nodeid for c in before.cases if c.passed and "::" in c.nodeid}
-            after_by_id = {c.nodeid: c for c in after.cases}
-            tests = {c.nodeid for c in after.cases if c.nodeid.split("::")[0] in acceptance}
-            for test in sorted(tests | passed_before):
-                state = after_by_id.get(test)
-                after_text = (
-                    "flaky"
-                    if test in found.flaky
-                    else "pass"
-                    if state is not None and state.passed
-                    else "fail"
-                )
-                before_text = "pass" if test in passed_before else "fail"
-                found.matrix.append((test, before_text, after_text))
-            for test in sorted(passed_before):
-                found.rejected.append(test)
-                found.tester.append(
-                    f"`{test}` passes on the base tree, before the change: it cannot tell "
-                    "whether the change works. Make it test what the plan adds."
-                )
+        if modules:
+            before = await self._before(base, tree, owned, modules, junit)
+            judge(authored, accepted, before, found)
         return found
 
     async def _lint(self, sandbox: LocalSandbox, files: list[str], found: Findings) -> None:
@@ -278,7 +395,7 @@ class TestSuiteExecutor:
         for attempt in range(self.context.config.testing.flake_reruns):
             run = await run_pytest(sandbox, [nodeid], junit / f"rerun-{attempt}.xml")
             mine = [c for c in run.cases if c.nodeid == nodeid]
-            results.append(bool(mine) and all(c.passed for c in mine))
+            results.append(bool(mine) and all(c.outcome == "passed" for c in mine))
             if results[-1]:
                 break  # one pass after a failure is already mixed: flaky
         return results
@@ -288,7 +405,7 @@ class TestSuiteExecutor:
         base: TreeHash,
         tree: TreeHash,
         owned: Sequence[str],
-        acceptance: list[str],
+        modules: list[str],
         junit: Path,
     ) -> Run:
         """The acceptance tests, run against the base tree: they must all fail there."""
@@ -296,8 +413,9 @@ class TestSuiteExecutor:
         await scratch.ensure(base)
         await scratch.reset(base)
         await scratch.overlay(tree, base, owned)
+        await scratch.prune()
         scratch_sandbox = self.context.sandbox(Role.TESTER, worktree=scratch)
-        run = await run_pytest(scratch_sandbox, acceptance, junit / "before.xml")
+        run = await run_pytest(scratch_sandbox, modules, junit / "before.xml")
         await scratch.reset(base)
         return run
 

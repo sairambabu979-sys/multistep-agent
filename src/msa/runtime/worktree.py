@@ -12,6 +12,10 @@ work is at. Agents edit files. The harness snapshots the worktree into a tree (`
 - **Generated files are never part of a tree.** Caches that checks write (``.pytest_cache``,
   ``__pycache__``, ...) are excluded through ``core.excludesFile``, on top of the
   repository's ``.gitignore``, so running a check cannot change the tree it checked.
+- **Checks see exactly the tree.** Before checks run, ``prune`` removes every file the
+  tree leaves out, ignored ones above all. Otherwise a file that is in no tree (a
+  gitignored ``local_settings.py``, say) could make the checks pass on code that fails once
+  delivered (ADR-013). Only the environment ``uv`` builds and the checks' own caches stay.
 
 Git runs with hooks off and fsmonitor off, without system or global config, and with
 fixed arguments only: no agent input reaches a git command line.
@@ -29,6 +33,7 @@ from pathlib import Path
 from msa.core.ids import TreeHash
 
 GENERATED = (
+    ".venv/",  # the environment uv builds; uv ignores it itself, other tools may not
     "__pycache__/",
     "*.py[cod]",
     ".pytest_cache/",
@@ -38,6 +43,9 @@ GENERATED = (
     ".coverage",
     ".coverage.*",
 )
+# What ``prune`` leaves in place: the environment uv builds from the lockfile, and caches.
+# Sourceless bytecode is not kept: a lone ``module.pyc`` next to the sources is importable.
+KEPT = (".venv/", "__pycache__/", ".pytest_cache/", ".ruff_cache/", ".mypy_cache/", ".hypothesis/")
 IDENTITY = {
     "GIT_AUTHOR_NAME": "msa",
     "GIT_AUTHOR_EMAIL": "msa@localhost",
@@ -127,6 +135,25 @@ class RunWorktree:
         await self._git("add", "--all")
         return TreeHash((await self._git("write-tree")).strip())
 
+    async def prune(self) -> list[str]:
+        """Remove what the next snapshot would leave out, so the worktree holds exactly its
+        tree plus ``KEPT``. The tree itself does not change. Returns the removed paths."""
+        await self._git("add", "--all")  # now everything not ignored is in the index
+        out = await self._git("clean", "-ffdx", *(f"--exclude={p}" for p in KEPT))
+        return sorted(line.removeprefix("Removing ") for line in out.splitlines() if line)
+
+    async def read(self, tree: TreeHash, path: str) -> str | None:
+        """The text of ``path`` in ``tree``, or None if the tree has no such file."""
+        listed = await self._git("ls-tree", "-z", tree, "--", f":(literal){path}")
+        entry = listed.split("\0")[0]
+        if not entry:
+            return None
+        meta, _, _ = entry.partition("\t")
+        _, kind, oid = meta.split()
+        if kind != "blob":
+            return None
+        return await self._git("cat-file", "blob", oid)
+
     async def reset(self, tree: TreeHash) -> None:
         """Make the worktree hold exactly ``tree`` (ignored files are left alone)."""
         await self._git("add", "--all")
@@ -138,17 +165,23 @@ class RunWorktree:
         return sorted(p for p in out.split("\0") if p)
 
     async def changed_files(
-        self, base: TreeHash, head: TreeHash, directories: Sequence[str] = ()
+        self,
+        base: TreeHash,
+        head: TreeHash,
+        directories: Sequence[str] = (),
+        *,
+        deleted: bool = False,
     ) -> list[str]:
-        """Paths added or modified from ``base`` to ``head`` (deletions are not files),
-        optionally only those inside ``directories``."""
+        """Paths added or modified from ``base`` to ``head``, optionally only those inside
+        ``directories`` (a file path names just that file). Deleted paths are left out
+        unless ``deleted``."""
         out = await self._git(
             "diff",
             "--no-ext-diff",
             "--name-only",
             "-z",
             "--no-renames",
-            "--diff-filter=d",
+            *(() if deleted else ("--diff-filter=d",)),
             base,
             head,
             "--",

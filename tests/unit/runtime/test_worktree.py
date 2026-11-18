@@ -98,3 +98,60 @@ def test_a_failing_git_command_raises_git_error(repo: Path, tmp_path: Path) -> N
     made = worktree(repo, tmp_path)
     with pytest.raises(GitError, match="git read-tree failed"):
         asyncio.run(made.reset(TreeHash("0" * 40)))
+
+
+def test_prune_leaves_exactly_the_tree_plus_the_environment_and_caches(
+    repo: Path, tmp_path: Path
+) -> None:
+    """A file the tree leaves out must not take part in checks of the tree (ADR-013)."""
+    made = worktree(repo, tmp_path)
+    (made.path / ".gitignore").write_text("local_settings.py\n.env\n")
+    (made.path / "src" / "local_settings.py").write_text('FAREWELL = "goodbye"\n')
+    (made.path / ".env").write_text("SECRET=1\n")
+    (made.path / "src" / "greeter.pyc").write_text("sourceless bytecode imports")
+    (made.path / "src" / "new.py").write_text("x = 1\n")  # untracked, not ignored: kept
+    kept = [".venv/lib/site.py", "src/__pycache__/m.cpython-313.pyc", ".mypy_cache/a/b.json"]
+    for path in kept:
+        (made.path / path).parent.mkdir(parents=True, exist_ok=True)
+        (made.path / path).write_text("environment or cache")
+    before = asyncio.run(made.snapshot())
+
+    removed = asyncio.run(made.prune())
+
+    assert removed == [".env", "src/greeter.pyc", "src/local_settings.py"]
+    assert asyncio.run(made.snapshot()) == before  # the tree did not change
+    on_disk = sorted(
+        str(p.relative_to(made.path))
+        for p in made.path.rglob("*")
+        if p.is_file() and p.name != ".git"
+    )
+    assert on_disk == sorted([*asyncio.run(made.files(before)), *kept])
+    assert asyncio.run(made.prune()) == []
+
+
+def test_read_gives_a_file_as_of_a_tree(repo: Path, tmp_path: Path) -> None:
+    made = worktree(repo, tmp_path)
+    base = base_of(repo)
+    (made.path / "src" / "greeter.py").write_text("changed\n")
+    head = asyncio.run(made.snapshot())
+    assert asyncio.run(made.read(head, "src/greeter.py")) == "changed\n"
+    assert (
+        asyncio.run(made.read(base, "src/greeter.py")) == (repo / "src" / "greeter.py").read_text()
+    )
+    assert asyncio.run(made.read(base, "src/missing.py")) is None
+    assert asyncio.run(made.read(base, "src")) is None  # a directory is not a file
+    assert asyncio.run(made.read(base, "*.toml")) is None  # paths are literal, never globs
+
+
+def test_changed_files_can_include_deletions(repo: Path, tmp_path: Path) -> None:
+    made = worktree(repo, tmp_path)
+    base = base_of(repo)
+    (made.path / "pyproject.toml").unlink()
+    (made.path / "conftest.py").write_text("")
+    head = asyncio.run(made.snapshot())
+    controls = ["conftest.py", "pyproject.toml", "pytest.ini"]
+    assert asyncio.run(made.changed_files(base, head, controls)) == ["conftest.py"]
+    assert asyncio.run(made.changed_files(base, head, controls, deleted=True)) == [
+        "conftest.py",
+        "pyproject.toml",
+    ]

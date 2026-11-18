@@ -30,7 +30,7 @@ from msa.runtime.context import RunContext, reservation
 from msa.runtime.intake import IntakeExecutor
 from msa.runtime.roles import CoderExecutor, Revisions, TesterExecutor
 from msa.runtime.testing import TestSuiteExecutor, parse_junit
-from msa.runtime.verify import VerifyExecutor, check_argv, outside
+from msa.runtime.verify import VerifyExecutor, check_argv, outside, pytest_configuration
 from msa.tools.errors import CommandUnavailable
 from msa.tools.paths import Root
 from msa.tools.sandbox import LocalSandbox
@@ -91,7 +91,7 @@ def test_verification_commands_leave_the_testers_directories_alone() -> None:
     ]
 
 
-def test_junit_cases_become_node_ids_with_their_first_message_line() -> None:
+def test_junit_cases_become_node_ids_with_outcomes_and_their_first_message_line() -> None:
     xml = """<?xml version="1.0" encoding="utf-8"?>
 <testsuites><testsuite name="pytest">
   <testcase classname="tests.acceptance.test_x" name="test_ok" file="tests/acceptance/test_x.py"/>
@@ -100,17 +100,25 @@ def test_junit_cases_become_node_ids_with_their_first_message_line() -> None:
     <failure message="assert 1 == 2&#10;where ...">trace</failure>
   </testcase>
   <testcase classname="tests.acceptance.test_x" name="test_skip" file="tests/acceptance/test_x.py">
-    <skipped message="later"/>
+    <skipped type="pytest.skip" message="later"/>
   </testcase>
-  <testcase classname="" name="tests.acceptance.test_y"><error message="collection failure"/>
+  <testcase classname="tests.acceptance.test_x" name="test_xf" file="tests/acceptance/test_x.py">
+    <skipped type="pytest.xfail" message="known"/>
   </testcase>
+  <testcase classname="" name="tests.acceptance.test_y" file="tests/acceptance/test_y.py">
+    <error message="collection failure"/>
+  </testcase>
+  <testcase classname="" name="tests.acceptance.test_z"><error message="no file"/></testcase>
 </testsuite></testsuites>"""
-    cases = {c.nodeid: (c.passed, c.message) for c in parse_junit(xml)}
+    cases = {c.nodeid: (c.outcome, c.passed, c.message) for c in parse_junit(xml)}
     assert cases == {
-        "tests/acceptance/test_x.py::test_ok": (True, ""),
-        "tests/acceptance/test_x.py::TestThing::test_bad[1]": (False, "assert 1 == 2"),
-        "tests/acceptance/test_x.py::test_skip": (True, ""),
-        "tests.acceptance.test_y": (False, "collection failure"),
+        "tests/acceptance/test_x.py::test_ok": ("passed", True, ""),
+        "tests/acceptance/test_x.py::TestThing::test_bad[1]": ("failed", False, "assert 1 == 2"),
+        "tests/acceptance/test_x.py::test_skip": ("skipped", True, "later"),
+        "tests/acceptance/test_x.py::test_xf": ("skipped", True, "xfail: known"),
+        # A module that does not import is its path: what pytest accepts to rerun it.
+        "tests/acceptance/test_y.py": ("failed", False, "collection failure"),
+        "tests.acceptance.test_z": ("failed", False, "no file"),
     }
 
 
@@ -169,6 +177,39 @@ def test_no_acceptance_tests_is_the_testers_problem_and_needs_no_model(run: RunC
     report = run.files.text(answer.report)
     assert "No acceptance tests were written" in report
     assert "tests/acceptance/" in report
+
+
+def test_testing_runs_on_exactly_the_tree_and_says_what_it_removed(run: RunContext) -> None:
+    (run.worktree.path / ".gitignore").write_text("local.txt\n")
+    tree = asyncio.run(run.worktree.snapshot())
+    (run.worktree.path / "local.txt").write_text("in no tree\n")
+    command = RunTestSuite(tree=tree, base_tree=tree)
+    answer = asyncio.run(TestSuiteExecutor(run).execute(effect(command, 1_000), now=T0))
+    assert isinstance(answer, TestsFailed)
+    report = run.files.text(answer.report)
+    assert "## Files outside the tree" in report
+    assert "- `local.txt`" in report
+    assert not (run.worktree.path / "local.txt").exists()
+
+
+def test_the_pytest_configuration_guard_ignores_what_pytest_does_not_read(
+    run: RunContext,
+) -> None:
+    worktree = run.worktree
+    base = asyncio.run(worktree.base_tree())
+    tester = ["tests/acceptance", "tests/repro"]
+    pyproject = worktree.path / "pyproject.toml"
+    pyproject.write_text(pyproject.read_text().replace('version = "0.1.0"', 'version = "0.2.0"'))
+    head = asyncio.run(worktree.snapshot())
+    assert asyncio.run(pytest_configuration(worktree, base, head, tester)) is None
+    (worktree.path / "tests" / "conftest.py").write_text("")
+    head = asyncio.run(worktree.snapshot())
+    result = asyncio.run(pytest_configuration(worktree, base, head, tester))
+    assert result is not None
+    assert (result.name, result.passed) == ("pytest configuration", False)
+    assert "- `tests/conftest.py` created" in result.output
+    assert "pyproject.toml" not in result.output
+    assert "tests/acceptance/, tests/repro/" in result.output
 
 
 def test_revisions_go_to_their_owner_and_review_findings_wait_for_m8(run: RunContext) -> None:

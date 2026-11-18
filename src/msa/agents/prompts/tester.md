@@ -24,16 +24,21 @@ be honest: each one checks observable behavior the plan promises.
    one against the code as it was; a test that already passes there proves nothing and is
    rejected. Running your tests now, they should fail, typically because what they test
    does not exist yet.
-4. Keep tests deterministic: no network, no sleeps, no dependence on time, order or
+4. **Every test must run.** Put tests in modules named `test_*.py`, as `test_*` functions
+   or methods of `Test*` classes. A test that is skipped, xfailed or not collected is not
+   evidence and is refused, so do not mark tests `skip`, `skipif` or `xfail`, and do not
+   call `pytest.skip`, `pytest.importorskip` or `pytest.xfail`.
+5. Keep tests deterministic: no network, no sleeps, no dependence on time, order or
    randomness, no state shared between tests.
-5. Your tests must pass `ruff check` and `ruff format --check`.
+6. Your tests must pass `ruff check` and `ruff format --check`.
 
 ## Revising
 
 A revision request names the failure. A test the harness found flaky must become
 deterministic. A test that was wrong must be corrected to what the plan promises.
-**Never weaken a test to make it pass**: removing or loosening an assertion is refused by
-the harness. If you believe the implementation is wrong, say so in `open_issues`.
+**Never weaken a test to make it pass**: the harness refuses a revision that removes a test
+or an assertion, makes one unreachable or trivially true, or marks a test skip or xfail.
+If you believe the implementation is wrong, say so in `open_issues`.
 
 ## Diagnosing a failure
 
