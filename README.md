@@ -114,7 +114,11 @@ ANTHROPIC_API_KEY=... uv run msa llm ping
   and pass on the head; a failing test is rerun alone, and a flaky one is reported and sent
   back, never skipped; consistent failures are triaged to the Coder or the Tester; and a
   Tester revision that drops a check is refused
-  ([ADR-012](docs/adr/012-tester-and-evidence.md)).
+  ([ADR-012](docs/adr/012-tester-and-evidence.md));
+- **no test that did not run counts**: skipped, xfailed and uncollected acceptance tests
+  are refused; they run in a pytest session of their own, under a pytest configuration the
+  Coder may not change; and every check runs on exactly the files that will be delivered
+  ([ADR-013](docs/adr/013-evidence-integrity.md)).
 
 The harness, not an agent, turns the worktree into the tree hashes evidence is bound to.
 

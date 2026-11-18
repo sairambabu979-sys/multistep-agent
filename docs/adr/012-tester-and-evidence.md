@@ -2,6 +2,8 @@
 
 - **Status:** Accepted (2026-11-07)
 - **Refines:** PLAN §6.1 (what the Tester does at runtime), ADR-011 (the stand-ins)
+- **Refined by:** ADR-013 (which tests count as evidence, pytest's configuration, the
+  delivered tree, and the guard)
 
 ## Context
 
