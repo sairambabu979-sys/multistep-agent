@@ -24,8 +24,16 @@ by [git-cliff](https://git-cliff.org). Regenerate with `make changelog`; do not 
 
 - **llm:** strict-mode schema transform and tool-result replay ([`33a285b`](https://github.com/sairambabu979-sys/multistep-agent/commit/33a285bf839d736ca6202fe9c446e4a06c340898))
 - **tools:** refuse a path that changes while it is being resolved ([`92f567c`](https://github.com/sairambabu979-sys/multistep-agent/commit/92f567cf95998448f89a71101e029851aef988e0))
+- **prefs:** attribute Ruff prefix selector diagnostics ([`9e71089`](https://github.com/sairambabu979-sys/multistep-agent/commit/9e710891bec76be8b453bf6c406eddcffd4330b4))
+- **prefs:** ignore Ruff diagnostics without rule codes ([`89a99ef`](https://github.com/sairambabu979-sys/multistep-agent/commit/89a99ef8be3b726e6dc531d91833e25751c1924f))
+- **tests:** allow macOS-added sandbox environment setting ([`484e914`](https://github.com/sairambabu979-sys/multistep-agent/commit/484e914459e6a9af311e684a154714798329e92b))
+- **tools:** protect worktree control paths themselves ([`53f4b34`](https://github.com/sairambabu979-sys/multistep-agent/commit/53f4b3447ba917ae29a70209895efc48a709bf52))
+- **prefs:** validate regexes with ripgrep at load time ([`0510473`](https://github.com/sairambabu979-sys/multistep-agent/commit/0510473644aac45d156bc4cc4a3c09e967166e05))
+- **prefs:** reject incomplete or malformed check reports ([`e0579e0`](https://github.com/sairambabu979-sys/multistep-agent/commit/e0579e091574b6d51066e3f6bb765e66062eec9e))
+- **prefs:** treat a silent rg --files exit 1 as no files ([`1e765af`](https://github.com/sairambabu979-sys/multistep-agent/commit/1e765afc9466b548b44fccb1494605f08f6d8574))
 - **tools:** protect the .git file of linked worktrees and submodules ([`ff01412`](https://github.com/sairambabu979-sys/multistep-agent/commit/ff014128d4a21fb3cc9c4721f92ea407b875e61a))
 - **runtime:** keep pytest from collecting TesterExecutor as a test class ([`d71bfc4`](https://github.com/sairambabu979-sys/multistep-agent/commit/d71bfc48544d9a2af046532a5d029a7fdc03650e))
+- **runtime:** only acceptance tests that ran count, on the delivered tree (ADR-013) ([`d956d7c`](https://github.com/sairambabu979-sys/multistep-agent/commit/d956d7c1e7123b75ac4bd15e0ecbbebee0688c68))
 
 ### Refactoring
 
@@ -45,6 +53,8 @@ by [git-cliff](https://git-cliff.org). Regenerate with `make changelog`; do not 
 - **changelog:** regenerate for M6 ([`612eef3`](https://github.com/sairambabu979-sys/multistep-agent/commit/612eef3740d30804f5602422b6547f2b735cdc60))
 - mark I-01, I-02 and I-14 green in PLAN (CI run 42386339304) ([`a45f4ff`](https://github.com/sairambabu979-sys/multistep-agent/commit/a45f4ff652981f4cd7f90fd6c5e9391fbd023604))
 - ADR-012 for the Tester, and M7 status in PLAN and README ([`f0c9039`](https://github.com/sairambabu979-sys/multistep-agent/commit/f0c90392b9b77c41c15973137f8057ba5a7b8af5))
+- **changelog:** regenerate for M7 ([`d4d25c5`](https://github.com/sairambabu979-sys/multistep-agent/commit/d4d25c5441ffa825dda4f9e4ce5ced281f0fed08))
+- ADR-013 for evidence integrity, and I-17 in PLAN and README ([`3a06c34`](https://github.com/sairambabu979-sys/multistep-agent/commit/3a06c34749a65727bb1cba810e3cb14a7d6de822))
 
 ### Tests
 
