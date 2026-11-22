@@ -1,6 +1,6 @@
 # Multistep Agent: Engineering Plan
 
-> Status: **M0–M2, M4, M5 and M7 complete; M3 and M6 await a live recording** · Owner: sairambabu979-sys · Last updated: 2026-11-07
+> Status: **M0–M2, M4, M5, M7 and M8 complete; M3 and M6 await a live recording** · Owner: sairambabu979-sys · Last updated: 2026-11-22
 >
 > This document is the build contract. Every milestone below has exit criteria a CI job can check.
 > If a section here and the code disagree later, one of them is a bug.
@@ -250,14 +250,14 @@ class ReviewerMove(BaseModel):
 
 ### 4.2 Rules
 
-1. **Scope.** A finding's `location` must intersect the diff. In round N > 1, a *new* finding is admissible only if it falls on lines changed by the latest revision. This stops goalpost drift by construction.
-2. **One round:** reviewer → author moves → reviewer replies. A finding closes when it is accepted, withdrawn, or deferred (deferred findings become follow-up items in the report).
+1. **Scope.** A finding's `location` must intersect the diff. On the review after a revision, a *new* finding is admissible only if it falls on lines changed by that revision, or if it `reopens` an earlier finding whose agreed fix is still missing. This stops goalpost drift by construction (ADR-014).
+2. **One round:** reviewer → author moves → reviewer replies. A finding closes when it is accepted, withdrawn, or deferred (deferred findings become follow-up items in the report). A rebuttal, counterproposal or deferral closes it only with the reviewer's assent; silence closes nothing (ADR-014).
 3. **Progress.** The open set must strictly shrink each round (invariant 4). After `max_rounds` (default 3), anything still open goes to arbitration.
 4. **Arbitration ladder**, cheapest and most objective first:
    - **Correctness or security disputes are settled by execution.** The Tester writes a **repro test** for the finding's claim. If the test fails on the head tree, the finding is upheld. If it passes, the finding is dismissed. If the test cannot be written, the dispute goes to the next rung. The repro test is kept as a regression test.
    - **Preference disputes are settled by the preference store.** If an applicable preference exists, it wins. A `hard` preference is upheld as a blocker. A `soft` one is downgraded to a nit.
    - **Style disputes not covered by any preference:** the author wins and the finding is dropped. Taste is not a merge blocker.
-   - **Remaining `blocker`/`major` disputes:** the Arbiter role at `max` effort issues a `Ruling`. If `escalation: human` is configured, the dispute goes to `AWAITING_HUMAN` instead.
+   - **Remaining `blocker`/`major` disputes:** the Arbiter role at `max` effort issues a `Ruling`. If `escalation: human` is configured, the dispute goes to `AWAITING_HUMAN` instead. Either way, the rungs above always run first; a person is asked only about what they leave open, and the run's clock stops while they decide (ADR-014).
 5. **Anti-sycophancy measures:**
    - The Reviewer never sees the Coder's reasoning, only the artifacts.
    - Every accept requires a rationale.
@@ -434,13 +434,12 @@ multistep-agent/
 ├── src/msa/
 │   ├── core/                      # PURE. No I/O. Imports nothing below.
 │   │   ├── state.py  events.py  effects.py  machine.py  invariants.py
-│   │   ├── negotiation.py         # protocol rules as pure functions
 │   │   └── budget.py
 │   ├── agents/                    # invocations only: the loop itself is msa.llm.gateway
 │   │   ├── toolset.py             # the tools of §3.2, bound to one role's workspace (M4)
 │   │   ├── common.py              # cached system prompt, tagged user-prompt sections (M6)
-│   │   ├── planner.py coder.py tester.py  # M6–M7; reviewer.py arbiter.py in M8
-│   │   ├── schemas.py             # Plan, ImplementationSummary, TestSuiteSummary, TestTriage
+│   │   ├── planner.py coder.py tester.py reviewer.py arbiter.py  # M6–M8
+│   │   ├── schemas.py             # Plan, summaries, triage, Review, moves, Ruling, ReproAttempt
 │   │   └── prompts/               # versioned .md, part of every request digest
 │   ├── globs.py                   # one glob language for capabilities and preference scopes
 │   ├── skills/preferences/        # ADR-010
@@ -456,9 +455,10 @@ multistep-agent/
 │   │   ├── intake.py  checks.py  executors.py  # INTAKE, preference checks, routing
 │   │   ├── live.py  context.py  roles.py  verify.py  # a live run's executors (ADR-011)
 │   │   ├── testing.py  guard.py                    # TESTING and the evidence guards (ADR-012, 013)
+│   │   ├── review.py  negotiation.py               # REVIEWING, NEGOTIATING, the ladder (ADR-014)
 │   │   ├── worktree.py  artifacts.py               # the run's worktree and files
 │   ├── observability/             # report.py (M6); logging.py tracing.py later
-│   └── cli.py                     # typer: run, resume, replay, inspect, prefs, fsm, eval
+│   └── cli.py                     # typer: run, resume, approve, rule, replay, inspect, prefs, fsm
 ├── tests/
 │   ├── unit/ property/ model_based/ contract/ integration/ replay/ chaos/
 │   ├── fixtures/repos/            # tiny repos for whole runs (greeter: I-01, I-02)
@@ -531,7 +531,7 @@ Effort levels per role are tuned on this corpus too: sweep `low → xhigh` per r
   - 004 executable arbitration
   - 005 single model with per-role effort
   - 006 path-ownership capabilities
-  - 007–013: the commit point, the gateway, the tool layer, preferences, the first slice (M6), the Tester (M7), evidence integrity
+  - 007–014: the commit point, the gateway, the tool layer, preferences, the first slice (M6), the Tester (M7), evidence integrity, review and negotiation (M8)
 - **Conventional commits:**
   - `CHANGELOG.md` is generated by `git-cliff` (`make changelog`).
   - Subjects are checked by `scripts/conventional_commits.py`, both in a `commit-msg` hook and in CI on pull requests, so no commit silently drops out of the changelog.
@@ -556,7 +556,7 @@ Each milestone is a vertical slice that merges green. The sizes are relative [Gu
 | **M5** ✅ | **Preferences skill:** schema, layered store, conflict detection, checkers, rendering, CLI | Merge-law properties. I-16 green. `msa prefs` commands work. | M |
 | **M6** 🟡 | **Planner + Coder + VERIFYING:** first end-to-end slice | I-01 and I-02 green against a FakeLLM, with the real sandbox ✅ (I-14 too). One live run resolves a fixture task: wired (`msa run --record`), and it needs an API key, like M3's cassette. | L |
 | **M7** ✅ | **Tester:** blind authoring, fail-before/pass-after, flakes, triage, weakened-test guard, parallel BUILDING | I-03, I-04, I-15 and I-17 green ✅, with triage, the guard and blindness, against a FakeLLM and the real sandbox (ADR-012, ADR-013). | L |
-| **M8** | **Reviewer + negotiation + arbitration** | I-05 to I-10 green. Negotiation invariants hold under property tests. | L |
+| **M8** ✅ | **Reviewer + negotiation + arbitration** | I-05 to I-10 green ✅, with the ladder's rungs, the plan gate (`msa approve`) and rulings (`msa rule`). Negotiation invariants hold under property tests ✅ (ADR-014). | L |
 | **M9** | **Eval harness + ablations + run report** | Arms A–D run on the corpus. Report published. Decision rule applied. | M |
 | **M10** | **Hardening:** container sandbox, security review, docs, optional `publish` | Security checklist closed. README quickstart works from a clean machine. | M |
 

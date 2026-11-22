@@ -8,9 +8,10 @@ preferences skill.
 **Status:** M0 (skeleton), M1 (the state machine), M2 (journal and interpreter), M4
 (tools, capabilities and the local sandbox) and M5 (preferences) are done. M3 (the LLM
 gateway) is built and contract-tested offline; its live cassette awaits a recording with an
-API key. M6 (the first end-to-end slice) and M7 (the Tester) are built: `msa run` plans,
-implements, verifies and tests a change with the real Planner, Coder and Tester. The
-Reviewer stage (M8) passes through until it exists, and the run report says so.
+API key. M6 (the first end-to-end slice), M7 (the Tester) and M8 (the Reviewer, negotiation
+and arbitration) are built: `msa run` plans, implements, verifies, tests and reviews a change
+with the real Planner, Coder, Tester, Reviewer and Arbiter. No model has run them yet: every
+end-to-end test scripts the model, and the first live run needs an API key.
 
 The full design is in [`docs/PLAN.md`](docs/PLAN.md), decisions are in
 [`docs/adr/`](docs/adr/), and the generated state diagram is in [`docs/fsm.md`](docs/fsm.md).
@@ -50,6 +51,18 @@ uv run msa run --repo path/to/repo --task "Add a --verbose flag to the CLI"
 The checkout is never modified. The work happens in a git worktree under `.msa/worktrees/`,
 and the result is a patch plus a report in `.msa/runs/<run>/` (`patch.diff`, `report.md`).
 Apply the patch with `git apply`, or don't.
+
+When a run needs you (a plan gate with `plan_gate = "human"`, or a dispute the reviewer
+and the author could not settle and no test or rule decided), it parks, writes the question
+to `.msa/runs/<run>/question.md`, and stops its clock until you answer:
+
+```bash
+uv run msa rule <run> c0-1=upheld
+```
+
+```bash
+uv run msa approve <run> --reject "split step 2"
+```
 
 ## What exists today
 
@@ -119,6 +132,16 @@ ANTHROPIC_API_KEY=... uv run msa llm ping
   are refused; they run in a pytest session of their own, under a pytest configuration the
   Coder may not change; and every check runs on exactly the files that will be delivered
   ([ADR-013](docs/adr/013-evidence-integrity.md)).
+- the **Reviewer** reads the change, never the Coder's reasoning, and raises findings
+  only on lines the change touched (after a revision: lines the revision touched);
+- **NEGOTIATING** has the Coder answer each finding (accept, rebut with evidence,
+  counter, defer) and the Reviewer reply; a finding closes only by an accept or the other
+  side's assent, and silence closes nothing;
+- the **arbitration ladder** settles what is left, cheapest rung first: a repro test the
+  Tester writes for correctness and security disputes (if it fails on the head tree, the
+  finding is upheld and the test ships as a regression test), the preference store,
+  "taste never blocks", and only then the Arbiter or a person
+  ([ADR-014](docs/adr/014-review-negotiation-arbitration.md)).
 
 The harness, not an agent, turns the worktree into the tree hashes evidence is bound to.
 
@@ -170,7 +193,7 @@ uv run msa prefs check
 | Crash recovery | Forked runs `SIGKILL` themselves up to three times at random boundaries. Each resumes to *exactly* the uninterrupted final state, and no journaled effect executes again. |
 | Hypothesis stateful | Random interleavings, including overspend, deadlines, cancellation, redelivered and forged events. The journal replays exactly and survives a JSON round trip. |
 | Property tests | Every run terminates and publishes exactly one outcome. Every journal prefix replays. Interpreted runs execute each effect exactly once. |
-| Mutation testing | All 1,070 mutants of the core are caught: killed, or timed out by hanging (zero-survivor gate, nightly) |
+| Mutation testing | All 1,129 mutants of the core are caught: killed, or timed out by hanging (zero-survivor gate, nightly) |
 | Static analysis | Reachability and liveness over the declared transition graph (`msa fsm check`) |
 | LLM request contract | Generated multi-turn scripts (parallel and sequential tools, pauses, mid-output fallbacks): every request is well-formed, the cached prefix never changes, `messages` only grows, nothing from a declined attempt is echoed |
 | SDK adapter | A mock transport serving SSE streams pins paths, headers, error classes and mid-stream failures at the locked SDK version |
@@ -178,7 +201,8 @@ uv run msa prefs check
 | Symlink race | About 100k atomic directory/symlink swaps per run while tools work through them. Several hundred calls per run hit the race window, and all are refused. |
 | Preference merge laws | Associativity, identity, idempotence and right bias of the layer merge (Hypothesis) |
 | Conflict soundness | Scope overlap never misses a path both scopes apply to. The test fails when the overlap rule is weakened. |
-| End-to-end runs | I-01–I-04, I-14 and I-15 on a fixture repository: real intake, worktree, tool layer, ruff and pytest in the sandbox, and finalize, with only the model scripted. I-01's event sequence must match a golden file. |
+| End-to-end runs | I-01–I-10 and I-14–I-17 on a fixture repository: real intake, worktree, tool layer, ruff and pytest in the sandbox, repro tests, parking and `msa rule`, and finalize, with only the model scripted. I-01's event sequence must match a golden file. |
+| Negotiation rules | Silence never closes a finding, only the other side's assent closes a contested one, and admission never widens a finding's scope (Hypothesis) |
 | Contracts | Core purity (AST allowlist), schema completeness, `docs/fsm.md` freshness, layering (`import-linter`), only `msa.llm` imports the SDK, no credential in any cassette |
 
 ## Develop

@@ -1,6 +1,7 @@
 # ADR-004: Settle correctness disputes by running code
 
 - **Status:** Accepted (2026-11-02)
+- **Refined by:** ADR-014 (the ladder runs before any escalation; how repro tests decide)
 
 ## Context
 
