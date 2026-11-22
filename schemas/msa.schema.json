@@ -4,6 +4,18 @@
       "additionalProperties": false,
       "description": "Bounds on one agent invocation, on top of its effect's budget reservation.",
       "properties": {
+        "arbiter_max_turns": {
+          "default": 4,
+          "exclusiveMinimum": 0,
+          "title": "Arbiter Max Turns",
+          "type": "integer"
+        },
+        "author_max_turns": {
+          "default": 20,
+          "exclusiveMinimum": 0,
+          "title": "Author Max Turns",
+          "type": "integer"
+        },
         "coder_max_turns": {
           "default": 60,
           "exclusiveMinimum": 0,
@@ -20,6 +32,18 @@
           "default": 400,
           "exclusiveMinimum": 0,
           "title": "Repo Map Max Paths",
+          "type": "integer"
+        },
+        "repro_max_turns": {
+          "default": 30,
+          "exclusiveMinimum": 0,
+          "title": "Repro Max Turns",
+          "type": "integer"
+        },
+        "reviewer_max_turns": {
+          "default": 40,
+          "exclusiveMinimum": 0,
+          "title": "Reviewer Max Turns",
           "type": "integer"
         },
         "tester_max_turns": {
@@ -344,6 +368,19 @@
       "title": "Pricing",
       "type": "object"
     },
+    "ReviewConfig": {
+      "additionalProperties": false,
+      "description": "REVIEWING and NEGOTIATING (PLAN \u00a74, ADR-014).",
+      "properties": {
+        "enabled": {
+          "default": true,
+          "title": "Enabled",
+          "type": "boolean"
+        }
+      },
+      "title": "ReviewConfig",
+      "type": "object"
+    },
     "Role": {
       "enum": [
         "planner",
@@ -497,6 +534,11 @@
           "exclusiveMinimum": 0,
           "title": "Flake Reruns",
           "type": "integer"
+        },
+        "repro_directory": {
+          "default": "tests/repro",
+          "title": "Repro Directory",
+          "type": "string"
         }
       },
       "title": "TestingConfig",
@@ -539,9 +581,13 @@
     "agents": {
       "$ref": "#/$defs/AgentsConfig",
       "default": {
+        "arbiter_max_turns": 4,
+        "author_max_turns": 20,
         "coder_max_turns": 60,
         "planner_max_turns": 30,
         "repo_map_max_paths": 400,
+        "repro_max_turns": 30,
+        "reviewer_max_turns": 40,
         "tester_max_turns": 60,
         "triage_max_turns": 20
       }
@@ -621,6 +667,12 @@
       "title": "Pricing",
       "type": "object"
     },
+    "review": {
+      "$ref": "#/$defs/ReviewConfig",
+      "default": {
+        "enabled": true
+      }
+    },
     "sandbox": {
       "$ref": "#/$defs/SandboxConfig",
       "default": {
@@ -651,7 +703,8 @@
     "testing": {
       "$ref": "#/$defs/TestingConfig",
       "default": {
-        "flake_reruns": 3
+        "flake_reruns": 3,
+        "repro_directory": "tests/repro"
       }
     },
     "verify": {

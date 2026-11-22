@@ -280,6 +280,10 @@ class AgentsConfig(Frozen):
     coder_max_turns: PositiveInt = 60
     tester_max_turns: PositiveInt = 60
     triage_max_turns: PositiveInt = 20
+    reviewer_max_turns: PositiveInt = 40  # a review, or a reply to the author's moves
+    author_max_turns: PositiveInt = 20  # the Coder answering findings, read-only
+    repro_max_turns: PositiveInt = 30  # the Tester writing one repro test
+    arbiter_max_turns: PositiveInt = 4  # no tools: one answer, plus any pause_turn
     repo_map_max_paths: PositiveInt = 400  # files listed in the Planner's prompt
 
 
@@ -288,6 +292,17 @@ class TestingConfig(Frozen):
 
     __test__ = False  # not a pytest test class
     flake_reruns: PositiveInt = 3  # each failing test, rerun alone: mixed results are flaky
+    # Where the Tester writes repro tests that settle disputes (ADR-004). One of its own
+    # directories; its tests need not fail on the base tree, only on the disputed head.
+    repro_directory: str = "tests/repro"
+
+
+class ReviewConfig(Frozen):
+    """REVIEWING and NEGOTIATING (PLAN §4, ADR-014)."""
+
+    # false: no Reviewer; every run is reviewed by a pass-through stand-in that the report
+    # names. Arm B of the ablation (PLAN §11) runs this way.
+    enabled: bool = True
 
 
 class MsaConfig(Frozen):
@@ -300,7 +315,18 @@ class MsaConfig(Frozen):
     sandbox: SandboxConfig = SandboxConfig()
     verify: VerifyConfig = VerifyConfig()
     testing: TestingConfig = TestingConfig()
+    review: ReviewConfig = ReviewConfig()
     agents: AgentsConfig = AgentsConfig()
+
+    @model_validator(mode="after")
+    def _repro_tests_are_the_testers(self) -> Self:
+        owned = self.capabilities.owned_directories(Role.TESTER)
+        if self.testing.repro_directory not in owned:
+            raise ValueError(
+                f"[testing].repro_directory {self.testing.repro_directory!r} must be one of the "
+                f"tester's own directories {list(owned)}"
+            )
+        return self
 
     @model_validator(mode="after")
     def _every_model_is_priced(self) -> Self:

@@ -7,6 +7,9 @@
   wrong, or unlinted). It then sees the head tree.
 - ``triage``: diagnoses consistent failures, read-only, into ``impl_bug``, ``test_bug`` or
   ``environment``. Flakes never reach it: the harness tells them apart by rerunning.
+- ``repro``: settles a disputed correctness or security finding with a test, written in a
+  scratch worktree at the head tree. The harness runs it, and its result is the verdict
+  (ADR-004).
 
 Its write capability (``tests/acceptance/**``, ``tests/repro/**``) lives in its workspace.
 All three share one system prompt, so they share one cached prefix.
@@ -18,7 +21,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from msa.agents.common import only, prompt, section, system_prompt
-from msa.agents.schemas import Plan, TestSuiteSummary, TestTriage
+from msa.agents.schemas import Plan, ReproAttempt, TestSuiteSummary, TestTriage
 from msa.config import Role
 from msa.llm.gateway import Invocation, Tool
 
@@ -117,5 +120,39 @@ def triage(
         budget_usd_micros=budget_usd_micros,
         idempotency_key=key,
         tools=only(tools, TRIAGE_TOOLS),
+        max_turns=max_turns,
+    )
+
+
+def repro(
+    *,
+    task: str,
+    plan: Plan,
+    preferences: str,
+    dispute: str,
+    path: str,
+    tools: Iterable[Tool[Any]],
+    budget_usd_micros: int,
+    key: str,
+    max_turns: int,
+) -> Invocation[ReproAttempt]:
+    body = prompt(
+        section("task", task),
+        section("plan", plan.render()),
+        section("dispute", dispute),
+        ask=(
+            f"Write one test module at {path} that fails on the code as it is now exactly "
+            "when the reviewer's claim is true, and passes when it is false. Run it, then "
+            "answer. If no test can check the claim, write nothing and answer written: false."
+        ),
+    )
+    return Invocation(
+        role=Role.TESTER,
+        system=system_prompt("tester", preferences),
+        prompt=body,
+        output=ReproAttempt,
+        budget_usd_micros=budget_usd_micros,
+        idempotency_key=key,
+        tools=tuple(tools),
         max_turns=max_turns,
     )

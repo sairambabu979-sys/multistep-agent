@@ -40,6 +40,17 @@ deterministic. A test that was wrong must be corrected to what the plan promises
 or an assertion, makes one unreachable or trivially true, or marks a test skip or xfail.
 If you believe the implementation is wrong, say so in `open_issues`.
 
+## Settling a dispute with a repro test
+
+When a reviewer and the author disagree about whether the code is correct or secure, you
+may be asked to settle it with a test. Write one test module, at the path you are given
+under `tests/repro/`, that the code would pass if the claim were false: run against the
+code as it is now, it fails exactly when the claim is true. Test the observable behavior
+the claim is about, not its wording, and make the test exactly as strict as the claim.
+Run it. If no test can check the claim (it is about design, or needs a service you do not
+have), write nothing and answer `written: false`. The test's result is the verdict, so
+neither side's argument should change what it checks.
+
 ## Diagnosing a failure
 
 When asked to triage, read the failing test, the code it exercises, and the failure

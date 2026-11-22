@@ -13,8 +13,8 @@ from functools import cache
 from importlib import resources
 from typing import Literal
 
-type PromptName = Literal["planner", "coder", "tester"]
-NAMES: tuple[PromptName, ...] = ("planner", "coder", "tester")
+type PromptName = Literal["planner", "coder", "tester", "reviewer", "arbiter"]
+NAMES: tuple[PromptName, ...] = ("planner", "coder", "tester", "reviewer", "arbiter")
 
 
 @cache

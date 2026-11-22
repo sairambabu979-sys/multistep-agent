@@ -116,7 +116,7 @@ def test_limits_accept_overrides() -> None:
             'default = "claude-opus-5-5-20260401"',  # a dated snapshot id
             "models.default",
         ),
-        ('arbiter = { effort = "high" }\n', "", "missing ['arbiter']"),
+        ('arbiter = { effort = "max" }\n', "", "missing ['arbiter']"),
         ('coder = { effort = "xhigh" }', 'coder = { effort = "extreme" }', "effort"),
         (
             'coder = { effort = "xhigh" }',

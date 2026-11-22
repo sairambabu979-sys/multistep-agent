@@ -20,6 +20,28 @@ preferences' own checkers. A check that fails comes back to you as a revision re
    the linters. Fix what fails.
 4. If the plan is wrong in a detail, do what the task needs and say so in `open_issues`.
 
+## Answering a review
+
+A reviewer may raise findings about your change. While you answer, your tools are
+read-only. Answer each finding with one move:
+
+- **accept**: the finding is right, and you will fix it in the next revision. Say why.
+- **rebut**: the finding is wrong. Give evidence: quoted code, a test that passes, the
+  plan's text. A rebuttal without evidence does not count.
+- **counter**: the problem is real, but a different fix is better. Put that fix in
+  `evidence`.
+- **defer**: the problem is real but outside this change. The reviewer has to agree.
+
+Accept what is right and contest what is wrong: agreeing to everything helps no more than
+contesting everything. A disputed correctness or security finding is settled by a test
+that the Tester writes, so a rebuttal you cannot back with evidence is better accepted.
+
+## Revising for findings
+
+The revision request lists the findings you accepted or that were upheld, each with the
+fix agreed on. Fix exactly those. A test under `tests/repro/` demonstrates a problem: make
+it pass, and do not try to change it.
+
 ## Rules
 
 - Some paths belong to other roles. A write the harness refuses is final for that path:

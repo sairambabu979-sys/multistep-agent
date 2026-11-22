@@ -13,7 +13,8 @@ planner = { effort = "high" }
 coder = { effort = "xhigh" }
 tester = { effort = "high" }
 reviewer = { effort = "high" }
-arbiter = { effort = "high" }
+# The Arbiter only rules on escalation: rarely, and a wrong ruling is costly.
+arbiter = { effort = "max" }
 
 [api]
 base_url = "https://api.anthropic.com"  # explicit, so ANTHROPIC_BASE_URL is never picked up
@@ -106,9 +107,19 @@ planner_max_turns = 30
 coder_max_turns = 60
 tester_max_turns = 60
 triage_max_turns = 20
+reviewer_max_turns = 40
+author_max_turns = 20
+repro_max_turns = 30
+arbiter_max_turns = 4
 repo_map_max_paths = 400
 
 # TESTING: each failing test is rerun alone this many times; mixed results mean flaky.
 # A flaky test is reported and sent back to the Tester, never skipped.
 [testing]
 flake_reruns = 3
+repro_directory = "tests/repro"  # repro tests that settle disputes (ADR-004)
+
+# REVIEWING and NEGOTIATING (ADR-014). enabled = false replaces the Reviewer with a
+# pass-through stand-in, named in the report: arm B of the ablation (PLAN §11).
+[review]
+enabled = true
