@@ -19,6 +19,9 @@ by [git-cliff](https://git-cliff.org). Regenerate with `make changelog`; do not 
 - **agents:** the Planner and Coder: schemas, prompts and invocations (M6) ([`bee5d0e`](https://github.com/sairambabu979-sys/multistep-agent/commit/bee5d0e662a2e752a664ea15bc0014ee2df6c6d1))
 - **runtime:** live runs with the Planner, Coder and VERIFYING; msa run (M6) ([`94b39c8`](https://github.com/sairambabu979-sys/multistep-agent/commit/94b39c8f106de8bae91f6800eeeb632391300950))
 - **runtime:** the Tester: blind acceptance tests, fail-before/pass-after, flakes, triage (M7) ([`f2687d2`](https://github.com/sairambabu979-sys/multistep-agent/commit/f2687d2d62be39e974f76c06cb43a1f503cfcc41))
+- **core:** objective arbitration before a human, and no clock while one is asked ([`cc15a59`](https://github.com/sairambabu979-sys/multistep-agent/commit/cc15a5983d25ae2479a5c63fe26f080f44a3d04c))
+- **agents:** the Reviewer and the Arbiter, author moves and repro tests (M8) ([`743362b`](https://github.com/sairambabu979-sys/multistep-agent/commit/743362bd9a67d01a534a9c2da414fe38aebda5c1))
+- **runtime:** review, negotiation and the arbitration ladder; msa approve and msa rule (M8) ([`519186b`](https://github.com/sairambabu979-sys/multistep-agent/commit/519186b6ddeba6fce1d12700383cf91279bc7a11))
 
 ### Bug fixes
 
@@ -55,6 +58,8 @@ by [git-cliff](https://git-cliff.org). Regenerate with `make changelog`; do not 
 - ADR-012 for the Tester, and M7 status in PLAN and README ([`f0c9039`](https://github.com/sairambabu979-sys/multistep-agent/commit/f0c90392b9b77c41c15973137f8057ba5a7b8af5))
 - **changelog:** regenerate for M7 ([`d4d25c5`](https://github.com/sairambabu979-sys/multistep-agent/commit/d4d25c5441ffa825dda4f9e4ce5ced281f0fed08))
 - ADR-013 for evidence integrity, and I-17 in PLAN and README ([`3a06c34`](https://github.com/sairambabu979-sys/multistep-agent/commit/3a06c34749a65727bb1cba810e3cb14a7d6de822))
+- **changelog:** regenerate for the t3 merge and ADR-013 ([`6aa70f8`](https://github.com/sairambabu979-sys/multistep-agent/commit/6aa70f82e4f29cda3f5d21947764b5182ae191dd))
+- ADR-014 for review and negotiation, and M8 status in PLAN and README ([`e066fd9`](https://github.com/sairambabu979-sys/multistep-agent/commit/e066fd95b630d0f9b38c1902960e1bfb7796480b))
 
 ### Tests
 
