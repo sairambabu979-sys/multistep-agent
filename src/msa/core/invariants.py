@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Callable, Iterator
+from datetime import timedelta
 
 from msa.core.state import FindingStatus, RunState
 from msa.core.values import Phase
@@ -134,11 +135,21 @@ def _identities(s: RunState) -> Iterator[str]:
 
 
 def _clock(s: RunState) -> Iterator[str]:
-    """(+) Time never runs backwards, and the deadline is fixed when the run starts."""
+    """(+) Time never runs backwards. The deadline is fixed when the run starts and moves
+    only by time spent waiting on a person, which is counted exactly while one is asked."""
     if s.updated_at < s.started_at:
         yield "updated_at precedes started_at"
-    if s.deadline != s.started_at + s.limits.wall_clock:
-        yield "deadline drifted from started_at + wall_clock"
+    if s.paused < timedelta(0):
+        yield f"paused {s.paused} is negative"
+    if s.deadline != s.started_at + s.limits.wall_clock + s.paused:
+        yield "deadline drifted from started_at + wall_clock + paused"
+    asking = sum(e.command.human for e in s.pending)
+    if asking > 1:
+        yield f"{asking} people asked at once"
+    if (s.waiting_since is not None) != (asking == 1):
+        yield f"waiting_since is {s.waiting_since} while {asking} human effect(s) are pending"
+    if s.waiting_since is not None and s.waiting_since > s.updated_at:
+        yield "waiting_since is later than updated_at"
 
 
 CHECKS: tuple[Callable[[RunState], Iterator[str]], ...] = (

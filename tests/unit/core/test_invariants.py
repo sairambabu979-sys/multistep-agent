@@ -18,9 +18,9 @@ from msa.core.events import ImplementationCompleted
 from msa.core.ids import EffectId, FindingId
 from msa.core.invariants import violations
 from msa.core.state import Evidence, Finding, FindingStatus
-from msa.core.values import Outcome, OutcomeReason, Phase, Severity
+from msa.core.values import Outcome, OutcomeReason, Phase, PlanGate, Severity
 from tests.support.driver import Driver
-from tests.support.factory import BUILD, finding, tree
+from tests.support.factory import BUILD, finding, limits, tree
 
 
 @pytest.fixture
@@ -177,13 +177,42 @@ def test_static_messages_are_exact(negotiating: RunState) -> None:
     before_start = negotiating.started_at - timedelta(seconds=1)
     assert "updated_at precedes started_at" in corrupt(negotiating, updated_at=before_start)
     drifted = negotiating.deadline + timedelta(seconds=1)
-    assert "deadline drifted from started_at + wall_clock" in corrupt(negotiating, deadline=drifted)
+    assert "deadline drifted from started_at + wall_clock + paused" in corrupt(
+        negotiating, deadline=drifted
+    )
+    assert "deadline drifted from started_at + wall_clock + paused" in corrupt(
+        negotiating, paused=timedelta(seconds=1)
+    )
+    minus = timedelta(seconds=-1)
+    assert "paused -1 day, 23:59:59 is negative" in corrupt(
+        negotiating, paused=minus, deadline=negotiating.deadline + minus
+    )
+    since = negotiating.updated_at
+    assert f"waiting_since is {since} while 0 human effect(s) are pending" in corrupt(
+        negotiating, waiting_since=since
+    )
     ledger = negotiating.ledger
     over = ledger.model_copy(update={"spent": Spend(usd_micros=ledger.limit_usd_micros)})
     committed = ledger.limit_usd_micros + ledger.reserved_usd_micros
     assert f"committed {committed} > limit {ledger.limit_usd_micros} in a live run" in corrupt(
         negotiating, ledger=over
     )
+
+
+def test_a_person_is_asked_one_thing_at_a_time_and_the_wait_is_tracked() -> None:
+    d = Driver(limits(plan_gate=PlanGate.HUMAN))
+    d.intake()
+    d.plan()
+    gate = d.state
+    assert violations(gate) == ()
+    (asking,) = gate.pending
+    twice = (asking, asking.model_copy(update={"id": EffectId(f"{asking.id}-again")}))
+    assert "2 people asked at once" in corrupt(gate, pending=twice)
+    assert "waiting_since is None while 1 human effect(s) are pending" in corrupt(
+        gate, waiting_since=None
+    )
+    later = gate.updated_at + timedelta(seconds=1)
+    assert "waiting_since is later than updated_at" in corrupt(gate, waiting_since=later)
 
 
 def test_build_progress_must_match_pending_work() -> None:

@@ -42,6 +42,8 @@ class SystemClock:
         return max(datetime.now(UTC), state.updated_at)
 
     def wait_budget(self, state: RunState) -> float | None:
+        if state.waiting_since is not None:
+            return None  # the clock is stopped while a person is asked something
         return max(0.0, (state.deadline - datetime.now(UTC)).total_seconds())
 
 

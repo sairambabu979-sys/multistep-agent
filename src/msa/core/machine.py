@@ -7,6 +7,8 @@ The pipeline for every event, in order:
 1. Admission: reject events for terminal runs, a second ``RunStarted``, clock regressions,
    and completions for effects that are not pending (or of the wrong kind).
 2. Bookkeeping: bump ``seq``, stamp ``updated_at``, retire the effect, settle its spend.
+   A person's answer (to a plan gate or a dispute) also moves the deadline by however long
+   they took: waiting for a person is not work.
 3. Global guards: cancellation, deadline, budget overcommitment, agent failure/refusal.
    These may end the run from any phase.
 4. Rule dispatch: look up ``(phase, event type)`` in the table and run the handler.
@@ -22,6 +24,7 @@ nothing here mutates.
 from __future__ import annotations
 
 from collections.abc import Iterable
+from datetime import datetime
 
 from msa.core.budget import InsufficientBudget, Ledger
 from msa.core.effects import AnyCommand, CancelEffects, Effect, PrepareWorkspace, PublishOutcome
@@ -132,10 +135,28 @@ def _admit(state: RunState, event: EventBase) -> RunState:
             Rejection.MISMATCHED_COMPLETION,
             f"{type(event).__name__} cannot complete {effect.command.kind}",
         )
-    return current.model_copy(
+    current = current.model_copy(
         update={
             "pending": tuple(e for e in state.pending if e.id != effect.id),
             "ledger": state.ledger.settle(effect.id, spend_of(event)),
+        }
+    )
+    if effect.command.human:
+        return _resume_clock(current, event.at)
+    return current
+
+
+def _resume_clock(state: RunState, now: datetime) -> RunState:
+    """A person answered: the time they took moves the deadline, so it never expires while
+    the run waits on them. The guards that follow see the moved deadline."""
+    if state.waiting_since is None:  # pragma: no cover - an invariant while one is pending
+        raise InvariantViolation(("a person answered unasked",))  # pragma: no mutate
+    waited = now - state.waiting_since
+    return state.model_copy(
+        update={
+            "deadline": state.deadline + waited,
+            "paused": state.paused + waited,
+            "waiting_since": None,
         }
     )
 
@@ -189,7 +210,9 @@ def _seal(state: RunState) -> tuple[RunState, tuple[AnyCommand, ...]]:
     if state.pending:
         commands.append(CancelEffects(effect_ids=tuple(e.id for e in state.pending)))
     commands.append(PublishOutcome(outcome=state.outcome))
-    sealed = state.model_copy(update={"pending": (), "ledger": state.ledger.release_all()})
+    sealed = state.model_copy(
+        update={"pending": (), "ledger": state.ledger.release_all(), "waiting_since": None}
+    )
     return sealed, tuple(commands)
 
 
@@ -208,4 +231,7 @@ def _issue(
         for i, c in addressed
     )
     awaited = tuple(e for e in effects if e.command.awaits)
-    return state.model_copy(update={"pending": state.pending + awaited, "ledger": ledger}), effects
+    update: dict[str, object] = {"pending": state.pending + awaited, "ledger": ledger}
+    if any(e.command.human for e in awaited):
+        update["waiting_since"] = state.updated_at  # the clock stops until they answer
+    return state.model_copy(update=update), effects

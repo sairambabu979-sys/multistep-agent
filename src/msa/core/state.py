@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from enum import StrEnum
 
 from pydantic import AwareDatetime, NonNegativeInt, PositiveInt
@@ -75,7 +76,11 @@ class RunState(Frozen):
     phase: Phase
     started_at: AwareDatetime
     updated_at: AwareDatetime
-    deadline: AwareDatetime
+    deadline: AwareDatetime  # started_at + wall_clock + paused
+    # The clock stops while a person is asked something (a plan gate, a ruling): since
+    # when, and for how long in all. Each answer moves the deadline by its wait.
+    waiting_since: AwareDatetime | None = None
+    paused: timedelta = timedelta(0)
     task_digest: ValidDigest
     limits: Limits
     ledger: Ledger

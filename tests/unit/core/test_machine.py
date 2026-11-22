@@ -360,15 +360,93 @@ def test_withdrawn_findings_finalize_without_a_revision() -> None:
     d.expect(P.FINALIZING)
 
 
-def test_a_round_without_progress_escalates_to_a_human() -> None:
+def _to_human(d: Driver) -> None:
+    """A round without progress goes to arbitration first; its objective rungs (a repro
+    test, the preference store, the style rule) decide nothing, so a human is asked."""
+    d.complete(RunNegotiationRound, NegotiationRoundCompleted, resolutions=())
+    d.complete(RequestArbitration, ArbitrationRuled, resolutions=())
+
+
+def test_a_round_without_progress_goes_to_the_objective_rungs_then_to_a_human() -> None:
     d = Driver()
     d.to_review()
     d.review(finding("f1", Severity.BLOCKER))
     d.complete(RunNegotiationRound, NegotiationRoundCompleted, resolutions=())
+    d.expect(P.NEGOTIATING)
+    assert d.effect(RequestArbitration).command == RequestArbitration(
+        tree=BUILD, findings=(FindingId("f1"),), arbiter=False
+    )
+    d.complete(RequestArbitration, ArbitrationRuled, resolutions=())
     d.expect(P.AWAITING_HUMAN)
     assert d.effect(AwaitHumanRuling).command == AwaitHumanRuling(
         tree=BUILD, findings=(FindingId("f1"),)
     )
+
+
+def test_a_human_is_asked_only_about_what_the_objective_rungs_left_open() -> None:
+    d = Driver()
+    d.to_review()
+    d.review(finding("a", Severity.BLOCKER), finding("b", Severity.MAJOR))
+    d.complete(RunNegotiationRound, NegotiationRoundCompleted, resolutions=())
+    d.complete(RequestArbitration, ArbitrationRuled, resolutions=_verdicts(a=Verdict.DISMISSED))
+    d.expect(P.AWAITING_HUMAN)
+    assert d.effect(AwaitHumanRuling).command == AwaitHumanRuling(
+        tree=BUILD, findings=(FindingId("b"),)
+    )
+    d.complete(AwaitHumanRuling, HumanRuled, resolutions=_verdicts(b=Verdict.UPHELD))
+    d.expect(P.REVISING)
+    assert d.effect(ReviseChanges).command == ReviseChanges(
+        owner=Owner.CODER, tree=BUILD, findings=(FindingId("b"),)
+    )
+
+
+@pytest.mark.parametrize(
+    ("verdict", "phase"), [(Verdict.UPHELD, P.REVISING), (Verdict.DISMISSED, P.FINALIZING)]
+)
+def test_when_the_objective_rungs_decide_everything_no_human_is_asked(
+    verdict: Verdict, phase: Phase
+) -> None:
+    d = Driver()
+    d.to_review()
+    d.review(finding("f1", Severity.BLOCKER))
+    d.complete(RunNegotiationRound, NegotiationRoundCompleted, resolutions=())
+    d.complete(RequestArbitration, ArbitrationRuled, resolutions=_verdicts(f1=verdict))
+    d.expect(phase)
+    assert not any(isinstance(e.command, AwaitHumanRuling) for e in d.state.pending)
+
+
+def test_a_partial_ruling_uses_ruling_verdicts_on_open_findings_only() -> None:
+    d = Driver()
+    d.to_review()
+    d.review(finding("a", Severity.BLOCKER), finding("b", Severity.MAJOR))
+    d.complete(RunNegotiationRound, NegotiationRoundCompleted, resolutions=())
+    accepted = d.answer(
+        RequestArbitration, ArbitrationRuled, resolutions=_verdicts(a=Verdict.ACCEPTED)
+    )
+    assert d.reject(accepted).reason is Rejection.ILLEGAL_VERDICT
+    unknown = d.answer(
+        RequestArbitration, ArbitrationRuled, resolutions=_verdicts(z=Verdict.UPHELD)
+    )
+    assert d.reject(unknown).reason is Rejection.UNKNOWN_FINDING
+
+
+def test_with_no_revisions_left_a_person_is_still_asked_while_no_change_is_demanded() -> None:
+    d = Driver(limits(max_revisions=0))
+    d.to_review()
+    d.review(finding("a", Severity.BLOCKER), finding("b", Severity.MAJOR))
+    d.complete(RunNegotiationRound, NegotiationRoundCompleted, resolutions=())
+    d.complete(RequestArbitration, ArbitrationRuled, resolutions=_verdicts(a=Verdict.DISMISSED))
+    d.expect(P.AWAITING_HUMAN)  # dismissing "b" could still let the run finish
+
+
+def test_a_partial_ruling_that_demands_a_change_with_no_revisions_left_fails_fast() -> None:
+    d = Driver(limits(max_revisions=0))
+    d.to_review()
+    d.review(finding("a", Severity.BLOCKER), finding("b", Severity.MAJOR))
+    d.complete(RunNegotiationRound, NegotiationRoundCompleted, resolutions=())
+    d.complete(RequestArbitration, ArbitrationRuled, resolutions=_verdicts(a=Verdict.UPHELD))
+    assert d.state.outcome is not None
+    assert d.state.outcome.reason is OutcomeReason.REVISION_LIMIT
 
 
 def test_rounds_that_progress_still_stop_at_the_round_limit() -> None:
@@ -388,7 +466,10 @@ def test_rounds_that_progress_still_stop_at_the_round_limit() -> None:
     d.complete(
         RunNegotiationRound, NegotiationRoundCompleted, resolutions=_verdicts(b=Verdict.ACCEPTED)
     )
-    d.expect(P.AWAITING_HUMAN)
+    d.expect(P.NEGOTIATING)
+    assert d.effect(RequestArbitration).command == RequestArbitration(
+        tree=BUILD, findings=(FindingId("c"),), arbiter=False
+    )
     assert d.state.negotiation_round == 2
 
 
@@ -396,7 +477,7 @@ def test_human_ruling_upholding_a_finding_triggers_a_revision() -> None:
     d = Driver()
     d.to_review()
     d.review(finding("f1", Severity.BLOCKER))
-    d.complete(RunNegotiationRound, NegotiationRoundCompleted, resolutions=())
+    _to_human(d)
     d.complete(AwaitHumanRuling, HumanRuled, resolutions=_verdicts(f1=Verdict.UPHELD))
     d.expect(P.REVISING)
 
@@ -405,7 +486,7 @@ def test_human_ruling_dismissing_every_finding_finalizes() -> None:
     d = Driver()
     d.to_review()
     d.review(finding("f1", Severity.BLOCKER))
-    d.complete(RunNegotiationRound, NegotiationRoundCompleted, resolutions=())
+    _to_human(d)
     d.complete(AwaitHumanRuling, HumanRuled, resolutions=_verdicts(f1=Verdict.DISMISSED))
     d.expect(P.FINALIZING)
 
@@ -414,7 +495,7 @@ def test_rulings_must_cover_every_open_finding_and_use_ruling_verdicts() -> None
     d = Driver()
     d.to_review()
     d.review(finding("a", Severity.BLOCKER), finding("b", Severity.MAJOR))
-    d.complete(RunNegotiationRound, NegotiationRoundCompleted, resolutions=())
+    _to_human(d)
 
     partial = d.answer(AwaitHumanRuling, HumanRuled, resolutions=_verdicts(a=Verdict.UPHELD))
     assert d.reject(partial).reason is Rejection.INCOMPLETE_RULING
@@ -441,7 +522,7 @@ def test_arbiter_escalation_stays_in_negotiation_until_the_ruling() -> None:
     d.complete(RunNegotiationRound, NegotiationRoundCompleted, resolutions=())
     d.expect(P.NEGOTIATING)
     assert d.effect(RequestArbitration).command == RequestArbitration(
-        tree=BUILD, findings=(FindingId("f1"),)
+        tree=BUILD, findings=(FindingId("f1"),), arbiter=True
     )
     d.complete(RequestArbitration, ArbitrationRuled, resolutions=_verdicts(f1=Verdict.DISMISSED))
     d.expect(P.FINALIZING)
@@ -451,7 +532,7 @@ def test_human_can_abort_instead_of_ruling() -> None:
     d = Driver()
     d.to_review()
     d.review(finding("f1", Severity.BLOCKER))
-    d.complete(RunNegotiationRound, NegotiationRoundCompleted, resolutions=())
+    _to_human(d)
     d.complete(AwaitHumanRuling, HumanAborted, reason="rethink the approach")
     assert d.state.outcome is not None
     assert d.state.outcome.reason is OutcomeReason.HUMAN_ABORTED
@@ -690,3 +771,99 @@ def test_fold_resumes_from_any_intermediate_state() -> None:
     d.to_review()
     middle = d.steps[4].state
     assert fold(middle, d.events[5:]) == d.state
+
+
+# ---------- the clock stops while a person is asked
+
+
+HOUR = 3600  # longer than the whole 45-minute wall clock
+
+
+def test_a_plan_gate_answered_after_the_deadline_moves_it_by_the_wait() -> None:
+    d = Driver(limits(plan_gate=PlanGate.HUMAN))
+    d.intake()
+    d.plan()
+    gate = d.state
+    asked, original = gate.updated_at, gate.deadline
+    assert gate.waiting_since == asked
+
+    d.tick(HOUR)  # the person takes an hour
+    d.complete(AwaitPlanApproval, PlanApproved)
+    d.expect(P.BUILDING)
+    answered = d.state
+    waited = answered.updated_at - asked
+    assert (answered.deadline, answered.paused) == (original + waited, waited)
+    assert answered.waiting_since is None
+
+    # Work resumes with the time left when the person was asked, and no more.
+    left = original - asked
+    d.tick(left.total_seconds() - 1)
+    d.complete(ImplementPlan, ImplementationCompleted)
+    d.expect(P.BUILDING)
+    d.tick(2)
+    d.complete(AuthorAcceptanceTests, AcceptanceTestsAuthored)
+    assert d.state.outcome is not None
+    assert d.state.outcome.reason is OutcomeReason.DEADLINE_EXCEEDED
+
+
+@pytest.mark.parametrize(
+    ("answer", "fields", "phase"),
+    [
+        (PlanRejected, {"feedback": "split step 2"}, P.PLANNING),
+        (HumanAborted, {"reason": "not now"}, P.ABORTED),
+    ],
+)
+def test_every_answer_to_a_plan_gate_moves_the_deadline(
+    answer: type[Completion], fields: dict[str, str], phase: Phase
+) -> None:
+    d = Driver(limits(plan_gate=PlanGate.HUMAN))
+    d.intake()
+    d.plan()
+    asked, original = d.state.updated_at, d.state.deadline
+    d.tick(HOUR)
+    d.complete(AwaitPlanApproval, answer, **fields)
+    d.expect(phase)
+    assert d.state.deadline == original + (d.state.updated_at - asked)
+    assert d.state.waiting_since is None
+
+
+def test_waits_for_a_ruling_add_up_with_waits_at_the_plan_gate() -> None:
+    d = Driver(limits(plan_gate=PlanGate.HUMAN))
+    d.intake()
+    d.plan()
+    d.tick(HOUR)
+    d.complete(AwaitPlanApproval, PlanApproved)
+    first = d.state.paused
+    d.build()
+    d.verify()
+    d.test()
+    d.review(finding("f1", Severity.BLOCKER))
+    _to_human(d)
+    asked = d.state.updated_at
+    assert d.state.waiting_since == asked
+    d.tick(2 * HOUR)
+    d.complete(AwaitHumanRuling, HumanRuled, resolutions=_verdicts(f1=Verdict.DISMISSED))
+    d.expect(P.FINALIZING)
+    assert d.state.paused == first + (d.state.updated_at - asked)
+    assert d.state.deadline == d.state.started_at + d.state.limits.wall_clock + d.state.paused
+
+
+def test_cancelling_while_a_person_is_asked_stops_waiting_without_moving_the_deadline() -> None:
+    d = Driver(limits(plan_gate=PlanGate.HUMAN))
+    d.intake()
+    d.plan()
+    original = d.state.deadline
+    d.send(CancelRequested(at=d.tick(), reason="stop"))
+    d.expect(P.ABORTED)
+    assert (d.state.waiting_since, d.state.deadline, d.state.paused) == (
+        None,
+        original,
+        timedelta(0),
+    )
+
+
+def test_agent_work_never_stops_the_clock() -> None:
+    d = Driver()
+    d.to_review()
+    assert d.state.waiting_since is None
+    assert d.state.paused == timedelta(0)

@@ -99,6 +99,8 @@ def _disputed(escalation: Escalation = Escalation.HUMAN) -> Driver:
     d.to_review()
     d.review(finding("a", Severity.BLOCKER), finding("b", Severity.MAJOR))
     d.complete(RunNegotiationRound, NegotiationRoundCompleted, resolutions=())
+    if escalation is Escalation.HUMAN:  # the objective rungs decide nothing: a human is asked
+        d.complete(RequestArbitration, ArbitrationRuled, resolutions=())
     return d
 
 

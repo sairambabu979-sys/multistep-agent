@@ -4,11 +4,13 @@ The core never performs I/O. A transition returns ``Effect``s, and the interpret
 executes them and reports back with events. Each effect has a deterministic id, and spending
 effects carry a budget reservation (see ``msa.core.budget``).
 
-Two class-level flags describe each command:
+Three class-level flags describe each command:
 
 * ``spends``: the command may invoke an LLM and so needs a budget reservation.
 * ``awaits``: the state machine waits for a completion event. Fire-and-forget commands
   (cancellation, publishing the outcome) do not stay pending.
+* ``human``: a person answers it. The run's clock stops while one is pending: time spent
+  waiting for a person is not work, and does not count against the wall-clock limit.
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ from msa.core.values import Outcome, Owner, PlanRef
 class Command(Frozen):
     spends: ClassVar[bool] = False
     awaits: ClassVar[bool] = True
+    human: ClassVar[bool] = False
 
 
 class PrepareWorkspace(Command):
@@ -41,6 +44,7 @@ class RequestPlan(Command):
 
 
 class AwaitPlanApproval(Command):
+    human: ClassVar[bool] = True
     kind: Literal["await_plan_approval"] = "await_plan_approval"
     plan: PlanRef
 
@@ -102,13 +106,20 @@ class RunNegotiationRound(Command):
 
 
 class RequestArbitration(Command):
+    """The arbitration ladder (PLAN §4.2), cheapest and most objective rung first: a repro
+    test for correctness and security, the preference store for preferences, the author
+    for uncovered style. With ``arbiter``, the Arbiter role rules on whatever those leave
+    open, so the ruling covers every finding. Without it, a human does (AWAITING_HUMAN)."""
+
     spends: ClassVar[bool] = True
     kind: Literal["request_arbitration"] = "request_arbitration"
     tree: ValidTreeHash
     findings: tuple[ValidFindingId, ...]
+    arbiter: bool = True
 
 
 class AwaitHumanRuling(Command):
+    human: ClassVar[bool] = True
     kind: Literal["await_human_ruling"] = "await_human_ruling"
     tree: ValidTreeHash
     findings: tuple[ValidFindingId, ...]

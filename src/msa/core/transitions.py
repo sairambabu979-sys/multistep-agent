@@ -178,10 +178,14 @@ def _settle(state: RunState) -> Decision:
 
 
 def _escalate(state: RunState) -> Decision:
-    tree, open_ids = state.require_head(), state.open_finding_ids
-    if state.limits.escalation is Escalation.HUMAN:
-        return _go(state, Phase.AWAITING_HUMAN, AwaitHumanRuling(tree=tree, findings=open_ids))
-    return _go(state, Phase.NEGOTIATING, RequestArbitration(tree=tree, findings=open_ids))
+    """The arbitration ladder, cheapest and most objective rung first (PLAN §4.2,
+    ADR-004). Only what a repro test, the preference store and the style rule leave open
+    reaches the Arbiter role, or a human if escalation goes to one (ADR-014)."""
+    arbiter = state.limits.escalation is Escalation.ARBITER
+    command = RequestArbitration(
+        tree=state.require_head(), findings=state.open_finding_ids, arbiter=arbiter
+    )
+    return _go(state, Phase.NEGOTIATING, command)
 
 
 # ---------- INTAKE
@@ -316,7 +320,16 @@ def _negotiation_round_completed(state: RunState, event: NegotiationRoundComplet
 
 
 def _arbitration_ruled(state: RunState, event: ArbitrationRuled) -> Decision:
-    return _settle(_rule(state, event.resolutions))
+    if state.limits.escalation is Escalation.ARBITER:
+        return _settle(_rule(state, event.resolutions))  # the Arbiter rules on everything
+    state = _resolve(state, event.resolutions, allowed=RULING_VERDICTS)
+    remaining = state.open_finding_ids
+    # As after a round: once a demanded change can no longer be made, asking a person
+    # what else to change cannot rescue the run.
+    if not remaining or (state.change_requests and _revisions_exhausted(state)):
+        return _settle(state)
+    ruling = AwaitHumanRuling(tree=state.require_head(), findings=remaining)
+    return _go(state, Phase.AWAITING_HUMAN, ruling)
 
 
 def _human_ruled(state: RunState, event: HumanRuled) -> Decision:
@@ -380,13 +393,13 @@ TABLE = TransitionTable(
         Rule(
             P.NEGOTIATING,
             NegotiationRoundCompleted,
-            frozenset({P.NEGOTIATING, P.AWAITING_HUMAN, P.REVISING, P.FINALIZING, P.FAILED}),
+            frozenset({P.NEGOTIATING, P.REVISING, P.FINALIZING, P.FAILED}),
             _negotiation_round_completed,
         ),
         Rule(
             P.NEGOTIATING,
             ArbitrationRuled,
-            frozenset({P.REVISING, P.FINALIZING, P.FAILED}),
+            frozenset({P.AWAITING_HUMAN, P.REVISING, P.FINALIZING, P.FAILED}),
             _arbitration_ruled,
         ),
         Rule(

@@ -26,10 +26,10 @@ stateDiagram-v2
     TESTING --> FAILED: TestsFailed
     REVIEWING --> NEGOTIATING: ReviewProduced
     REVIEWING --> FINALIZING: ReviewProduced
-    NEGOTIATING --> AWAITING_HUMAN: NegotiationRoundCompleted
     NEGOTIATING --> REVISING: NegotiationRoundCompleted
     NEGOTIATING --> FINALIZING: NegotiationRoundCompleted
     NEGOTIATING --> FAILED: NegotiationRoundCompleted
+    NEGOTIATING --> AWAITING_HUMAN: ArbitrationRuled
     NEGOTIATING --> REVISING: ArbitrationRuled
     NEGOTIATING --> FINALIZING: ArbitrationRuled
     NEGOTIATING --> FAILED: ArbitrationRuled
@@ -65,8 +65,8 @@ target at runtime.
 | `TESTING` | `TestsPassed` | `REVIEWING` |
 | `TESTING` | `TestsFailed` | `REVISING`, `FAILED` |
 | `REVIEWING` | `ReviewProduced` | `NEGOTIATING`, `FINALIZING` |
-| `NEGOTIATING` | `NegotiationRoundCompleted` | `NEGOTIATING`, `AWAITING_HUMAN`, `REVISING`, `FINALIZING`, `FAILED` |
-| `NEGOTIATING` | `ArbitrationRuled` | `REVISING`, `FINALIZING`, `FAILED` |
+| `NEGOTIATING` | `NegotiationRoundCompleted` | `NEGOTIATING`, `REVISING`, `FINALIZING`, `FAILED` |
+| `NEGOTIATING` | `ArbitrationRuled` | `AWAITING_HUMAN`, `REVISING`, `FINALIZING`, `FAILED` |
 | `AWAITING_HUMAN` | `HumanRuled` | `REVISING`, `FINALIZING`, `FAILED` |
 | `AWAITING_HUMAN` | `HumanAborted` | `ABORTED` |
 | `REVISING` | `RevisionCompleted` | `VERIFYING` |

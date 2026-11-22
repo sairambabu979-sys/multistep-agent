@@ -212,10 +212,12 @@ def outcomes(effect: Effect, at: datetime, *, rich: bool = False) -> list[AnyEve
                 NegotiationRoundCompleted(at=at, effect_id=eid, resolutions=rs)
                 for rs in _verdict_combinations(ids, verdicts)
             ]
-        case RequestArbitration(findings=ids):
+        case RequestArbitration(findings=ids, arbiter=arbiter):
+            # Without the Arbiter role, the objective rungs may leave findings to a human.
+            rulings = _ruling_verdicts(rich=rich)
             return [
                 ArbitrationRuled(at=at, effect_id=eid, resolutions=rs)
-                for rs in _verdict_combinations(ids, _ruling_verdicts(rich=rich))
+                for rs in _verdict_combinations(ids, rulings if arbiter else (*rulings, None))
             ]
         case AwaitHumanRuling(findings=ids):
             return [
