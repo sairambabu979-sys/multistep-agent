@@ -25,6 +25,7 @@ from msa.llm.client import Request, Response
 from msa.llm.store import MemoryResponseStore
 from msa.runtime import live
 from msa.runtime.clock import LogicalClock
+from msa.runtime.interpreter import Interpreter
 from msa.runtime.journal import SqliteJournal
 from msa.tools.audit import Violation
 from msa.tools.workspace import content_hash
@@ -173,13 +174,13 @@ class Harness:
     config: MsaConfig
     violations: list[Violation] = field(default_factory=list)
 
-    def run(self, client: RoleScripts) -> tuple[RunState, SqliteJournal]:
-        environment = live.LiveEnvironment(
-            repo=str(self.repo), state_dir=str(self.state_dir), task=TASK
-        )
-        journal = SqliteJournal(self.state_dir / "runs.db")
-        interpreter = live.interpreter(
-            environment,
+    @property
+    def environment(self) -> live.LiveEnvironment:
+        return live.LiveEnvironment(repo=str(self.repo), state_dir=str(self.state_dir), task=TASK)
+
+    def _interpreter(self, client: RoleScripts, journal: SqliteJournal) -> Interpreter:
+        return live.interpreter(
+            self.environment,
             self.config,
             run_id=RUN,
             journal=journal,
@@ -188,15 +189,23 @@ class Harness:
             clock=LogicalClock(),
             on_violation=self.violations.append,
         )
+
+    def run(self, client: RoleScripts) -> tuple[RunState, SqliteJournal]:
+        journal = SqliteJournal(self.state_dir / "runs.db")
         final = asyncio.run(
-            interpreter.start(
+            self._interpreter(client, journal).start(
                 run_id=RUN,
-                task_digest=environment.task_digest,
+                task_digest=self.environment.task_digest,
                 limits=self.config.limits.to_limits(),
-                environment=environment.model_dump(mode="json"),
+                environment=self.environment.model_dump(mode="json"),
             )
         )
         return final, journal
+
+    def resume(self, client: RoleScripts) -> tuple[RunState, SqliteJournal]:
+        """Carry on with a parked (or crashed) run, as ``msa resume`` would."""
+        journal = SqliteJournal(self.state_dir / "runs.db")
+        return asyncio.run(self._interpreter(client, journal).resume(RUN)), journal
 
     @property
     def run_dir(self) -> Path:
@@ -211,8 +220,12 @@ class Harness:
         )
 
 
-def make_harness(base: Path) -> Harness:
-    """The greeter fixture, committed, with ruff and pytest from this interpreter."""
+def make_harness(base: Path, *, review: bool = False) -> Harness:
+    """The greeter fixture, committed, with ruff and pytest from this interpreter.
+
+    Without ``review`` the run is arm B of the ablation (PLAN §11): the Reviewer is the
+    pass-through stand-in, which is what the M6 and M7 scenarios are about. The M8
+    scenarios turn the Reviewer on."""
     config = base_config()
     config = config.model_copy(
         update={
@@ -220,6 +233,7 @@ def make_harness(base: Path) -> Harness:
             "verify": config.verify.model_copy(
                 update={"commands": ("ruff_check", "ruff_format_check", "pytest")}
             ),
+            "review": config.review.model_copy(update={"enabled": review}),
         }
     )
     return Harness(make_repo("greeter", base / "repo"), base / "state", config)

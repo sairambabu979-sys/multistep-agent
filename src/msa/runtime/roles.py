@@ -14,8 +14,10 @@ paid turns replay from the response store and their tool results are reused, so 
 worktree must be as the first execution left it. The worktree is therefore moved to the
 effect's starting tree only when no turn of the effect was paid for yet.
 
-Revisions that answer review findings arrive with the Reviewer (M8). Until then they fail
-loudly instead of guessing.
+A Coder revision either answers a failure report (VERIFYING, TESTING) or makes the fixes
+a review settled on (``agreed``): the findings accepted or upheld, each with its agreed fix.
+Before the Coder starts, the harness writes the repro test that upheld a finding into the
+build worktree; the path is the Tester's, so the Coder can make it pass but not change it.
 """
 
 from __future__ import annotations
@@ -49,11 +51,11 @@ from msa.core.events import (
 from msa.core.ids import PlanId, TreeHash
 from msa.core.values import Owner, PlanRef
 from msa.llm.gateway import InvocationResult, Tool
+from msa.runtime import review
+from msa.runtime.artifacts import PLAN_FILE
 from msa.runtime.context import RunContext, reservation
 from msa.runtime.guard import weakened
 from msa.runtime.interpreter import Executor
-
-PLAN_FILE = "plan.json"
 
 
 class PlannerExecutor:
@@ -123,26 +125,40 @@ class CoderExecutor:
     async def _revise(self, effect: Effect, command: ReviseChanges, now: datetime) -> AnyEvent:
         if command.owner is not Owner.CODER:
             raise TypeError(f"the coder cannot revise what the {command.owner.value} owns")
-        if command.findings:
-            raise NotImplementedError("revisions for review findings arrive with the Reviewer (M8)")
-        if command.failure_report is None:
-            raise ValueError("a coder revision without findings needs a failure report")
+        if not command.findings and command.failure_report is None:
+            raise ValueError("a coder revision needs findings or a failure report")
         ctx = self.context
         stored = ctx.files.read(PLAN_FILE)
         if stored is None:
             raise FileNotFoundError(f"{PLAN_FILE} is missing: no plan was implemented in this run")
         if not ctx.has_paid_turns(effect):
             await ctx.worktree.reset(command.tree)
-        invocation = coder.revise(
-            task=ctx.task,
-            plan=Plan.model_validate_json(stored),
-            preferences=await ctx.preference_block(),
-            failure_report=ctx.files.text(command.failure_report),
-            tools=self._tools(),
-            budget_usd_micros=reservation(effect),
-            key=effect.id,
-            max_turns=ctx.config.agents.coder_max_turns,
-        )
+            self._place_repro_tests(command.findings)
+        plan, preferences = Plan.model_validate_json(stored), await ctx.preference_block()
+        budget, turns = reservation(effect), ctx.config.agents.coder_max_turns
+        if command.findings:
+            invocation = coder.revise_findings(
+                task=ctx.task,
+                plan=plan,
+                preferences=preferences,
+                findings=review.agreed(ctx, command.findings),
+                tools=self._tools(),
+                budget_usd_micros=budget,
+                key=effect.id,
+                max_turns=turns,
+            )
+        else:
+            assert command.failure_report is not None  # checked above
+            invocation = coder.revise(
+                task=ctx.task,
+                plan=plan,
+                preferences=preferences,
+                failure_report=ctx.files.text(command.failure_report),
+                tools=self._tools(),
+                budget_usd_micros=budget,
+                key=effect.id,
+                max_turns=turns,
+            )
         answer = await ctx.invoke(effect, invocation, now=now)
         if not isinstance(answer, InvocationResult):
             return answer
@@ -153,6 +169,16 @@ class CoderExecutor:
     def _tools(self) -> tuple[Tool[Any], ...]:
         ctx = self.context
         return toolset(ctx.workspace(Role.CODER), ctx.sandbox(Role.CODER))
+
+    def _place_repro_tests(self, finding_ids: Sequence[str]) -> None:
+        """The harness writes them, not the Coder: they are the Tester's files."""
+        ctx = self.context
+        for fid in finding_ids:
+            if (found := review.repro_test(ctx, fid)) is not None:
+                path, digest = found
+                target = ctx.worktree.path / path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(ctx.files.text(digest), encoding="utf-8")
 
     def _keep(self, effect: Effect, summary: ImplementationSummary) -> None:
         _keep(self.context, effect, summary)
@@ -203,7 +229,7 @@ class TesterExecutor:
 
     async def _revise(self, effect: Effect, command: ReviseChanges, now: datetime) -> AnyEvent:
         if command.findings:
-            raise NotImplementedError("revisions for review findings arrive with the Reviewer (M8)")
+            raise TypeError("findings are revised by the coder: the tester owns only its tests")
         if command.failure_report is None:
             raise ValueError("a tester revision needs a failure report")
         ctx = self.context

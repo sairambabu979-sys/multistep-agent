@@ -30,6 +30,8 @@ from typing import Any
 
 from msa.core.ids import Digest
 
+PLAN_FILE = "plan.json"  # the plan the Coder implemented, which every later step follows
+
 
 class ArtifactMissing(LookupError):
     pass

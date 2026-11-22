@@ -39,7 +39,7 @@ errors, a timeout) is an environment failure.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from fnmatch import fnmatchcase
@@ -56,10 +56,10 @@ from msa.core.events import AnyEvent, TestsFailed, TestsPassed
 from msa.core.ids import Digest, TreeHash
 from msa.core.values import FailureKind, Owner, Triage
 from msa.llm.gateway import InvocationResult
+from msa.runtime.artifacts import PLAN_FILE
 from msa.runtime.checks import run_checks
 from msa.runtime.context import RunContext, reservation
 from msa.runtime.guard import find_tests
-from msa.runtime.roles import PLAN_FILE
 from msa.runtime.verify import PYTEST_NO_TESTS, removed_section
 from msa.runtime.worktree import RunWorktree
 from msa.tools.sandbox import Completed, LocalSandbox
@@ -89,6 +89,7 @@ class Case:
     nodeid: str
     outcome: Outcome
     message: str = ""
+    error: bool = False  # failed by an error (a fixture, the import), not by an assertion
 
     @property
     def passed(self) -> bool:
@@ -143,6 +144,7 @@ def parse_junit(text: str) -> tuple[Case, ...]:
     for case in root.iter("testcase"):
         outcome: Outcome = "passed"
         problem = case.find("failure")
+        error = problem is None and case.find("error") is not None
         if problem is None:
             problem = case.find("error")
         if problem is not None:
@@ -155,7 +157,7 @@ def parse_junit(text: str) -> tuple[Case, ...]:
             message = lines[0] if lines else problem.tag
             if problem.get("type") == "pytest.xfail":
                 message = f"xfail: {message}"
-        cases.append(Case(_nodeid(case), outcome, message))
+        cases.append(Case(_nodeid(case), outcome, message, error))
     return tuple(sorted(cases, key=lambda c: c.nodeid))
 
 
@@ -221,14 +223,24 @@ def before_text(cases: Sequence[Case]) -> str:
     return "pass"
 
 
-def judge(authored: Mapping[str, list[str]], after: Run, before: Run, found: Findings) -> None:
+def judge(
+    authored: Mapping[str, list[str]],
+    after: Run,
+    before: Run,
+    found: Findings,
+    *,
+    repro: Collection[str] = (),
+) -> None:
     """Each authored test is evidence only if it failed before the change and passed after
-    it. Failing after is for triage; anything else is the Tester's to fix, without a model."""
+    it. Failing after is for triage; anything else is the Tester's to fix, without a model.
+
+    ``repro`` modules settled a dispute: they failed on the head tree they disputed, which
+    is their fail-before, so the base tree does not judge them (ADR-014)."""
     for module, names in sorted(authored.items()):
         for name in names:
             test = f"{module}::{name}"
             now = after_text(cases_of(after, module, name), found.flaky)
-            then = before_text(cases_of(before, module, name))
+            then = "repro" if module in repro else before_text(cases_of(before, module, name))
             found.matrix.append((test, then, now))
             if now == "not run":
                 found.tester.append(
@@ -242,7 +254,7 @@ def judge(authored: Mapping[str, list[str]], after: Run, before: Run, found: Fin
                     "pass, so it may not be skipped, xfailed or conditional on the environment."
                 )
                 continue
-            if then == "fail":
+            if then in {"fail", "repro"}:
                 continue
             found.rejected.append(test)
             if then == "pass":
@@ -370,8 +382,15 @@ class TestSuiteExecutor:
             )
 
         if modules:
-            before = await self._before(base, tree, owned, modules, junit)
-            judge(authored, accepted, before, found)
+            repro_dir = f"{ctx.config.testing.repro_directory}/"
+            repro = {m for m in modules if m.startswith(repro_dir)}
+            judged = [m for m in modules if m not in repro]
+            before = (
+                await self._before(base, tree, owned, judged, junit)
+                if judged
+                else Run(suite.done, ())
+            )
+            judge(authored, accepted, before, found, repro=repro)
         return found
 
     async def _lint(self, sandbox: LocalSandbox, files: list[str], found: Findings) -> None:

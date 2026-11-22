@@ -11,6 +11,7 @@ Both functions are pure: the caller gathers the run's files and passes them in.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from msa.core import RunState, start, transition
@@ -69,6 +70,7 @@ def render(
     patch: str | None,
     tests: Sequence[Mapping[str, Any]] = (),
     last_test_report: str | None = None,
+    review: Review | None = None,
 ) -> str:
     outcome = state.outcome
     verdict = f"{state.phase.name}: {outcome.reason}" if outcome else f"{state.phase.name} (live)"
@@ -101,6 +103,8 @@ def render(
     out += _invocations(invocations)
     out += _summaries(summaries)
     out += _checks(verifications, tests, last_test_report)
+    if review is not None:
+        out += _review(review)
     if patch is not None:
         out += ["", "## Patch", "", *(_fence(patch, "diff") if patch.strip() else ["(empty)"])]
     return "\n".join(out) + "\n"
@@ -169,4 +173,81 @@ def _checks(
         # The latest run's matrix (fail before / pass after) and problems, one level down.
         body = last_test_report.rstrip("\n").replace("\n## ", "\n#### ").replace("# ", "### ", 1)
         out += ["", body]
+    return out
+
+
+# ---------- review and negotiation (PLAN §4)
+
+# PLAN §4.2: a negotiation is flagged as degenerate when the author accepts more than 95%
+# of the findings, or the reviewer withdraws more than 80% of what was contested. A run
+# with few moves says little either way: it is flagged only from this many moves on, and
+# the M9 eval applies the thresholds across runs.
+ACCEPT_THRESHOLD, WITHDRAW_THRESHOLD, FLAG_MIN_MOVES = 0.95, 0.80, 5
+
+
+@dataclass(frozen=True, slots=True)
+class Review:
+    """What the review left in the run's files, as plain records."""
+
+    reviews: Sequence[Mapping[str, Any]]
+    findings: Sequence[Mapping[str, Any]]
+    rounds: Sequence[Mapping[str, Any]]
+    rulings: Sequence[Mapping[str, Any]]
+
+
+def _review(review: Review) -> list[str]:
+    if not review.reviews:
+        return []
+    out = ["", "## Review", ""]
+    out.extend(
+        f"- cycle {r.get('cycle')} on `{r.get('tree')}`: {r.get('raised')} finding(s) "
+        f"raised, {r.get('admitted')} admitted. {r.get('summary', '')}"
+        for r in review.reviews
+    )
+    latest: dict[str, tuple[str, str]] = {}
+    for row in [*review.rounds, *review.rulings]:
+        if row.get("verdict"):
+            how = row.get("rung") or f"round {row.get('round')}"
+            latest[str(row["finding"])] = (str(row["verdict"]), str(how))
+    if review.findings:
+        out += ["", "| finding | severity | kind | where | claim | outcome | decided by |"]
+        out.append("|---|---|---|---|---|---|---|")
+        for f in review.findings:
+            fid, body = str(f["id"]), f["finding"]
+            where = body["location"]
+            place = f"{where['path']}:{where['start_line']}-{where['end_line']}"
+            if not f.get("admitted"):
+                outcome, how = "not admitted", str(f.get("reason", ""))
+            elif f.get("severity") in {"minor", "nit"}:
+                outcome, how = "reported", str(f.get("reason") or "not negotiated")
+            else:
+                outcome, how = latest.get(fid, ("open", "-"))
+            claim = str(body["claim"]).replace("|", "\\|").replace("\n", " ")
+            out.append(
+                f"| `{fid}` | {f.get('severity')} | {body['kind']} | `{place}` | {claim} "
+                f"| {outcome} | {how} |"
+            )
+    deferred = [fid for fid, (verdict, _) in latest.items() if verdict == "deferred"]
+    if deferred:
+        out += ["", "**Follow-ups** (deferred): " + ", ".join(f"`{d}`" for d in deferred)]
+    out += _health(review.rounds)
+    return out
+
+
+def _health(rounds: Sequence[Mapping[str, Any]]) -> list[str]:
+    moves = [r for r in rounds if r.get("author")]
+    replies = [r for r in rounds if r.get("reviewer")]
+    if not moves:
+        return []
+    accepted = sum(r["author"] == "accept" for r in moves) / len(moves)
+    withdrawn = sum(r["reviewer"] == "withdraw" for r in replies) / len(replies) if replies else 0.0
+    out = [
+        "",
+        f"**Negotiation:** the author accepted {accepted:.0%} of {len(moves)} move(s); the "
+        f"reviewer withdrew {withdrawn:.0%} of {len(replies)} contested.",
+    ]
+    if len(moves) >= FLAG_MIN_MOVES and accepted > ACCEPT_THRESHOLD:
+        out.append("**Flag:** degenerate negotiation: the author accepts nearly everything.")
+    if len(replies) >= FLAG_MIN_MOVES and withdrawn > WITHDRAW_THRESHOLD:
+        out.append("**Flag:** degenerate negotiation: the reviewer withdraws nearly everything.")
     return out

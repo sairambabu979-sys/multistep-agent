@@ -23,7 +23,7 @@ from msa.core.events import (
     TestsPassed,
     VerificationPassed,
 )
-from msa.observability.report import render, timeline
+from msa.observability.report import Review, render, timeline
 from tests.support.factory import BASE, BUILD, T0, digest, plan_ref, run_started
 
 
@@ -125,3 +125,108 @@ def test_the_report_names_stand_ins_and_holds_the_patch() -> None:
     assert "- Files: src/greeter.py" in text
     assert f"- `{BUILD}`: passed" in text
     assert "````diff\ndiff --git a/x b/x\n+```\n````" in text  # a fence the patch cannot close
+
+
+# ---------- the review section
+
+
+def _finding(
+    fid: str, severity: str = "blocker", admitted: bool = True, reason: str = ""
+) -> dict[str, object]:
+    return {
+        "id": fid,
+        "severity": severity,
+        "admitted": admitted,
+        "reason": reason,
+        "finding": {
+            "kind": "correctness",
+            "claim": "a | b\nwrong",
+            "location": {"path": "src/a.py", "start_line": 3, "end_line": 4},
+        },
+    }
+
+
+def _rendered(review: Review) -> str:
+    events = happy_events()
+    state = start(run_started()).state
+    for event in events[1:]:
+        state = transition(state, event).state
+    return render(
+        state,
+        events,
+        task="t",
+        plan=None,
+        invocations=[],
+        verifications=[],
+        summaries=[],
+        stand_ins={},
+        patch=None,
+        review=review,
+    )
+
+
+def test_the_review_section_says_how_every_finding_ended() -> None:
+    text = _rendered(
+        Review(
+            reviews=[{"cycle": 0, "tree": BUILD, "raised": 5, "admitted": 4, "summary": "ok"}],
+            findings=[
+                _finding("c0-1"),
+                _finding("c0-2", admitted=False, reason="off the change"),
+                _finding("c0-3", severity="minor", reason="the Tester's"),
+                _finding("c0-4"),
+                _finding("c0-5", severity="nit"),
+            ],
+            rounds=[
+                {"finding": "c0-1", "round": 1, "author": "accept", "verdict": "accepted"},
+                {"finding": "c0-4", "round": 1, "author": "defer", "reviewer": "maintain"},
+            ],
+            rulings=[{"finding": "c0-4", "rung": "human", "verdict": "deferred"}],
+        )
+    )
+    assert f"- cycle 0 on `{BUILD}`: 5 finding(s) raised, 4 admitted. ok" in text
+    assert (
+        "| `c0-1` | blocker | correctness | `src/a.py:3-4` | a \\| b wrong | accepted | round 1 |"
+        in text
+    )
+    assert "| not admitted | off the change |" in text
+    where = "correctness | `src/a.py:3-4` | a \\| b wrong"
+    assert f"| `c0-3` | minor | {where} | reported | the Tester's |" in text
+    assert "| reported | not negotiated |" in text
+    assert (
+        "| `c0-4` | blocker | correctness | `src/a.py:3-4` | a \\| b wrong | deferred | human |"
+        in text
+    )
+    assert "**Follow-ups** (deferred): `c0-4`" in text
+    assert "the author accepted 50% of 2 move(s); the reviewer withdrew 0% of 1 contested." in text
+    assert "**Flag:**" not in text  # two moves say little either way
+    assert _rendered(Review(reviews=[], findings=[], rounds=[], rulings=[])).count("## Review") == 0
+
+
+@pytest.mark.parametrize(
+    ("author", "reviewer", "moves", "flag"),
+    [
+        ("accept", None, 5, "the author accepts nearly everything"),
+        ("rebut", "withdraw", 5, "the reviewer withdraws nearly everything"),
+        ("accept", None, 4, None),
+        ("rebut", "maintain", 9, None),
+    ],
+)
+def test_a_degenerate_negotiation_is_flagged_once_there_are_enough_moves(
+    author: str, reviewer: str | None, moves: int, flag: str | None
+) -> None:
+    rounds = [
+        {"finding": f"c0-{n}", "round": 1, "author": author, "reviewer": reviewer}
+        for n in range(moves)
+    ]
+    text = _rendered(
+        Review(
+            reviews=[{"cycle": 0, "tree": BUILD, "raised": moves, "admitted": moves}],
+            findings=[],
+            rounds=rounds,
+            rulings=[],
+        )
+    )
+    if flag is None:
+        assert "**Flag:**" not in text
+    else:
+        assert f"**Flag:** degenerate negotiation: {flag}." in text

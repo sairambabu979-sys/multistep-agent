@@ -57,7 +57,7 @@ def test_the_review_stand_in_passes_through_and_names_itself() -> None:
 
 
 def test_an_effect_without_an_executor_fails_with_a_reason() -> None:
-    with pytest.raises(NotImplementedError, match="await_plan_approval has no executor yet"):
+    with pytest.raises(NotImplementedError, match="await_plan_approval has no executor"):
         asyncio.run(live.Unavailable().execute(effect(AwaitPlanApproval(plan=plan_ref())), now=T0))
 
 
@@ -212,12 +212,17 @@ def test_the_pytest_configuration_guard_ignores_what_pytest_does_not_read(
     assert "tests/acceptance/, tests/repro/" in result.output
 
 
-def test_revisions_go_to_their_owner_and_review_findings_wait_for_m8(run: RunContext) -> None:
+def test_revisions_go_to_their_owner_and_only_the_coder_revises_findings(run: RunContext) -> None:
     router = Revisions(CoderExecutor(run), TesterExecutor(run))
-    for owner in Owner:
-        command = ReviseChanges(owner=owner, tree=BASE, findings=(FindingId("f1"),))
-        with pytest.raises(NotImplementedError, match="arrive with the Reviewer"):
-            asyncio.run(router.execute(effect(command, 1_000), now=T0))
+    tester_findings = ReviseChanges(owner=Owner.TESTER, tree=BASE, findings=(FindingId("f1"),))
+    with pytest.raises(TypeError, match="findings are revised by the coder"):
+        asyncio.run(router.execute(effect(tester_findings, 1_000), now=T0))
+    coder_findings = ReviseChanges(owner=Owner.CODER, tree=BASE, findings=(FindingId("f1"),))
+    with pytest.raises(FileNotFoundError, match=r"plan\.json is missing"):  # routed to the coder
+        asyncio.run(router.execute(effect(coder_findings, 1_000), now=T0))
+    nothing = ReviseChanges(owner=Owner.CODER, tree=BASE)
+    with pytest.raises(ValueError, match="needs findings or a failure report"):
+        asyncio.run(router.execute(effect(nothing, 1_000), now=T0))
     tester_revision = ReviseChanges(owner=Owner.TESTER, tree=BASE, failure_report=digest("r"))
     with pytest.raises(TypeError, match="the coder cannot revise what the tester owns"):
         asyncio.run(CoderExecutor(run).execute(effect(tester_revision, 1_000), now=T0))

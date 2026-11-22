@@ -14,13 +14,16 @@ the same executors. ``executors`` wires one executor per effect kind:
 | run_verification | ``msa.runtime.verify`` |
 | run_test_suite | ``msa.runtime.testing`` |
 | finalize | the patch from base to head, stored as an artifact |
-| request_review | **a pass-through stand-in** |
-| await_plan_approval, run_negotiation_round, | none yet: the run fails |
-| request_arbitration, await_human_ruling | if one is issued |
+| request_review | the Reviewer (``msa.runtime.review``), or the stand-in below |
+| run_negotiation_round | the Coder as author, then the Reviewer replying |
+| request_arbitration | the ladder: repro test, preference, style, then the Arbiter |
+| await_plan_approval, | a person: the question is written to the run directory and |
+| await_human_ruling | the run parks until ``msa approve`` / ``msa rule`` answers it |
 
-The stand-in makes a run whole before the Reviewer (M8) exists (arm B of the ablation,
-PLAN §11: Planner + Coder + Tester + VERIFYING). It answers at once with no findings,
-spends nothing, and the run report names it, so no reader mistakes it for a review.
+With ``[review].enabled = false`` the Reviewer is replaced by a pass-through stand-in
+(arm B of the ablation, PLAN §11: Planner + Coder + Tester + VERIFYING). It answers at
+once with no findings, spends nothing, and the run report names it, so no reader mistakes
+it for a review.
 """
 
 from __future__ import annotations
@@ -36,6 +39,8 @@ from msa.config import MsaConfig, Role
 from msa.core import RunState
 from msa.core._frozen import Frozen
 from msa.core.effects import (
+    AwaitHumanRuling,
+    AwaitPlanApproval,
     Effect,
     Finalize,
     IntegrateBuild,
@@ -55,15 +60,15 @@ from msa.llm.client import MessagesClient
 from msa.llm.gateway import Gateway
 from msa.llm.store import ResponseStore
 from msa.observability import report
-from msa.runtime.artifacts import RunFiles, digest_of
+from msa.runtime import review
+from msa.runtime.artifacts import PLAN_FILE, RunFiles, digest_of
 from msa.runtime.clock import Clock
 from msa.runtime.context import RunContext
 from msa.runtime.executors import Router
 from msa.runtime.intake import IntakeExecutor
-from msa.runtime.interpreter import Executor, Interpreter, Observer
+from msa.runtime.interpreter import Executor, Interpreter, Observer, Parked
 from msa.runtime.journal import SqliteJournal
 from msa.runtime.roles import (
-    PLAN_FILE,
     CoderExecutor,
     PlannerExecutor,
     Revisions,
@@ -154,6 +159,44 @@ class FinalizeExecutor:
         return Finalized(at=now, effect_id=effect.id, tree=command.tree, artifact=artifact)
 
 
+class HumanGate:
+    """A plan gate or a dispute for a person: the question goes to ``question.md`` in the
+    run directory, and the run parks. The clock is stopped until they answer."""
+
+    def __init__(self, context: RunContext) -> None:
+        self.context = context
+
+    async def execute(self, effect: Effect, *, now: datetime) -> AnyEvent:
+        ctx = self.context
+        run = ctx.run_id
+        match effect.command:
+            case AwaitPlanApproval(plan=ref):
+                plan = Plan.model_validate_json(ctx.files.get(ref.digest)).render()
+                question = (
+                    f"# Run {run}: approve the plan?\n\n{plan}\n"
+                    f"Approve: `msa approve {run}`\n\n"
+                    f'Send it back: `msa approve {run} --reject "what to change"`\n\n'
+                    f'Stop the run: `msa approve {run} --abort "why"`\n'
+                )
+            case AwaitHumanRuling(findings=ids):
+                disputes = "\n\n".join(review.dispute(ctx, f) for f in ids)
+                example = " ".join(f"{f}=upheld" for f in ids)
+                question = (
+                    f"# Run {run}: rule on {len(ids)} disputed finding(s)\n\n"
+                    "The reviewer and the author could not settle these, and no repro test, "
+                    "preference or style rule decided them.\n\n"
+                    f"{disputes}\n\n"
+                    "Rule on every finding: upheld (the code must change), dismissed (it "
+                    "stays), or deferred (a follow-up):\n\n"
+                    f"`msa rule {run} {example}`\n\n"
+                    f'Stop the run instead: `msa rule {run} --abort "why"`\n'
+                )
+            case other:
+                raise TypeError(f"no person answers {other.kind}")
+        path = ctx.files.write("question.md", question)
+        raise Parked(f"waiting for a person: {path}")
+
+
 class StandIns:
     """The pass-through answer described in the module docstring."""
 
@@ -167,14 +210,11 @@ class StandIns:
 
 
 class Unavailable:
-    """Effects whose executors arrive in a later milestone. The interpreter turns the
-    error into a failure event, so the run stops with this message instead of stalling."""
+    """An effect no executor handles. The interpreter turns the error into a failure
+    event, so the run stops with this message instead of stalling."""
 
     async def execute(self, effect: Effect, *, now: datetime) -> AnyEvent:
-        raise NotImplementedError(
-            f"{effect.command.kind} has no executor yet: human gates arrive with `msa approve` "
-            "and negotiation with the Reviewer (M8)"
-        )
+        raise NotImplementedError(f"{effect.command.kind} has no executor")
 
 
 # ---------- wiring
@@ -182,7 +222,10 @@ class Unavailable:
 
 def executors(context: RunContext, intake: IntakeExecutor) -> Router:
     coder, tester = CoderExecutor(context), TesterExecutor(context)
-    stand_ins = StandIns()
+    person = HumanGate(context)
+    reviewing: Executor = (
+        review.ReviewExecutor(context) if context.config.review.enabled else StandIns()
+    )
     routes: dict[str, Executor] = {
         "prepare_workspace": WorkspaceIntake(intake, context.worktree, context.tester_worktree),
         "request_plan": PlannerExecutor(context),
@@ -193,7 +236,11 @@ def executors(context: RunContext, intake: IntakeExecutor) -> Router:
         "run_verification": VerifyExecutor(context),
         "run_test_suite": TestSuiteExecutor(context),
         "finalize": FinalizeExecutor(context),
-        **dict.fromkeys(STAND_INS, stand_ins),
+        "request_review": reviewing,
+        "run_negotiation_round": review.NegotiationExecutor(context),
+        "request_arbitration": review.ArbitrationExecutor(context),
+        "await_plan_approval": person,
+        "await_human_ruling": person,
     }
     return Router(routes, fallback=Unavailable())
 
@@ -222,6 +269,7 @@ def context(
         worktree=RunWorktree.for_run(repo, state_dir, run_id),
         tester_worktree=RunWorktree.for_run(repo, state_dir, run_id, "tests"),
         base_worktree=RunWorktree.for_run(repo, state_dir, run_id, "base"),
+        repro_worktree=RunWorktree.for_run(repo, state_dir, run_id, "repro"),
         files=RunFiles.for_run(state_dir, run_id),
         preferences=preferences,
         on_violation=on_violation,
@@ -236,6 +284,7 @@ def write_report(
 ) -> Path:
     stored = files.read(PLAN_FILE)
     tests = files.records("tests.jsonl")
+    reviewed = bool(files.records(review.REVIEWS))
     text = report.render(
         state,
         events,
@@ -244,10 +293,16 @@ def write_report(
         invocations=files.records("invocations.jsonl"),
         verifications=files.records("verifications.jsonl"),
         summaries=files.records("summaries.jsonl"),
-        stand_ins=STAND_INS,
+        stand_ins={} if reviewed else STAND_INS,
         patch=files.read("patch.diff") if state.phase is Phase.DONE else None,
         tests=tests,
         last_test_report=files.text(Digest(tests[-1]["report"])) if tests else None,
+        review=report.Review(
+            reviews=files.records(review.REVIEWS),
+            findings=files.records(review.FINDINGS),
+            rounds=files.records(review.ROUNDS),
+            rulings=files.records(review.RULINGS),
+        ),
     )
     return files.write("report.md", text)
 
@@ -292,5 +347,6 @@ def interpreter(
         clock=clock,
         observer=observer,
         on_outcome=finished,
+        on_park=finished,
         snapshot_every=config.journal.snapshot_every,
     )

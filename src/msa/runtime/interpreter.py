@@ -17,6 +17,12 @@ Crash semantics follow from the commit point:
 Executor failures never crash the interpreter. An exception, a malformed answer, or an
 answer the core rejects becomes ``AgentFailed`` (LLM effects) or ``EffectFailed`` (the
 rest), so the run fails fast with a reason instead of stalling until its deadline.
+
+**Parking.** An executor whose effect waits on a person (a plan gate, a ruling) raises
+``Parked`` instead of answering. Once every pending effect is parked, the interpreter
+returns the run as it is: journaled, live and resumable, with nothing running. The
+person's answer is journaled from outside (``msa approve``, ``msa rule``), and the next
+``resume`` carries on from it. The core stops the run's clock meanwhile (ADR-014).
 """
 
 from __future__ import annotations
@@ -72,7 +78,12 @@ class Observer:
         """The core rejected an event; nothing changed."""
 
 
-type Inbox = asyncio.Queue[tuple[EffectId | None, AnyEvent]]
+class Parked(Exception):
+    """Raised by an executor whose effect waits on a person; the message says how to answer."""
+
+
+# None as the event: the effect parked.
+type Inbox = asyncio.Queue[tuple[EffectId | None, AnyEvent | None]]
 
 
 class Interpreter:
@@ -84,6 +95,7 @@ class Interpreter:
         clock: Clock,
         observer: Observer | None = None,
         on_outcome: Callable[[RunState], None] | None = None,
+        on_park: Callable[[RunState], None] | None = None,
         snapshot_every: int = 50,
     ) -> None:
         if snapshot_every < 1:
@@ -93,6 +105,7 @@ class Interpreter:
         self._clock = clock
         self._observer = observer or Observer()
         self._on_outcome = on_outcome
+        self._on_park = on_park
         self._snapshot_every = snapshot_every
         self._inbox: Inbox | None = None
 
@@ -134,12 +147,18 @@ class Interpreter:
         inbox: Inbox = asyncio.Queue()
         self._inbox = inbox
         tasks: dict[EffectId, asyncio.Task[None]] = {}
+        parked: set[EffectId] = set()
         try:
             while not state.is_terminal:
                 for effect in state.pending:
                     if effect.id not in tasks:
                         tasks[effect.id] = asyncio.create_task(self._run(effect, state, inbox))
+                if state.pending and all(e.id in parked for e in state.pending):
+                    break  # waiting on a person, and nothing else is running
                 source, event = await self._next(state, inbox)
+                if event is None:
+                    parked.add(source)  # type: ignore[arg-type]  # parked answers name their effect
+                    continue
                 try:
                     state = self._commit(state, source, event, tasks)
                 except JournalConflict:
@@ -150,18 +169,23 @@ class Interpreter:
             for task in tasks.values():
                 task.cancel()
             await asyncio.gather(*tasks.values(), return_exceptions=True)
-        if self._on_outcome is not None:
+        if not state.is_terminal:
+            if self._on_park is not None:
+                self._on_park(state)
+        elif self._on_outcome is not None:
             # Published after the loop rather than on the PublishOutcome effect, so that
             # resuming an already-terminal run publishes again: at-least-once delivery.
             self._on_outcome(state)
         return state
 
-    async def _next(self, state: RunState, inbox: Inbox) -> tuple[EffectId | None, AnyEvent]:
+    async def _next(self, state: RunState, inbox: Inbox) -> tuple[EffectId | None, AnyEvent | None]:
         budget = self._clock.wait_budget(state)
         try:
             source, event = await asyncio.wait_for(inbox.get(), timeout=budget)
         except TimeoutError:
             return None, DeadlineExceeded(at=self._clock.stamp(state))
+        if event is None:
+            return source, None
         # The shell owns time: stamp on commit, so concurrent completions stay monotonic.
         return source, event.model_copy(update={"at": self._clock.stamp(state)})
 
@@ -209,6 +233,9 @@ class Interpreter:
             event = await self._executor.execute(effect, now=now)
         except asyncio.CancelledError:
             raise
+        except Parked:
+            inbox.put_nowait((effect.id, None))
+            return
         except Exception as exc:  # executor bugs become failure events, never crashes
             event = _failure(effect, f"{type(exc).__name__}: {exc}", now)
         else:

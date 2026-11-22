@@ -15,6 +15,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from msa.config import MsaConfig, Role
+from msa.core.budget import NO_SPEND, Spend
 from msa.core.effects import Effect
 from msa.core.events import AgentFailed, AgentRefused, AnyEvent
 from msa.core.ids import RunId, TreeHash
@@ -46,6 +47,7 @@ class RunContext:
     worktree: RunWorktree  # the build: the Coder's while BUILDING, the head tree after
     tester_worktree: RunWorktree  # the Tester's, at the base tree while BUILDING (blind)
     base_worktree: RunWorktree  # scratch, for running acceptance tests against the base
+    repro_worktree: RunWorktree  # scratch, where the Tester writes repro tests at the head
     files: RunFiles
     preferences: Callable[[], Resolved]  # resolved at INTAKE, or again on resume
     on_violation: Callable[[Violation], None] = log_violation
@@ -76,11 +78,12 @@ class RunContext:
 
     # ---------- invoking an agent
 
-    def has_paid_turns(self, effect: Effect) -> bool:
+    def has_paid_turns(self, effect: Effect, key: str | None = None) -> bool:
         """Whether an earlier execution of ``effect`` already paid for a turn, so this one
-        is a resumption that will replay it (and must find the worktree as it left it)."""
+        is a resumption that will replay it (and must find the worktree as it left it).
+        ``key`` names one of several invocations an effect makes (its idempotency key)."""
         store = self.gateway.store
-        return store is not None and store.get(effect.id, 0) is not None
+        return store is not None and store.get(key or effect.id, 0) is not None
 
     async def invoke[O: BaseModel](
         self, effect: Effect, invocation: Invocation[O], *, now: datetime
@@ -128,3 +131,25 @@ def reservation(effect: Effect) -> int:
     if effect.budget_usd_micros is None:
         raise ValueError(f"{effect.command.kind} {effect.id} carries no budget reservation")
     return effect.budget_usd_micros
+
+
+@dataclass
+class Purse:
+    """One effect's reservation, shared by the invocations it makes in turn. Each gets
+    what the earlier ones left, so together they never exceed the reservation."""
+
+    reservation: int
+    spent: Spend = NO_SPEND
+
+    @property
+    def left(self) -> int:
+        return max(1, self.reservation - self.spent.usd_micros)
+
+    def pay(self, spend: Spend) -> None:
+        self.spent = self.spent + spend
+
+    def charge[E: AnyEvent](self, failure: E) -> E:
+        """A failure event that also carries what this effect spent before it failed."""
+        if isinstance(failure, AgentFailed | AgentRefused):
+            return failure.model_copy(update={"spend": self.spent + failure.spend})  # type: ignore[return-value]
+        return failure

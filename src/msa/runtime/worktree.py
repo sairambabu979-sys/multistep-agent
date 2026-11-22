@@ -214,6 +214,20 @@ class RunWorktree:
             if status == "D":
                 (self.path / path).unlink(missing_ok=True)
 
+    async def changes(self, base: TreeHash, head: TreeHash) -> str:
+        """A zero-context patch from ``base`` to ``head``: which lines changed, for the
+        review's scope rule (``msa.runtime.negotiation.changed_lines``)."""
+        return await self._git(
+            "diff",
+            "--no-ext-diff",
+            "--no-color",
+            "--no-textconv",
+            "--no-renames",
+            "-U0",
+            base,
+            head,
+        )
+
     async def diff(self, base: TreeHash, head: TreeHash) -> str:
         """A patch from ``base`` to ``head`` that ``git apply`` accepts."""
         return await self._git(

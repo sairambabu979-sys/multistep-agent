@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import Coroutine
+from collections.abc import Callable, Coroutine
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -24,11 +24,20 @@ from msa.config import (
     load_config,
 )
 from msa.core import RunState, Step, TransitionRejected, transition
-from msa.core.events import AnyEvent, CancelRequested
+from msa.core.effects import AwaitHumanRuling, AwaitPlanApproval, Command, Effect
+from msa.core.events import (
+    AnyEvent,
+    CancelRequested,
+    Completion,
+    HumanAborted,
+    HumanRuled,
+    PlanApproved,
+    PlanRejected,
+)
 from msa.core.graph import analyze, render_markdown
-from msa.core.ids import RunId
+from msa.core.ids import FindingId, RunId
 from msa.core.transitions import TABLE
-from msa.core.values import Escalation, Limits, Phase, PlanGate
+from msa.core.values import Escalation, Limits, Phase, PlanGate, Resolution, Verdict
 from msa.llm.anthropic_client import AnthropicMessages
 from msa.llm.cassette import CassetteClient, CassetteMiss
 from msa.llm.client import MessagesClient
@@ -36,6 +45,7 @@ from msa.llm.gateway import InvocationError
 from msa.llm.ping import TOKEN, PingReport, ping
 from msa.llm.store import SqliteResponseStore
 from msa.runtime import live
+from msa.runtime.artifacts import RunFiles
 from msa.runtime.checks import CheckError, CheckFinding, run_checks
 from msa.runtime.clock import LogicalClock, SystemClock
 from msa.runtime.interpreter import Interpreter, Observer
@@ -796,6 +806,129 @@ def cancel(
         except JournalError as exc:  # includes JournalConflict: another writer moved first
             raise _fail(str(exc)) from exc
     typer.echo(_outcome_line(step.state))
+
+
+# ---------- a person's answer: a plan gate or a ruling (ADR-014)
+
+
+Resume = Annotated[
+    bool, typer.Option("--resume/--no-resume", help="Carry on with the run once answered.")
+]
+
+
+def _answer(
+    ctx: typer.Context,
+    rid: RunId,
+    db: Path | None,
+    command_type: type[Command],
+    answer: Callable[[RunState, Effect], Completion],
+    *,
+    resume: bool,
+    quiet: bool,
+) -> None:
+    """Journal a person's answer to the effect the run is parked on, then resume it."""
+    with _journal(ctx, db) as journal:
+        try:
+            state = journal.load(rid)
+            effect = next((e for e in state.pending if isinstance(e.command, command_type)), None)
+            if effect is None:
+                waiting = ", ".join(e.command.kind for e in state.pending) or "nothing"
+                raise _fail(
+                    f"run {rid} is not waiting for {command_type.model_fields['kind'].default}: "
+                    f"it is {state.phase.name}, waiting for {waiting}"
+                )
+            event = answer(state, effect)
+            step = transition(state, event)
+            journal.append(event, step.state, snapshot=True)
+            environment = journal.environment(rid)
+            if isinstance(event, HumanRuled) and environment.get("kind") == "live":
+                files = RunFiles.for_run(Path(str(environment["state_dir"])), rid)
+                for r in event.resolutions:
+                    files.record(
+                        "arbitration.jsonl",
+                        {
+                            "effect": effect.id,
+                            "finding": r.finding_id,
+                            "rung": "human",
+                            "verdict": r.verdict.value,
+                            "detail": "ruled by a person",
+                        },
+                    )
+            typer.echo(_outcome_line(step.state))
+            if resume and not step.state.is_terminal:
+                if environment.get("kind") == "live":
+                    state = _resume_live(ctx, journal, environment, rid, quiet=quiet)
+                else:
+                    interpreter = _interpreter(ctx, journal, environment, quiet=quiet)
+                    state = _drive(rid, interpreter.resume(rid))
+                typer.echo(_outcome_line(state))
+        except TransitionRejected as exc:
+            raise _fail(f"answer refused: {exc.detail}") from exc
+        except JournalError as exc:
+            raise _fail(str(exc)) from exc
+
+
+@app.command()
+def approve(
+    ctx: typer.Context,
+    run_id: Run,
+    reject: Annotated[
+        str | None, typer.Option(help="Send the plan back with this feedback.")
+    ] = None,
+    abort: Annotated[str | None, typer.Option(help="Stop the run, for this reason.")] = None,
+    db: Db = None,
+    quiet: Quiet = False,
+    resume: Resume = True,
+) -> None:
+    """Answer a plan gate: approve the plan, send it back, or stop the run."""
+    if reject is not None and abort is not None:
+        raise _fail("--reject and --abort are alternatives")
+
+    def answer(state: RunState, effect: Effect) -> Completion:
+        at = SystemClock().stamp(state)
+        if abort is not None:
+            return HumanAborted(at=at, effect_id=effect.id, reason=abort)
+        if reject is not None:
+            return PlanRejected(at=at, effect_id=effect.id, feedback=reject)
+        return PlanApproved(at=at, effect_id=effect.id)
+
+    _answer(ctx, RunId(run_id), db, AwaitPlanApproval, answer, resume=resume, quiet=quiet)
+
+
+@app.command()
+def rule(
+    ctx: typer.Context,
+    run_id: Run,
+    verdicts: Annotated[
+        list[str] | None,
+        typer.Argument(
+            help="FINDING=VERDICT for every disputed finding: upheld, dismissed or deferred."
+        ),
+    ] = None,
+    abort: Annotated[str | None, typer.Option(help="Stop the run, for this reason.")] = None,
+    db: Db = None,
+    quiet: Quiet = False,
+    resume: Resume = True,
+) -> None:
+    """Rule on the findings a run is waiting on (see question.md in its run directory)."""
+    if abort is not None and verdicts:
+        raise _fail("rule on the findings or --abort, not both")
+    if abort is None and not verdicts:
+        raise _fail("give FINDING=VERDICT for every disputed finding, or --abort")
+    resolutions = []
+    for item in verdicts or []:
+        finding_id, sep, verdict = item.partition("=")
+        if not sep or verdict not in {"upheld", "dismissed", "deferred"}:
+            raise _fail(f"{item!r}: expected FINDING=upheld|dismissed|deferred")
+        resolutions.append(Resolution(finding_id=FindingId(finding_id), verdict=Verdict(verdict)))
+
+    def answer(state: RunState, effect: Effect) -> Completion:
+        at = SystemClock().stamp(state)
+        if abort is not None:
+            return HumanAborted(at=at, effect_id=effect.id, reason=abort)
+        return HumanRuled(at=at, effect_id=effect.id, resolutions=tuple(resolutions))
+
+    _answer(ctx, RunId(run_id), db, AwaitHumanRuling, answer, resume=resume, quiet=quiet)
 
 
 @app.command(name="runs")

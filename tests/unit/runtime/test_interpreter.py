@@ -12,13 +12,19 @@ import pytest
 from typer.testing import CliRunner
 
 from msa.cli import app
-from msa.core import RunState, TransitionRejected
-from msa.core.effects import Effect, RunTestSuite
-from msa.core.events import AnyEvent, CancelRequested, TestsPassed, VerificationPassed
+from msa.core import RunState, TransitionRejected, transition
+from msa.core.effects import AwaitPlanApproval, Effect, RunTestSuite
+from msa.core.events import (
+    AnyEvent,
+    CancelRequested,
+    PlanApproved,
+    TestsPassed,
+    VerificationPassed,
+)
 from msa.core.ids import EffectId, RunId
-from msa.core.values import OutcomeReason, Phase
+from msa.core.values import OutcomeReason, Phase, PlanGate
 from msa.runtime.clock import LogicalClock, SystemClock
-from msa.runtime.interpreter import Interpreter, Observer
+from msa.runtime.interpreter import Interpreter, Observer, Parked
 from msa.runtime.journal import SqliteJournal
 from msa.runtime.simulation import (
     BASE,
@@ -273,3 +279,54 @@ def test_defensive_cancelling_effects_without_running_tasks_is_harmless(
     after = interpreter._commit(state, None, cancel, {})
     assert after.phase is Phase.ABORTED
     assert journal.load(RUN) == after
+
+
+# ---------- parking: an effect a person answers
+
+
+class Gatekeeper:
+    """The happy simulation, except that a person answers the plan gate."""
+
+    def __init__(self) -> None:
+        self._happy = SimulatedEnvironment(HAPPY)
+
+    async def execute(self, effect: Effect, *, now: datetime) -> AnyEvent:
+        if isinstance(effect.command, AwaitPlanApproval):
+            raise Parked("ask a person")
+        return await self._happy.execute(effect, now=now)
+
+
+def test_an_effect_waiting_on_a_person_parks_the_run_until_it_is_answered(
+    journal: SqliteJournal,
+) -> None:
+    parked: list[RunState] = []
+    finished: list[RunState] = []
+    interpreter = Interpreter(
+        journal,
+        Gatekeeper(),
+        clock=LogicalClock(),
+        on_park=parked.append,
+        on_outcome=finished.append,
+    )
+    state = run(interpreter, plan_gate=PlanGate.HUMAN)
+    assert state.phase is Phase.PLAN_GATE
+    assert (parked, finished) == ([state], [])  # live and resumable, nothing published
+    assert journal.load(RUN) == state
+    assert asyncio.run(interpreter.resume(RUN)).phase is Phase.PLAN_GATE  # still parked
+
+    (gate,) = state.pending
+    answer = PlanApproved(at=state.updated_at + timedelta(hours=2), effect_id=gate.id)
+    journal.append(answer, transition(state, answer).state, snapshot=True)
+    final = asyncio.run(interpreter.resume(RUN))
+    assert final.phase is Phase.DONE
+    assert finished == [final]
+    assert final.paused == timedelta(hours=2)
+
+
+def test_the_wall_clock_does_not_run_while_a_person_is_asked() -> None:
+    d = Driver(limits(plan_gate=PlanGate.HUMAN))
+    d.intake()
+    assert SystemClock().wait_budget(d.state) is not None
+    d.plan()
+    assert d.state.waiting_since is not None
+    assert SystemClock().wait_budget(d.state) is None
