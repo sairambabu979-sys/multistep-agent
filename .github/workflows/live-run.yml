@@ -1,0 +1,93 @@
+name: live run
+
+# The agents on a real task with the real model, nothing scripted: the multi-file inventory
+# task of the definition-of-done run (tests/integration/test_demo.py), on the same fixture,
+# with every stage real. It spends, so it is manual only, and the budget is a hard cap.
+#
+# The run stops at HUMAN_APPROVAL. Nothing is published and no workflow approves it: its PR
+# description, report, patch, timeline and journal are uploaded for a person to read, and
+# the job summary shows the outcome and the spend. The job fails if the run never reached
+# the human gate (failed, cancelled, blocked), so a red run here is a real finding.
+on:
+  workflow_dispatch:
+    inputs:
+      budget_usd:
+        description: Hard cap on model spend for the run, in US dollars (at most 20)
+        required: true
+        default: "5"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-run
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      RUN_ID: live-${{ github.run_number }}
+      BUDGET_USD: ${{ inputs.budget_usd }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+          enable-cache: true
+
+      - name: Install (locked)
+        run: uv sync --locked
+
+      - name: ripgrep (the search tool runs it)
+        run: command -v rg || { sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep; }
+
+      - name: Check the budget
+        run: |
+          python3 -c "import os, sys; b = float(os.environ['BUDGET_USD']); \
+            sys.exit(0 if 0 < b <= 20 else f'budget_usd must be above 0 and at most 20, not {b}')"
+
+      - name: The repository to change (the inventory fixture, committed)
+        run: |
+          cp -r tests/fixtures/repos/inventory "$RUNNER_TEMP/inventory"
+          cd "$RUNNER_TEMP/inventory"
+          git init -q -b main
+          git add .
+          git -c user.name=fixture -c user.email=fixture@localhost commit -qm base
+
+      - name: Settings for this run
+        # The fixture has no environment of its own, so the sandbox runs ruff, mypy and pytest
+        # with this checkout's Python, as the integration tests do. Everything else is msa.toml.
+        run: |
+          sed "s|^launcher = .*|launcher = [\"$GITHUB_WORKSPACE/.venv/bin/python\", \"-m\"]|" \
+            msa.toml > "$RUNNER_TEMP/msa.toml"
+          grep -n '^launcher' "$RUNNER_TEMP/msa.toml"
+          uv run msa --config "$RUNNER_TEMP/msa.toml" config check
+
+      - name: The run (real model, every stage)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          uv run msa --config "$RUNNER_TEMP/msa.toml" run \
+            --repo "$RUNNER_TEMP/inventory" \
+            --task-file .github/live-run/task.md \
+            --run-id "$RUN_ID" \
+            --budget-usd "$BUDGET_USD" \
+            --db "$RUNNER_TEMP/aegis/runs.db"
+
+      - name: Outcome, spend and the PR description
+        if: always()
+        run: |
+          uv run python scripts/live_run_summary.py \
+            --db "$RUNNER_TEMP/aegis/runs.db" --run "$RUN_ID" --summary "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: live-run
+          path: |
+            ${{ runner.temp }}/aegis/runs.db
+            ${{ runner.temp }}/aegis/runs/
+          if-no-files-found: warn
