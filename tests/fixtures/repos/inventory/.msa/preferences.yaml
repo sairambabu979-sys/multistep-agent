@@ -1,0 +1,5 @@
+# This repository's layer: printing from library code is not a nit here, it is a blocker.
+version: 1
+preferences:
+  - id: py.output.no-print
+    enforcement: hard

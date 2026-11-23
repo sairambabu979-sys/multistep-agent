@@ -181,6 +181,21 @@ from the terminal and another from the browser.
 - **Traces** (`tests/unit/observability/test_tracing.py`): a span per effect, invocation
   and tool call, nested as the work is (effect > invocation > tool), carrying no prompt,
   argument or file content.
+- **The definition-of-done run** (`tests/integration/test_demo.py`, snapshot in
+  [`docs/demo`](../demo/README.md)). One multi-file task on the inventory fixture goes
+  through every stage, with the model scripted and everything else real. The scripted
+  Coder makes four deliberate mistakes, and each is caught by the stage built for it:
+  - a hard repository preference (`print()`) fails STATIC_ANALYSIS;
+  - a blind acceptance test triaged `impl_bug` fails UNIT_TESTING;
+  - `eval()` fails SECURITY_REVIEW;
+  - a non-atomic `receive()` is caught by the Reviewer and accepted in NEGOTIATION.
+
+  Each is fixed by a revision, four in all. A real `SIGKILL` lands mid-revision. On resume,
+  no journaled effect runs again, and the revision in flight replays its paid turns from
+  the response store, so its edit is not applied twice. The run ends on a branch a person
+  approved, and the PR lists each gate's evidence and what was caught along the way. Two
+  probes make the test fail: resuming without the response store, and removing the
+  repository's preference layer.
 - **The stages run on real worktrees** in `tests/unit/runtime/test_stages.py`, and whole
   runs in `tests/integration`: approved, published to a branch whose tree, parent and
   `Approved-by` trailer are checked. Hand mutants of the base-tree comparison, the
@@ -193,9 +208,10 @@ from the terminal and another from the browser.
 - Three new deterministic stages run on every tree. They are cheap compared with any model
   call.
 - The workbench is a second product surface, built on the API, and has its own tests.
-- The live demonstration, the Temporal backend and the Postgres backend each depend on
-  something this environment does not provide by itself: an API key, and permission to
-  run downloaded server binaries. Each is reported as such until it runs.
+- A live-model run, the Temporal backend and the Postgres backend each depend on something
+  this environment does not provide by itself: an API key, and permission to run
+  downloaded server binaries. Each is reported as such until it runs. The
+  definition-of-done run uses a scripted model and says so wherever it is shown.
 
 ## Rejected
 

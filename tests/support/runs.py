@@ -11,7 +11,7 @@ import asyncio
 import os
 import re
 import sys
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
@@ -25,10 +25,10 @@ from msa.core.ids import RunId
 from msa.llm import fake
 from msa.llm.accounting import estimate_input_tokens
 from msa.llm.client import Request, Response
-from msa.llm.store import MemoryResponseStore
+from msa.llm.store import MemoryResponseStore, ResponseStore
 from msa.runtime import live
 from msa.runtime.clock import LogicalClock
-from msa.runtime.interpreter import Interpreter
+from msa.runtime.interpreter import Interpreter, Observer
 from msa.runtime.journal import SqliteJournal
 from msa.tools.audit import Violation
 from msa.tools.workspace import content_hash
@@ -177,10 +177,17 @@ class Harness:
     state_dir: Path
     config: MsaConfig
     violations: list[Violation] = field(default_factory=list)
+    task: str = TASK
+    # Each interpreter's response store. In memory by default: a resumed run starts with an
+    # empty one. A crash test passes an on-disk store, the way msa run keeps one.
+    store: Callable[[], ResponseStore] = MemoryResponseStore
+    observer: Observer | None = None
 
     @property
     def environment(self) -> live.LiveEnvironment:
-        return live.LiveEnvironment(repo=str(self.repo), state_dir=str(self.state_dir), task=TASK)
+        return live.LiveEnvironment(
+            repo=str(self.repo), state_dir=str(self.state_dir), task=self.task
+        )
 
     def _interpreter(self, client: RoleScripts, journal: SqliteJournal) -> Interpreter:
         return live.interpreter(
@@ -189,8 +196,9 @@ class Harness:
             run_id=RUN,
             journal=journal,
             client=client,
-            store=MemoryResponseStore(),
+            store=self.store(),
             clock=LogicalClock(),
+            observer=self.observer,
             on_violation=self.violations.append,
         )
 
@@ -250,8 +258,11 @@ class Harness:
         )
 
 
-def make_harness(base: Path, *, review: bool = False) -> Harness:
-    """The greeter fixture, committed, with ruff and pytest from this interpreter.
+def make_harness(
+    base: Path, *, review: bool = False, fixture: str = "greeter", task: str = TASK
+) -> Harness:
+    """A fixture repository (the greeter by default), committed, with ruff and pytest from
+    this interpreter.
 
     Without ``review`` the run is arm B of the ablation (PLAN §11): the Reviewer is the
     pass-through stand-in, which is what the M6 and M7 scenarios are about. The M8
@@ -266,7 +277,7 @@ def make_harness(base: Path, *, review: bool = False) -> Harness:
             "review": config.review.model_copy(update={"enabled": review}),
         }
     )
-    return Harness(make_repo("greeter", base / "repo"), base / "state", config)
+    return Harness(make_repo(fixture, base / "repo"), base / "state", config, task=task)
 
 
 # ---------- golden timelines
