@@ -338,6 +338,23 @@
       "title": "ModelsConfig",
       "type": "object"
     },
+    "ObservabilityConfig": {
+      "additionalProperties": false,
+      "description": "Traces (ADR-015 \u00a73): one span per effect, invocation and tool call. ``console``\nwrites finished spans to stderr; ``none`` makes them free no-ops.",
+      "properties": {
+        "traces": {
+          "default": "none",
+          "enum": [
+            "none",
+            "console"
+          ],
+          "title": "Traces",
+          "type": "string"
+        }
+      },
+      "title": "ObservabilityConfig",
+      "type": "object"
+    },
     "PlanGate": {
       "description": "Whether a produced plan needs a human's approval before building starts.",
       "enum": [
@@ -614,6 +631,35 @@
       "title": "SecurityConfig",
       "type": "object"
     },
+    "ServiceConfig": {
+      "additionalProperties": false,
+      "description": "``msa serve`` (ADR-015 \u00a73): the HTTP API.",
+      "properties": {
+        "cors_origins": {
+          "default": [],
+          "items": {
+            "pattern": "^https?://[^/\\s]+$",
+            "type": "string"
+          },
+          "title": "Cors Origins",
+          "type": "array"
+        },
+        "host": {
+          "default": "127.0.0.1",
+          "title": "Host",
+          "type": "string"
+        },
+        "port": {
+          "default": 8765,
+          "maximum": 65535,
+          "minimum": 1,
+          "title": "Port",
+          "type": "integer"
+        }
+      },
+      "title": "ServiceConfig",
+      "type": "object"
+    },
     "TestingConfig": {
       "additionalProperties": false,
       "description": "TESTING (PLAN \u00a76.1): how failures are told apart.",
@@ -763,6 +809,12 @@
     "models": {
       "$ref": "#/$defs/ModelsConfig"
     },
+    "observability": {
+      "$ref": "#/$defs/ObservabilityConfig",
+      "default": {
+        "traces": "none"
+      }
+    },
     "pricing": {
       "patternProperties": {
         "^claude-[a-z]+(?:-\\d{1,2})+$": {
@@ -816,6 +868,14 @@
       "default": {
         "audit_command": [],
         "forbid_new_dependencies": false
+      }
+    },
+    "service": {
+      "$ref": "#/$defs/ServiceConfig",
+      "default": {
+        "cors_origins": [],
+        "host": "127.0.0.1",
+        "port": 8765
       }
     },
     "testing": {

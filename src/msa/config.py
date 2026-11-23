@@ -341,6 +341,22 @@ class ReleaseConfig(Frozen):
     branch_prefix: Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9/_-]*/$")] = "aegis/"
 
 
+class ServiceConfig(Frozen):
+    """``msa serve`` (ADR-015 §3): the HTTP API."""
+
+    host: str = "127.0.0.1"  # loopback by default: expose it deliberately, behind TLS
+    port: Annotated[int, Field(ge=1, le=65535)] = 8765
+    # Origins a browser may call the API from, e.g. the workbench's dev server.
+    cors_origins: tuple[Annotated[str, StringConstraints(pattern=r"^https?://[^/\s]+$")], ...] = ()
+
+
+class ObservabilityConfig(Frozen):
+    """Traces (ADR-015 §3): one span per effect, invocation and tool call. ``console``
+    writes finished spans to stderr; ``none`` makes them free no-ops."""
+
+    traces: Literal["none", "console"] = "none"
+
+
 class ReviewConfig(Frozen):
     """REVIEWING and NEGOTIATING (PLAN §4, ADR-014)."""
 
@@ -365,6 +381,8 @@ class MsaConfig(Frozen):
     integration: IntegrationConfig = IntegrationConfig()
     security: SecurityConfig = SecurityConfig()
     release: ReleaseConfig = ReleaseConfig()
+    service: ServiceConfig = ServiceConfig()
+    observability: ObservabilityConfig = ObservabilityConfig()
 
     @model_validator(mode="after")
     def _repro_tests_are_the_testers(self) -> Self:

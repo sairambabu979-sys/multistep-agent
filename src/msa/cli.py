@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Annotated, Any
 
 import typer
+import uvicorn
 from pydantic import ValidationError
 
 from msa import __version__
@@ -21,6 +22,7 @@ from msa.config import (
     MsaConfig,
     Role,
     SandboxConfig,
+    ServiceConfig,
     json_schema,
     load_config,
 )
@@ -58,6 +60,7 @@ from msa.llm.client import MessagesClient
 from msa.llm.gateway import InvocationError
 from msa.llm.ping import TOKEN, PingReport, ping
 from msa.llm.store import SqliteResponseStore
+from msa.observability import tracing
 from msa.runtime import live
 from msa.runtime.artifacts import RunFiles
 from msa.runtime.checks import CheckError, CheckFinding, run_checks
@@ -72,6 +75,11 @@ from msa.runtime.simulation import (
     SimulationConfig,
     digest,
 )
+from msa.runtime.telemetry import Traced
+from msa.service.app import Settings as ServiceSettings
+from msa.service.app import create_app
+from msa.service.tokens import Role as TokenRole
+from msa.service.tokens import TokenError, TokenStore
 from msa.skills import policy, registry
 from msa.skills.preferences import Preference, PreferenceError, Resolved, Scope, store
 from msa.skills.preferences.lint import lint
@@ -87,12 +95,14 @@ config_app = typer.Typer(no_args_is_help=True, help="Validate msa.toml and expor
 llm_app = typer.Typer(no_args_is_help=True, help="Check and record the model API connection.")
 prefs_app = typer.Typer(no_args_is_help=True, help="Inspect, check and change coding preferences.")
 skills_app = typer.Typer(no_args_is_help=True, help="Manage versioned skills for the roles.")
+tokens_app = typer.Typer(no_args_is_help=True, help="Issue and revoke API tokens.")
 policy_app = typer.Typer(no_args_is_help=True, help="Show the security policy.")
 app.add_typer(fsm_app, name="fsm")
 app.add_typer(config_app, name="config")
 app.add_typer(llm_app, name="llm")
 app.add_typer(prefs_app, name="prefs")
 app.add_typer(skills_app, name="skills")
+app.add_typer(tokens_app, name="tokens")
 app.add_typer(policy_app, name="policy")
 
 Db = Annotated[
@@ -714,6 +724,73 @@ def policy_show(repo: Repo = Path(".")) -> None:
         typer.echo(f"forbidden for {role.value}: {', '.join(tools)}")
 
 
+# ---------- the HTTP API (ADR-015)
+
+
+def _state_dir(ctx: typer.Context, db: Path | None) -> Path:
+    return (db or _journal_settings(ctx).path).resolve().parent
+
+
+@tokens_app.command(name="add")
+def tokens_add(
+    ctx: typer.Context,
+    name: Annotated[str, typer.Argument(help="The person the token is for.")],
+    role: Annotated[str, typer.Option(help="viewer, operator, approver or admin.")] = "viewer",
+    db: Db = None,
+) -> None:
+    """Issue a token. It is printed once and stored only as a hash: keep it safe."""
+    store = TokenStore(_state_dir(ctx, db) / "tokens.json")
+    try:
+        token = store.issue(name, TokenRole.named(role))
+    except TokenError as exc:
+        raise _fail(str(exc)) from exc
+    typer.echo(token)
+    typer.echo(f"issued a {role} token for {name}; it is not shown again", err=True)
+
+
+@tokens_app.command(name="list")
+def tokens_list(ctx: typer.Context, db: Db = None) -> None:
+    """Who holds a token, with which role. Tokens themselves are never stored."""
+    found = list(TokenStore(_state_dir(ctx, db) / "tokens.json").principals())
+    if not found:
+        typer.echo("no tokens")
+    for who, created in found:
+        typer.echo(f"{who.name:<24}{who.role.name.lower():<10}{created}")
+
+
+@tokens_app.command(name="revoke")
+def tokens_revoke(ctx: typer.Context, name: str, db: Db = None) -> None:
+    try:
+        TokenStore(_state_dir(ctx, db) / "tokens.json").revoke(name)
+    except TokenError as exc:
+        raise _fail(str(exc)) from exc
+    typer.echo(f"revoked {name}'s token")
+
+
+@app.command()
+def serve(
+    ctx: typer.Context,
+    repo: Repo = Path("."),
+    host: Annotated[str | None, typer.Option(help="[default: msa.toml]")] = None,
+    port: Annotated[int | None, typer.Option(help="[default: msa.toml]")] = None,
+    db: Db = None,
+) -> None:
+    """Serve the HTTP API for the runs in the state directory, and the repository."""
+    settings = _settings(ctx)
+    service = settings.service if settings else ServiceConfig()
+    if settings is not None:
+        tracing.configure(settings.observability.traces)
+    app = create_app(
+        ServiceSettings(
+            repo=repo.resolve(),
+            state_dir=_state_dir(ctx, db),
+            config=settings,
+            cors_origins=service.cors_origins,
+        )
+    )
+    uvicorn.run(app, host=host or service.host, port=port or service.port, log_level="info")
+
+
 @app.command()
 def version() -> None:
     """Print the version."""
@@ -795,6 +872,7 @@ async def _drive_live(
     limits: Limits | None,
 ) -> RunState:
     """Start the run with ``limits``, or resume it (``limits`` is None)."""
+    tracing.configure(settings.observability.traces)
     client = _client(settings, environment)
     state_dir = Path(environment.state_dir)
     with SqliteResponseStore(state_dir / "responses.db") as responses:
@@ -806,7 +884,7 @@ async def _drive_live(
             client=client,
             store=responses,
             clock=SystemClock(),
-            observer=Observer() if quiet else Timeline(),
+            observer=Traced(Observer() if quiet else Timeline()),
             on_report=lambda path: typer.echo(f"report: {path}"),
         )
         try:

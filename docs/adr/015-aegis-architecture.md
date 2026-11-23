@@ -110,8 +110,11 @@ or a person only for what neither can decide.
 | `admin` | manage tokens, skills, security policies |
 | `agent:<role>` | act inside its run through its tools, under its capability set; never approve, never publish, never change policies |
 
-Tokens are hashed at rest; the server never logs them. Every API action is an audit event,
-with the principal on it.
+Tokens are hashed at rest; the server never logs them. Every change the API makes and every
+request it refuses is an audit entry, with the principal on it, written before the response.
+Reads are not logged: a polling dashboard would bury the changes. The CLI and the API answer
+a run through the same code (`msa.runtime.control`), so a gate cannot be answered one way
+from the terminal and another from the browser.
 
 ### 5. The stages without a model
 
@@ -157,6 +160,19 @@ with the principal on it.
   lets time pass a deadline): a run waiting on a person failed with `deadline_exceeded`
   when an operator paused it after the nominal deadline. The clock now stops for every
   event while a person is asked. A regression test fails without the fix.
+- **The API** (`tests/unit/service/test_api.py`), on simulated runs that park at every
+  question, as live runs do. It shows:
+  - each role can do exactly what the table says, and every refusal is audited;
+  - release approval, sending a release back, unblocking, ruling, and pause and resume
+    all go through the core, with the token's person on the event, and the run is driven
+    on;
+  - the core's refusals come back as 409;
+  - the stream replays every event, in order, then ends;
+  - path tricks and files outside the allowlist are refused;
+  - a task holding a secret is refused, and is neither stored nor logged.
+- **Traces** (`tests/unit/observability/test_tracing.py`): a span per effect, invocation
+  and tool call, nested as the work is (effect > invocation > tool), carrying no prompt,
+  argument or file content.
 - **The stages run on real worktrees** in `tests/unit/runtime/test_stages.py`, and whole
   runs in `tests/integration`: approved, published to a branch whose tree, parent and
   `Approved-by` trailer are checked. Hand mutants of the base-tree comparison, the

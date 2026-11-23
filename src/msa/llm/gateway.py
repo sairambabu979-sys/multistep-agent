@@ -45,6 +45,7 @@ from msa.llm.client import LlmError, MessagesClient, Request, count_tokens_reque
 from msa.llm.schema import strict_schema
 from msa.llm.store import ResponseStore
 from msa.llm.transcript import Block, Message, Transcript
+from msa.observability import tracing
 
 TASK_BUDGET_MINIMUM = 20_000  # the API rejects smaller task budgets
 _KEPT_BEFORE_FALLBACK = frozenset({"text", "fallback"})
@@ -193,7 +194,25 @@ class Gateway:
         self.sleep = sleep
 
     async def invoke[O: BaseModel](self, invocation: Invocation[O]) -> InvocationResult[O]:
-        return await _Run(self, invocation).run()
+        run = _Run(self, invocation)
+        with tracing.tracer().start_as_current_span(f"invoke {invocation.role.value}") as span:
+            span.set_attribute(tracing.ROLE, invocation.role.value)
+            span.set_attribute("msa.key", invocation.idempotency_key)
+            span.set_attribute("msa.model", run.model)
+            try:
+                result = await run.run()
+            except InvocationRefused:
+                span.set_attribute("msa.outcome", "refused")
+                raise
+            except InvocationFailed:
+                span.set_attribute("msa.outcome", "failed")
+                raise
+            finally:
+                span.set_attribute("msa.turns", len(run.turns))
+                span.set_attribute("msa.spend_usd_micros", run.spend.usd_micros)
+                span.set_attribute("msa.served_model", run.served)
+            span.set_attribute("msa.outcome", "ok")
+            return result
 
 
 class _Run[O: BaseModel]:
@@ -379,6 +398,13 @@ class _Run[O: BaseModel]:
         return [await self._call(call) for call in calls]
 
     async def _call(self, call: Block) -> Block:
+        with tracing.tracer().start_as_current_span(f"tool {call['name']}") as span:
+            span.set_attribute(tracing.TOOL, str(call["name"]))
+            result = await self._call_untraced(call)
+            span.set_attribute("msa.error", bool(result.get("is_error")))
+            return result
+
+    async def _call_untraced(self, call: Block) -> Block:
         tool = self.tools.get(call["name"])
         if tool is None:
             return _result(call, f"unknown tool {call['name']!r}", error=True)

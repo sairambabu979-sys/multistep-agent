@@ -9,9 +9,10 @@ negotiation with executable arbitration → release verification → a person ap
 a local branch, all shaped by a layered preferences skill.
 
 **Status.** The core workflow, every stage's executor, the human gates (plan, ruling,
-release, unblock, pause), the skills registry and security policy, and the CLI are built
-and tested end to end, with only the model scripted. Not yet built: the HTTP service, the
-web workbench, and the Temporal and Postgres backends ([ADR-015](docs/adr/015-aegis-architecture.md)). **No model
+release, unblock, pause), the skills registry and security policy, the CLI, and the HTTP
+API with roles, a live event stream, an audit log and traces are built and tested end to
+end, with only the model scripted. Not yet built: the web workbench, and the Temporal and
+Postgres backends ([ADR-015](docs/adr/015-aegis-architecture.md)). **No model
 has run any of it yet**: the first live run needs `ANTHROPIC_API_KEY`.
 
 The full design is in [`docs/PLAN.md`](docs/PLAN.md), decisions are in
@@ -112,6 +113,32 @@ uv run msa resume <run>
 ```
 
 Every answer is recorded with who gave it (`--by`, your login by default).
+
+### The HTTP API
+
+`msa serve` exposes the same runs and gates over HTTP, on 127.0.0.1 by default, for the
+workbench and any other client ([`src/msa/service`](src/msa/service)). Every request but
+`/api/health` needs a bearer token, and each route needs a role: **viewer** reads,
+**operator** starts, pauses, resumes, cancels and unblocks, **approver** approves, sends
+back, rules and aborts, **admin** reads the audit log. A token names one person, who is
+recorded on every event the API journals for them; a token cannot belong to an agent.
+
+```bash
+uv run msa tokens add grace --role approver
+```
+
+```bash
+uv run msa serve
+```
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" localhost:8765/api/runs/<run>/stream
+```
+
+`/stream` sends each journaled event as a server-sent event (reconnect with `?after=`),
+then `end`. Every change and every refused request goes to the audit log, without the
+token. Traces (one span per effect, agent invocation and tool call) are printed with
+`[observability] traces = "console"`.
 
 ## What exists today
 

@@ -13,9 +13,13 @@ classifiers = [
 ]
 dependencies = [
     "anthropic>=0.80",
+    "fastapi>=0.115",
+    "opentelemetry-api>=1.28",
+    "opentelemetry-sdk>=1.28",
     "pydantic>=2.11,<3",
     "ruamel-yaml>=0.18",
     "typer>=0.16",
+    "uvicorn>=0.32",
 ]
 
 [project.scripts]
@@ -24,6 +28,7 @@ msa = "msa.cli:main"
 [dependency-groups]
 dev = [
     "git-cliff>=2.14",
+    "httpx>=0.28",
     "hypothesis>=6.130",
     "import-linter>=2.3",
     "mutmut>=3.8",
@@ -206,6 +211,7 @@ name = "Layered architecture (PLAN §10)"
 type = "layers"
 layers = [
     "msa.cli",
+    "msa.service",
     "msa.runtime",
     "msa.agents",
     "msa.llm",

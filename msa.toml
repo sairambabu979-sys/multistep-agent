@@ -145,3 +145,13 @@ audit_command = []  # e.g. ["pip-audit", "--strict"], run when a dependency mani
 # Publishing, after a person approves: a local branch, never a push.
 [release]
 branch_prefix = "aegis/"
+
+# msa serve: the HTTP API, behind bearer tokens (msa tokens add) and roles.
+[service]
+host = "127.0.0.1"
+port = 8765
+cors_origins = ["http://localhost:3000"]  # the workbench's dev server
+
+# Traces: one span per effect, agent invocation and tool call. "console" prints them.
+[observability]
+traces = "none"
