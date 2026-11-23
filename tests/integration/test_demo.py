@@ -42,14 +42,13 @@ from typing import Any
 
 import pytest
 
-from msa.core.effects import Effect, ReviseChanges
+from msa.core.effects import ReviseChanges
 from msa.core.events import Completion
 from msa.core.values import Phase
 from msa.llm import fake
 from msa.llm.client import Request, Response
 from msa.llm.store import SqliteResponseStore
 from msa.observability.report import timeline
-from msa.runtime.interpreter import Observer
 from msa.runtime.journal import SqliteJournal
 from msa.tools.sandbox import network_namespace
 from tests.support import netns
@@ -59,6 +58,7 @@ from tests.support.runs import (
     RUN,
     Harness,
     RoleScripts,
+    Started,
     create,
     edit,
     make_harness,
@@ -358,24 +358,6 @@ class KilledAt(RoleScripts):
         if (role, len(self.requests(role)) + 1) == self.kill:
             os.kill(os.getpid(), signal.SIGKILL)
         return await super().create(request)
-
-
-class Started(Observer):
-    """Logs every effect an executor starts. O_APPEND writes survive SIGKILL."""
-
-    def __init__(self, log: Path) -> None:
-        self.log = log
-
-    def effect_started(self, effect: Effect) -> None:
-        fd = os.open(self.log, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
-        try:
-            os.write(fd, f"{effect.id} {effect.command.kind}\n".encode())
-        finally:
-            os.close(fd)
-
-    def lines(self) -> list[tuple[str, str]]:
-        text = self.log.read_text(encoding="utf-8") if self.log.exists() else ""
-        return [(line.split()[0], line.split()[1]) for line in text.splitlines()]
 
 
 def _crashing_run(harness: Harness) -> None:

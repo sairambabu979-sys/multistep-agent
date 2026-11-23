@@ -19,7 +19,7 @@ from typing import Any
 
 from msa.config import MsaConfig
 from msa.core import RunState, transition
-from msa.core.effects import AwaitReleaseApproval
+from msa.core.effects import AwaitReleaseApproval, Effect
 from msa.core.events import Completion, ReleaseApproved
 from msa.core.ids import RunId
 from msa.llm import fake
@@ -256,6 +256,25 @@ class Harness:
         return (self.run_dir / "artifacts" / digest.removeprefix("sha256:")).read_text(
             encoding="utf-8"
         )
+
+
+class Started(Observer):
+    """Logs every effect an executor starts, for crash tests. O_APPEND writes survive
+    SIGKILL, so the log holds every start, the crashed process's included."""
+
+    def __init__(self, log: Path) -> None:
+        self.log = log
+
+    def effect_started(self, effect: Effect) -> None:
+        fd = os.open(self.log, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+        try:
+            os.write(fd, f"{effect.id} {effect.command.kind}\n".encode())
+        finally:
+            os.close(fd)
+
+    def lines(self) -> list[tuple[str, str]]:
+        text = self.log.read_text(encoding="utf-8") if self.log.exists() else ""
+        return [(line.split()[0], line.split()[1]) for line in text.splitlines()]
 
 
 def make_harness(
