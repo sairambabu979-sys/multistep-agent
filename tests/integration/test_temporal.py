@@ -29,7 +29,7 @@ import signal
 import socket
 import time
 from collections import Counter
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Coroutine, Iterator
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -162,6 +162,13 @@ async def begin(client: Client, config: SimulationConfig, **kwargs: Any) -> Any:
     )
 
 
+SCENARIO_SECONDS = 180  # a stuck workflow fails the test with a traceback, not the job
+
+
+def within[T](scenario: Coroutine[Any, Any, T]) -> T:
+    return asyncio.run(asyncio.wait_for(scenario, SCENARIO_SECONDS))
+
+
 def free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
@@ -193,7 +200,7 @@ def test_a_temporal_run_ends_exactly_as_the_interpreter_does(
             history = await handle.fetch_history()
         return final, history
 
-    final, history = asyncio.run(scenario())
+    final, history = within(scenario())
     assert final == reference
     assert set(executions.values()) == {1}, executions  # each effect ran exactly once
     with store() as journal:
@@ -250,7 +257,7 @@ def test_a_parked_run_waits_on_the_server_and_carries_on_when_answered(store: Op
                     await send(client, RUN, answer)
                     return decode_state(await handle.result())
 
-    final = asyncio.run(scenario())
+    final = within(scenario())
     assert final.phase is Phase.COMPLETED, final.outcome
     assert final.approved_by == "ada"  # not eve: her stray answer named no pending effect
     assert parks, "a parked run reports what it waits for"
@@ -272,7 +279,7 @@ def test_a_cancel_signal_ends_a_parked_run(store: Opener) -> None:
                 await send(client, RUN, CancelRequested(at=EPOCH, reason="not needed after all"))
                 return decode_state(await handle.result())
 
-    final = asyncio.run(scenario())
+    final = within(scenario())
     assert final.phase is Phase.CANCELLED
     assert final.outcome is not None
     assert final.outcome.reason is OutcomeReason.CANCELLED
@@ -342,7 +349,7 @@ def test_a_killed_worker_hands_the_run_to_another(tmp_path: Path) -> None:
                 final = decode_state(await handle.result())
             return final, done
 
-    final, journaled_before = asyncio.run(scenario())
+    final, journaled_before = within(scenario())
     assert final == reference
     assert not set(executions) & journaled_before, "a journaled effect ran again"
     first = [line.split() for line in log.read_text().splitlines()]
@@ -350,3 +357,127 @@ def test_a_killed_worker_hands_the_run_to_another(tmp_path: Path) -> None:
     assert executions[blocked] == 1  # the effect in flight ran again, once
     with SqliteJournal(db) as journal:
         assert journal.verify(RUN).ok
+
+
+# ---------- 5: the service and the CLI, over Temporal
+
+
+def test_the_api_starts_runs_on_temporal_and_its_approvals_reach_the_workflow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from fastapi.testclient import TestClient  # noqa: PLC0415
+
+    from msa.config import TemporalConfig  # noqa: PLC0415
+    from msa.runtime.temporal.client import workflow_id  # noqa: PLC0415
+    from msa.service.app import Settings, create_app  # noqa: PLC0415
+    from msa.service.tokens import Role, TokenStore  # noqa: PLC0415
+
+    monkeypatch.setenv("MSA_USER_PREFERENCES", str(tmp_path / "none.yaml"))
+    monkeypatch.setenv("MSA_USER_SKILLS", str(tmp_path / "none"))
+    state_dir, repo, port = tmp_path / "state", tmp_path / "repo", free_port()
+    repo.mkdir()
+    store = TokenStore(state_dir / "tokens.json")
+    operator = {"Authorization": f"Bearer {store.issue('olu', Role.OPERATOR)}"}
+    approver = {"Authorization": f"Bearer {store.issue('ada', Role.APPROVER)}"}
+    settings = Settings(
+        repo=repo,
+        state_dir=state_dir,
+        poll_seconds=0.01,
+        clock=LogicalClock(),
+        temporal=TemporalConfig(address=f"127.0.0.1:{port}"),
+    )
+    executions: Counter[EffectId] = Counter()
+
+    async def scenario() -> tuple[dict[str, Any], RunState]:
+        async with (
+            await WorkflowEnvironment.start_time_skipping(port=port) as env,
+            worker(
+                env.client,
+                journal=settings.open_journal,
+                factory=factory(executions, people=True),
+            ),
+        ):
+            with TestClient(create_app(settings)) as api:
+                body = {"task": "Add farewell()", "run_id": RUN, "simulate": {"seed": 0}}
+                started = await asyncio.to_thread(
+                    api.post, "/api/runs", json=body, headers=operator
+                )
+                assert started.status_code == 200, started.text
+                assert started.json()["driver"] == "temporal"
+                while True:
+                    run = (
+                        await asyncio.to_thread(api.get, f"/api/runs/{RUN}", headers=operator)
+                    ).json()
+                    if run.get("waiting_on_person") and "await_release_approval" in run["pending"]:
+                        break
+                    if "await_plan_approval" in run.get("pending", []):
+                        await asyncio.to_thread(
+                            api.post, f"/api/runs/{RUN}/approve", headers=approver
+                        )
+                    await asyncio.sleep(0.1)
+                approved = await asyncio.to_thread(
+                    api.post, f"/api/runs/{RUN}/approve", headers=approver
+                )
+                assert approved.status_code == 200, approved.text
+                handle = env.client.get_workflow_handle(workflow_id(RUN))
+                return approved.json(), decode_state(await handle.result())
+
+    answer, final = within(scenario())
+    assert answer["driver"] == "temporal"  # signalled, not journaled by the service
+    assert final.phase is Phase.COMPLETED, final.outcome
+    assert final.approved_by == "ada"
+    with settings.open_journal() as journal:
+        assert journal.load(RUN) == final
+        assert journal.verify(RUN).ok
+
+
+def test_the_cli_starts_answers_and_refuses_to_double_drive_a_temporal_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from typer.testing import CliRunner  # noqa: PLC0415
+
+    from msa.cli import app  # noqa: PLC0415
+    from tests.support.llm import ROOT  # noqa: PLC0415
+
+    port = free_port()
+    config = tmp_path / "msa.toml"
+    text = (ROOT / "msa.toml").read_text(encoding="utf-8")
+    text = text.replace('# address = "localhost:7233"', f'address = "127.0.0.1:{port}"')
+    config.write_text(text, encoding="utf-8")
+    db = tmp_path / "state" / "runs.db"
+    cli = CliRunner()
+    executions: Counter[EffectId] = Counter()
+
+    def msa(*args: str) -> Any:
+        return cli.invoke(app, ["--config", str(config), *args, "--db", str(db)])
+
+    async def scenario() -> RunState:
+        async with (
+            await WorkflowEnvironment.start_time_skipping(port=port) as env,
+            worker(
+                env.client,
+                journal=lambda: SqliteJournal(db),
+                factory=factory(executions, people=True),
+            ),
+        ):
+            started = await asyncio.to_thread(
+                msa, "simulate", "--seed", "0", "--profile", "happy", "--run-id", RUN, "--temporal"
+            )
+            assert started.exit_code == 0, started.output
+            assert "started on Temporal" in started.output
+            question = await parked_on(env.client, (AwaitPlanApproval, AwaitReleaseApproval))
+            twice = await asyncio.to_thread(msa, "resume", RUN)
+            assert twice.exit_code == 1
+            assert "driven by Temporal" in twice.output
+            while isinstance(question.command, AwaitPlanApproval):
+                done = await asyncio.to_thread(msa, "approve", RUN, "--by", "ada")
+                assert done.exit_code == 0, done.output
+                question = await parked_on(env.client, (AwaitPlanApproval, AwaitReleaseApproval))
+            done = await asyncio.to_thread(msa, "approve", RUN, "--by", "ada")
+            assert done.exit_code == 0, done.output
+            assert "sent to the run's Temporal workflow" in done.output
+            return decode_state(await env.client.get_workflow_handle(f"aegis-{RUN}").result())
+
+    final = within(scenario())
+    assert final.phase is Phase.COMPLETED, final.outcome
+    assert final.approved_by == "ada"

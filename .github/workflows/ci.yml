@@ -51,7 +51,6 @@ jobs:
       HYPOTHESIS_PROFILE: ci
       MSA_TEST_POSTGRES_URL: postgresql://postgres@localhost:5432/msa
       MSA_REQUIRE_POSTGRES: "1"  # a missing server fails those tests instead of skipping
-      MSA_TEST_TEMPORAL: "1"  # the Temporal driver, against the SDK's test server
     steps:
       - uses: actions/checkout@v4
 
@@ -88,6 +87,45 @@ jobs:
 
       - name: Core coverage gate (95% branch)
         run: uv run coverage report --include='src/msa/core/*' --fail-under=95
+
+  backends:
+    # PostgreSQL and Temporal, against real servers: the journal contract and crash
+    # recovery on PostgreSQL, and the Temporal driver against the SDK's test server (which
+    # it downloads), through the API and the CLI too.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: msa
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s --health-timeout 5s --health-retries 30
+    env:
+      MSA_TEST_POSTGRES_URL: postgresql://postgres@localhost:5432/msa
+      MSA_REQUIRE_POSTGRES: "1"
+      MSA_TEST_TEMPORAL: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+          enable-cache: true
+
+      - name: Install (locked)
+        run: uv sync --locked
+
+      - name: Temporal and PostgreSQL
+        run: >-
+          uv run pytest -p no:randomly -rs
+          tests/integration/test_temporal.py
+          tests/unit/runtime/test_temporal_activities.py
+          tests/unit/runtime/test_journal.py
+          tests/chaos
 
   web:
     # The workbench: types, unit tests, a dependency audit, and end to end against a real

@@ -20,9 +20,9 @@ The actions map to the permissions of ADR-015 §4:
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Literal
+from typing import Literal, Protocol
 
 from msa.core import RunState, transition
 from msa.core.effects import (
@@ -64,6 +64,29 @@ QUESTIONS: tuple[type[Command], ...] = (
 type Decision = Literal["approve", "reject"]
 
 
+class Ledger(Protocol):
+    """Where an action reads the run and records its event: the journal, or ``Deferred``."""
+
+    def load(self, run_id: RunId) -> RunState: ...
+
+    def append(self, event: EventBase, state: RunState, *, snapshot: bool) -> None: ...
+
+
+@dataclass
+class Deferred:
+    """Reads the journal, but keeps each accepted event instead of appending it: for a run
+    whose driver journals its own events (a Temporal workflow), which is sent them."""
+
+    journal: SqlJournal
+    events: list[EventBase] = field(default_factory=list)
+
+    def load(self, run_id: RunId) -> RunState:
+        return self.journal.load(run_id)
+
+    def append(self, event: EventBase, state: RunState, *, snapshot: bool) -> None:
+        self.events.append(event)
+
+
 class NotWaiting(ValueError):
     """The run is not waiting for the answer given."""
 
@@ -74,7 +97,7 @@ class Done:
     state: RunState
 
 
-def _commit(journal: SqlJournal, state: RunState, event: EventBase) -> Done:
+def _commit(journal: Ledger, state: RunState, event: EventBase) -> Done:
     step = transition(state, event)  # raises TransitionRejected; the journal is untouched
     journal.append(event, step.state, snapshot=True)
     return Done(event, step.state)
@@ -93,7 +116,7 @@ def _pending(state: RunState, kinds: Sequence[type[Command]]) -> Effect:
 
 
 def answer(
-    journal: SqlJournal,
+    journal: Ledger,
     run_id: RunId,
     clock: Clock,
     kinds: Sequence[type[Command]],
@@ -104,17 +127,17 @@ def answer(
     return _commit(journal, state, make(effect, clock.stamp(state)))
 
 
-def pause(journal: SqlJournal, run_id: RunId, clock: Clock, *, by: str, reason: str) -> Done:
+def pause(journal: Ledger, run_id: RunId, clock: Clock, *, by: str, reason: str) -> Done:
     state = journal.load(run_id)
     return _commit(journal, state, PauseRequested(at=clock.stamp(state), by=by, reason=reason))
 
 
-def cancel(journal: SqlJournal, run_id: RunId, clock: Clock, *, reason: str) -> Done:
+def cancel(journal: Ledger, run_id: RunId, clock: Clock, *, reason: str) -> Done:
     state = journal.load(run_id)
     return _commit(journal, state, CancelRequested(at=clock.stamp(state), reason=reason))
 
 
-def resume(journal: SqlJournal, run_id: RunId, clock: Clock, *, by: str) -> Done | None:
+def resume(journal: Ledger, run_id: RunId, clock: Clock, *, by: str) -> Done | None:
     """Answer a pause. None when the run is not paused (there is nothing to answer, and
     driving it is all a resume needs)."""
     state = journal.load(run_id)
@@ -129,7 +152,7 @@ def resume(journal: SqlJournal, run_id: RunId, clock: Clock, *, by: str) -> Done
     )
 
 
-def unblock(journal: SqlJournal, run_id: RunId, clock: Clock, *, by: str, note: str = "") -> Done:
+def unblock(journal: Ledger, run_id: RunId, clock: Clock, *, by: str, note: str = "") -> Done:
     return answer(
         journal,
         run_id,
@@ -140,7 +163,7 @@ def unblock(journal: SqlJournal, run_id: RunId, clock: Clock, *, by: str, note: 
 
 
 def decide(
-    journal: SqlJournal,
+    journal: Ledger,
     run_id: RunId,
     clock: Clock,
     *,
@@ -161,7 +184,7 @@ def decide(
     return answer(journal, run_id, clock, GATES, make)
 
 
-def abort(journal: SqlJournal, run_id: RunId, clock: Clock, *, by: str, reason: str) -> Done:
+def abort(journal: Ledger, run_id: RunId, clock: Clock, *, by: str, reason: str) -> Done:
     """Stop the run instead of answering whatever question it is waiting on."""
     return answer(
         journal,
@@ -173,7 +196,7 @@ def abort(journal: SqlJournal, run_id: RunId, clock: Clock, *, by: str, reason: 
 
 
 def rule(
-    journal: SqlJournal,
+    journal: Ledger,
     run_id: RunId,
     clock: Clock,
     *,

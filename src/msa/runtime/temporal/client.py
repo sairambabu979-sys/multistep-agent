@@ -9,7 +9,8 @@ import json
 from collections.abc import Callable
 from typing import Any
 
-from temporalio.client import Client, WorkflowHandle
+from temporalio.client import Client, WorkflowExecutionStatus, WorkflowHandle
+from temporalio.service import RPCError, RPCStatusCode
 from temporalio.worker import Worker
 from temporalio.worker.workflow_sandbox import SandboxedWorkflowRunner, SandboxRestrictions
 
@@ -29,6 +30,22 @@ PASSTHROUGH = ("msa", "pydantic", "pydantic_core", "annotated_types")
 
 def workflow_id(run_id: str) -> str:
     return f"aegis-{run_id}"
+
+
+async def connect(address: str, namespace: str = "default") -> Client:
+    return await Client.connect(address, namespace=namespace)
+
+
+async def driving(client: Client, run_id: str) -> bool:
+    """Whether a running workflow drives ``run_id``: then its answers go there, as
+    signals, and nothing else may drive it."""
+    try:
+        described = await client.get_workflow_handle(workflow_id(run_id)).describe()
+    except RPCError as exc:
+        if exc.status == RPCStatusCode.NOT_FOUND:
+            return False
+        raise
+    return described.status == WorkflowExecutionStatus.RUNNING
 
 
 def worker(

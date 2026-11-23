@@ -688,6 +688,36 @@
       "title": "ServiceConfig",
       "type": "object"
     },
+    "TemporalConfig": {
+      "additionalProperties": false,
+      "description": "Driving runs with Temporal (ADR-017). With no ``address``, runs are driven in the\nprocess that starts or answers them; with one, ``msa worker`` drives them, and answers\nreach a run's workflow as signals.",
+      "properties": {
+        "address": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Address"
+        },
+        "namespace": {
+          "default": "default",
+          "title": "Namespace",
+          "type": "string"
+        },
+        "task_queue": {
+          "default": "aegis",
+          "title": "Task Queue",
+          "type": "string"
+        }
+      },
+      "title": "TemporalConfig",
+      "type": "object"
+    },
     "TestingConfig": {
       "additionalProperties": false,
       "description": "TESTING (PLAN \u00a76.1): how failures are told apart.",
@@ -907,6 +937,14 @@
         "cors_origins": [],
         "host": "127.0.0.1",
         "port": 8765
+      }
+    },
+    "temporal": {
+      "$ref": "#/$defs/TemporalConfig",
+      "default": {
+        "address": null,
+        "namespace": "default",
+        "task_queue": "aegis"
       }
     },
     "testing": {

@@ -21,7 +21,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, cast
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 from fastapi import Path as PathParam
@@ -30,8 +30,9 @@ from fastapi.responses import PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from msa import __version__
-from msa.config import LimitsConfig, MsaConfig
-from msa.core import TransitionRejected
+from msa.config import LimitsConfig, MsaConfig, TemporalConfig
+from msa.core import RunState, TransitionRejected
+from msa.core.events import AnyEvent
 from msa.core.graph import GLOBAL_ESCAPES
 from msa.core.ids import RUN_ID_PATTERN, Digest, RunId
 from msa.core.transitions import TABLE
@@ -50,6 +51,7 @@ from msa.runtime.simulation import Profile, SimulatedEnvironment, SimulationConf
 from msa.runtime.telemetry import Traced
 from msa.service.audit import AuditLog, Entry
 from msa.service.runner import Factory, Runner
+from msa.service.temporal import TemporalBridge
 from msa.service.tokens import Principal, Role, TokenStore
 from msa.skills import policy, registry
 from msa.skills.preferences import PreferenceError
@@ -83,6 +85,7 @@ class Settings:
     clock: Clock = field(default_factory=SystemClock)
     journal_url: str | None = None  # the journal in PostgreSQL; else runs.db in state_dir
     journal_schema: str = "msa"
+    temporal: TemporalConfig | None = None  # with an address: runs are driven on Temporal
 
     @property
     def journal_path(self) -> Path:
@@ -98,6 +101,7 @@ class Service:
     tokens: TokenStore
     audit: AuditLog
     runner: Runner
+    bridge: TemporalBridge | None = None
 
     @contextmanager
     def journal(self) -> Iterator[SqlJournal]:
@@ -106,6 +110,15 @@ class Service:
 
     def files(self, run_id: str) -> RunFiles:
         return RunFiles.for_run(self.settings.state_dir, run_id)
+
+    def driving(self, run_id: RunId, state: RunState | None = None) -> bool:
+        """Whether the run is being worked on: by a driver in this process, or by a workflow
+        (while it is not waiting on a person, and not over)."""
+        if self.runner.driving(run_id):
+            return True
+        if self.bridge is None or run_id not in self.bridge.driven:
+            return False
+        return state is None or (not state.is_terminal and state.waiting_since is None)
 
 
 # ---------- request bodies
@@ -214,7 +227,7 @@ def summary(svc: Service, run_id: RunId, opened: SqlJournal) -> dict[str, Any]:
         "seq": state.seq,
         "pending": [e.command.kind for e in state.pending],
         "waiting_on_person": asking,
-        "driving": svc.runner.driving(run_id),
+        "driving": svc.driving(run_id, state),
         "driver_error": svc.runner.errors.get(run_id),
         "question": svc.files(run_id).read("question.md") if asking else None,
         "state": state.model_dump(mode="json"),
@@ -257,7 +270,7 @@ def runs(_: Viewer, svc: Svc) -> list[dict[str, Any]]:
                 "seq": r.head_seq,
                 "created_at": r.created_at.isoformat(),
                 "kind": r.environment.get("kind"),
-                "driving": svc.runner.driving(r.run_id),
+                "driving": svc.driving(r.run_id) and r.outcome is None,
             }
             for r in opened.runs()
         ]
@@ -458,41 +471,68 @@ async def start_run(body: StartRun, who: Operator, svc: Svc) -> dict[str, Any]:
             if any(r.run_id == rid for r in opened.runs()):
                 raise ValueError(f"run {rid} already exists")
         digest = Digest(digest_of(body.task.encode("utf-8")))
-        svc.runner.start(rid, task_digest=digest, limits=limits, environment=environment)
+        launch.update(task_digest=digest, limits=limits, environment=environment)
+        if svc.bridge is None:
+            svc.runner.start(rid, task_digest=digest, limits=limits, environment=environment)
         return {"run_id": rid, "kind": environment.get("kind")}
 
+    launch: dict[str, Any] = {}
     result: dict[str, Any] = act(svc, who, "start", rid, work)
+    if svc.bridge is not None:
+        await svc.bridge.start(rid, **launch)  # msa worker drives it
+        result["driver"] = "temporal"
     return result
 
 
-def change(
+async def change(
     svc: Service,
     who: Principal,
     action: str,
     run_id: str,
-    do: Callable[[SqlJournal], control.Done | None],
+    do: Callable[[control.Ledger], control.Done | None],
     *,
     drive: bool,
 ) -> dict[str, Any]:
+    """Validate and record one action through the core. When a Temporal workflow drives
+    the run, the event goes to it as a signal (it journals it), and nothing here drives
+    the run; otherwise it is journaled here and, if asked, driven in this process."""
     rid = RunId(run_id)
+    bridge = svc.bridge
+    by_workflow = bridge is not None and await bridge.driving(rid)
+    held: list[control.Deferred] = []
 
     def work() -> dict[str, Any]:
         with svc.journal() as opened:
-            done = do(opened)
+            ledger: control.Ledger = opened
+            if by_workflow:
+                held.append(deferred := control.Deferred(opened))
+                ledger = deferred
+            done = do(ledger)
             after = summary(svc, rid, opened)
-        if drive and after["phase"] not in TERMINAL:
+        if drive and after["phase"] not in TERMINAL and not by_workflow and bridge is None:
             svc.runner.drive(rid)
             after["driving"] = True
         return {"event": done.event.model_dump(mode="json") if done else None, "run": after}
 
     result: dict[str, Any] = act(svc, who, action, run_id, work)
+    if bridge is not None and by_workflow:
+        for event in held[0].events:
+            await bridge.send(rid, cast(AnyEvent, event))
+        result["run"]["driving"] = True
+        result["driver"] = "temporal"
+    elif bridge is not None and drive and result["run"]["phase"] not in TERMINAL:
+        with svc.journal() as opened:
+            environment = opened.environment(rid)
+        await bridge.adopt(rid, environment)  # nothing drove it: a workflow does now
+        result["run"]["driving"] = True
+        result["driver"] = "temporal"
     return result
 
 
 @router.post("/runs/{run_id}/pause")
 async def pause(run_id: RunPath, body: Reason, who: Operator, svc: Svc) -> dict[str, Any]:
     clock, reason = svc.settings.clock, body.reason or "paused from the API"
-    return change(
+    return await change(
         svc,
         who,
         "pause",
@@ -505,7 +545,7 @@ async def pause(run_id: RunPath, body: Reason, who: Operator, svc: Svc) -> dict[
 @router.post("/runs/{run_id}/resume")
 async def resume(run_id: RunPath, who: Operator, svc: Svc) -> dict[str, Any]:
     clock = svc.settings.clock
-    return change(
+    return await change(
         svc,
         who,
         "resume",
@@ -518,7 +558,7 @@ async def resume(run_id: RunPath, who: Operator, svc: Svc) -> dict[str, Any]:
 @router.post("/runs/{run_id}/cancel")
 async def cancel(run_id: RunPath, body: Reason, who: Operator, svc: Svc) -> dict[str, Any]:
     clock, reason = svc.settings.clock, body.reason or f"cancelled by {who.name}"
-    return change(
+    return await change(
         svc,
         who,
         "cancel",
@@ -531,7 +571,7 @@ async def cancel(run_id: RunPath, body: Reason, who: Operator, svc: Svc) -> dict
 @router.post("/runs/{run_id}/unblock")
 async def unblock(run_id: RunPath, body: Note, who: Operator, svc: Svc) -> dict[str, Any]:
     clock = svc.settings.clock
-    return change(
+    return await change(
         svc,
         who,
         "unblock",
@@ -544,7 +584,7 @@ async def unblock(run_id: RunPath, body: Note, who: Operator, svc: Svc) -> dict[
 @router.post("/runs/{run_id}/approve")
 async def approve(run_id: RunPath, who: Approver, svc: Svc) -> dict[str, Any]:
     clock = svc.settings.clock
-    return change(
+    return await change(
         svc,
         who,
         "approve",
@@ -557,7 +597,7 @@ async def approve(run_id: RunPath, who: Approver, svc: Svc) -> dict[str, Any]:
 @router.post("/runs/{run_id}/reject")
 async def reject(run_id: RunPath, body: Feedback, who: Approver, svc: Svc) -> dict[str, Any]:
     clock = svc.settings.clock
-    return change(
+    return await change(
         svc,
         who,
         "reject",
@@ -572,7 +612,7 @@ async def reject(run_id: RunPath, body: Feedback, who: Approver, svc: Svc) -> di
 @router.post("/runs/{run_id}/abort")
 async def abort(run_id: RunPath, body: Reason, who: Approver, svc: Svc) -> dict[str, Any]:
     clock, reason = svc.settings.clock, body.reason or "stopped from the API"
-    return change(
+    return await change(
         svc,
         who,
         "abort",
@@ -585,7 +625,7 @@ async def abort(run_id: RunPath, body: Reason, who: Approver, svc: Svc) -> dict[
 @router.post("/runs/{run_id}/rule")
 async def rule(run_id: RunPath, body: Ruling, who: Approver, svc: Svc) -> dict[str, Any]:
     clock, verdicts = svc.settings.clock, dict(body.verdicts)
-    return change(
+    return await change(
         svc,
         who,
         "rule",
@@ -646,11 +686,18 @@ def create_app(settings: Settings, *, factory: Factory | None = None) -> FastAPI
         await runner.close()
 
     app = FastAPI(title="AEGIS", version=__version__, lifespan=lifespan)
+    temporal = settings.temporal
+    snapshot_every = settings.config.journal.snapshot_every if settings.config else 50
     app.state.service = Service(
         settings=settings,
         tokens=TokenStore(settings.state_dir / "tokens.json"),
         audit=AuditLog(settings.state_dir / "audit.jsonl"),
         runner=runner,
+        bridge=(
+            TemporalBridge(temporal, snapshot_every=snapshot_every)
+            if temporal is not None and temporal.address
+            else None
+        ),
     )
     if settings.cors_origins:
         app.add_middleware(

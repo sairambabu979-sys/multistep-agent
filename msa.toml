@@ -161,3 +161,11 @@ cors_origins = ["http://localhost:3000"]  # the workbench's dev server
 # Traces: one span per effect, agent invocation and tool call. "console" prints them.
 [observability]
 traces = "none"
+
+# Temporal (ADR-017): leave address unset to drive runs in-process. With it set, `msa worker`
+# drives runs, `msa run --temporal` and `msa simulate --temporal` start them there, and every
+# answer reaches the run's workflow as a signal. Needs multistep-agent[temporal].
+[temporal]
+# address = "localhost:7233"
+namespace = "default"
+task_queue = "aegis"

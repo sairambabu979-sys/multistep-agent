@@ -5,9 +5,9 @@ from __future__ import annotations
 import asyncio
 import getpass
 import uuid
-from collections.abc import Callable, Coroutine
+from collections.abc import Awaitable, Callable, Coroutine
 from pathlib import Path
-from typing import Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
 import typer
 import uvicorn
@@ -23,6 +23,7 @@ from msa.config import (
     Role,
     SandboxConfig,
     ServiceConfig,
+    TemporalConfig,
     json_schema,
     load_config,
 )
@@ -40,6 +41,7 @@ from msa.core.events import (
     AnyEvent,
     CancelRequested,
     Completion,
+    EventBase,
     HumanAborted,
     HumanRuled,
     PauseRequested,
@@ -51,7 +53,7 @@ from msa.core.events import (
     Unblocked,
 )
 from msa.core.graph import analyze, render_markdown
-from msa.core.ids import FindingId, RunId
+from msa.core.ids import Digest, FindingId, RunId
 from msa.core.transitions import TABLE
 from msa.core.values import Escalation, Limits, Phase, PlanGate, Resolution, Verdict
 from msa.llm.anthropic_client import AnthropicMessages
@@ -77,9 +79,12 @@ from msa.runtime.simulation import (
 )
 from msa.runtime.telemetry import Traced
 from msa.service.app import Settings as ServiceSettings
-from msa.service.app import create_app
+from msa.service.app import create_app, default_factory
 from msa.service.tokens import Role as TokenRole
 from msa.service.tokens import TokenError, TokenStore
+
+if TYPE_CHECKING:
+    from temporalio.client import Client
 from msa.skills import policy, registry
 from msa.skills.preferences import Preference, PreferenceError, Resolved, Scope, store
 from msa.skills.preferences.lint import lint
@@ -141,6 +146,155 @@ class Timeline(Observer):
         arrow = f"{source} -> {edge.target.name}"
         issued = ", ".join(e.command.kind for e in step.effects) or "-"
         typer.echo(f"{step.state.seq:>5}  {arrow:<34}{edge.event:<28}{issued}")
+
+
+# ---------- Temporal (ADR-017)
+
+TemporalFlag = Annotated[
+    bool,
+    typer.Option(
+        "--temporal", help="Drive the run on Temporal ([temporal] in msa.toml): `msa worker`."
+    ),
+]
+
+
+def _temporal(ctx: typer.Context) -> TemporalConfig | None:
+    """The Temporal settings, when an address is configured."""
+    settings = _settings(ctx)
+    config = settings.temporal if settings else None
+    return config if config is not None and config.address else None
+
+
+def _temporal_needed(ctx: typer.Context) -> TemporalConfig:
+    config = _temporal(ctx)
+    if config is None:
+        raise _fail("set [temporal].address in msa.toml to drive runs with Temporal")
+    return config
+
+
+def _on_temporal[T](config: TemporalConfig, work: Callable[[Client], Awaitable[T]]) -> T:
+    """Run ``work`` with a client of the configured Temporal."""
+    temporal = _temporal_module()
+
+    async def connected() -> T:
+        assert config.address is not None
+        return await work(await temporal.connect(config.address, config.namespace))
+
+    try:
+        return asyncio.run(connected())
+    except RuntimeError as exc:  # temporalio reports a failed connection this way
+        raise _fail(f"cannot reach Temporal at {config.address}: {exc}") from exc
+
+
+def _temporal_module() -> Any:
+    """msa.runtime.temporal.client, imported only when Temporal is used: temporalio is an
+    optional dependency."""
+    try:
+        from msa.runtime.temporal import client  # noqa: PLC0415
+    except ImportError as exc:
+        raise _fail("Temporal needs the extra: pip install 'multistep-agent[temporal]'") from exc
+    return client
+
+
+def _driven_by_temporal(ctx: typer.Context, rid: RunId) -> bool:
+    config = _temporal(ctx)
+    if config is None:
+        return False
+    temporal = _temporal_module()
+    return bool(_on_temporal(config, lambda client: temporal.driving(client, rid)))
+
+
+def _deliver(
+    ctx: typer.Context, journal: SqlJournal, rid: RunId, event: EventBase, state: RunState
+) -> bool:
+    """Journal ``event``, which leads to ``state``; or, when a Temporal workflow drives the
+    run, send it to the workflow as a signal: the workflow folds it through the core and
+    journals it. True when sent. Either way the core has already accepted it."""
+    if _driven_by_temporal(ctx, rid):
+        config = _temporal_needed(ctx)
+        temporal = _temporal_module()
+        _on_temporal(config, lambda client: temporal.send(client, rid, event))
+        typer.echo(f"sent to the run's Temporal workflow ({temporal.workflow_id(rid)})")
+        return True
+    journal.append(event, state, snapshot=True)
+    return False
+
+
+def _start_on_temporal(
+    ctx: typer.Context,
+    rid: RunId,
+    task_digest: Digest,
+    limits: Limits,
+    environment: dict[str, Any],
+    *,
+    clock: str,
+) -> None:
+    config = _temporal_needed(ctx)
+    temporal = _temporal_module()
+    snapshot_every = _journal_settings(ctx).snapshot_every
+
+    async def start(client: Client) -> None:
+        await temporal.start_run(
+            client,
+            rid,
+            task_digest=task_digest,
+            limits=limits,
+            environment=environment,
+            clock=clock,
+            snapshot_every=snapshot_every,
+            task_queue=config.task_queue,
+        )
+
+    _on_temporal(config, start)
+    typer.echo(
+        f"{rid}: started on Temporal ({temporal.workflow_id(rid)}, task queue "
+        f"{config.task_queue}); `msa worker` drives it, `msa inspect {rid}` follows it"
+    )
+
+
+def _adopt_on_temporal(ctx: typer.Context, rid: RunId, environment: dict[str, Any]) -> None:
+    config = _temporal_needed(ctx)
+    temporal = _temporal_module()
+    clock = "logical" if environment.get("kind") == "simulation" else "system"
+    snapshot_every = _journal_settings(ctx).snapshot_every
+    _on_temporal(
+        config,
+        lambda client: temporal.adopt_run(
+            client,
+            rid,
+            clock=clock,
+            snapshot_every=snapshot_every,
+            task_queue=config.task_queue,
+        ),
+    )
+    typer.echo(f"{rid}: handed to Temporal ({temporal.workflow_id(rid)})")
+
+
+@app.command()
+def worker(ctx: typer.Context, repo: Repo = Path("."), db: Db = None) -> None:
+    """Drive runs on Temporal: host their workflows and execute their effects, journaling
+    every event to this state directory's journal ([temporal] in msa.toml)."""
+    config = _temporal_needed(ctx)
+    temporal = _temporal_module()
+    journal = _journal_settings(ctx)
+    service = ServiceSettings(
+        repo=repo.resolve(),
+        state_dir=_state_dir(ctx, db),
+        config=_settings(ctx),
+        journal_url=_journal_url(journal, db),
+        journal_schema=journal.schema_name,
+    )
+
+    async def serve(client: Client) -> None:
+        typer.echo(f"worker on {config.address}, task queue {config.task_queue}", err=True)
+        await temporal.worker(
+            client,
+            journal=service.open_journal,
+            factory=default_factory(service),
+            task_queue=config.task_queue,
+        ).run()
+
+    _on_temporal(config, serve)
 
 
 # ---------- configuration
@@ -800,6 +954,7 @@ def serve(
             cors_origins=service.cors_origins,
             journal_url=_journal_url(_journal_settings(ctx), db),
             journal_schema=_journal_settings(ctx).schema_name,
+            temporal=_temporal(ctx),
         )
     )
     uvicorn.run(app, host=host or service.host, port=port or service.port, log_level="info")
@@ -944,6 +1099,7 @@ def run_task(
     ] = None,
     quiet: Quiet = False,
     db: Db = None,
+    temporal: TemporalFlag = False,
 ) -> None:
     """Turn a task into a reviewed, tested, verified change to a git repository.
 
@@ -979,6 +1135,12 @@ def run_task(
         cassette_mode="record" if record else "replay" if replay else None,
     )
     rid = RunId(run_id or f"run-{uuid.uuid4().hex[:8]}")
+    if temporal:
+        if record is not None:
+            raise _fail("--record needs one process to see the whole run: drop --temporal")
+        live = environment.model_dump(mode="json")
+        _start_on_temporal(ctx, rid, environment.task_digest, limits, live, clock="system")
+        return
     url, schema = _journal_url(settings.journal, db), settings.journal.schema_name
     with open_journal(journal_path, url, schema=schema) as journal:
         try:
@@ -1006,6 +1168,7 @@ def simulate(
     ] = None,
     quiet: Quiet = False,
     db: Db = None,
+    temporal: TemporalFlag = False,
 ) -> None:
     """Drive a full run against simulated (stub) executors and journal every event."""
     config = SimulationConfig(seed=seed, profile=profile)
@@ -1020,6 +1183,9 @@ def simulate(
         overrides["budget_usd_micros"] = round(budget_usd * 1_000_000)
     limits = (settings.limits if settings else LimitsConfig()).to_limits(**overrides)
     environment = config.model_dump(mode="json")
+    if temporal:
+        _start_on_temporal(ctx, rid, digest(rid), limits, environment, clock="logical")
+        return
     with _journal(ctx, db) as journal:
         interpreter = _interpreter(ctx, journal, environment, quiet=quiet)
         try:
@@ -1036,10 +1202,15 @@ def simulate(
 
 @app.command()
 def resume(
-    ctx: typer.Context, run_id: Run, db: Db = None, quiet: Quiet = False, by: By = None
+    ctx: typer.Context,
+    run_id: Run,
+    db: Db = None,
+    quiet: Quiet = False,
+    by: By = None,
+    temporal: TemporalFlag = False,
 ) -> None:
     """Continue a run from its journal; a paused run continues where it paused. Completed
-    effects are never re-executed."""
+    effects are never re-executed. With --temporal, a workflow takes the run over."""
     rid = RunId(run_id)
     with _journal(ctx, db) as journal:
         try:
@@ -1047,8 +1218,17 @@ def resume(
             paused = next((e for e in state.pending if isinstance(e.command, AwaitResume)), None)
             if paused is not None:
                 event = Resumed(at=SystemClock().stamp(state), effect_id=paused.id, by=_person(by))
-                journal.append(event, transition(state, event).state, snapshot=True)
+                if _deliver(ctx, journal, rid, event, transition(state, event).state):
+                    return  # its workflow drives it
+            elif _driven_by_temporal(ctx, rid):
+                raise _fail(
+                    f"run {rid} is driven by Temporal: answer it (msa approve, rule, unblock) "
+                    "or cancel it; it cannot also be driven here"
+                )
             environment = journal.environment(rid)
+            if temporal:
+                _adopt_on_temporal(ctx, rid, environment)
+                return
             if environment.get("kind") == "live":
                 state = _resume_live(ctx, journal, environment, rid, quiet=quiet)
             else:
@@ -1100,7 +1280,7 @@ def cancel(
             state = journal.load(rid)
             event = CancelRequested(at=SystemClock().stamp(state), reason=reason)
             step = transition(state, event)
-            journal.append(event, step.state, snapshot=True)
+            _deliver(ctx, journal, rid, event, step.state)
         except TransitionRejected as exc:
             raise _fail(f"cannot cancel: {exc.detail}") from exc
         except JournalError as exc:  # includes JournalConflict: another writer moved first
@@ -1125,7 +1305,7 @@ def pause(
             state = journal.load(rid)
             event = PauseRequested(at=SystemClock().stamp(state), by=_person(by), reason=reason)
             step = transition(state, event)
-            journal.append(event, step.state, snapshot=True)
+            _deliver(ctx, journal, rid, event, step.state)
         except TransitionRejected as exc:
             raise _fail(f"cannot pause: {exc.detail}") from exc
         except JournalError as exc:
@@ -1177,7 +1357,7 @@ def _answer(
                 )
             event = answer(state, effect)
             step = transition(state, event)
-            journal.append(event, step.state, snapshot=True)
+            sent = _deliver(ctx, journal, rid, event, step.state)
             environment = journal.environment(rid)
             if isinstance(event, HumanRuled) and environment.get("kind") == "live":
                 files = RunFiles.for_run(Path(str(environment["state_dir"])), rid)
@@ -1193,7 +1373,7 @@ def _answer(
                         },
                     )
             typer.echo(_outcome_line(step.state))
-            if resume and not step.state.is_terminal:
+            if resume and not sent and not step.state.is_terminal:  # a workflow drives it
                 if environment.get("kind") == "live":
                     state = _resume_live(ctx, journal, environment, rid, quiet=quiet)
                 else:

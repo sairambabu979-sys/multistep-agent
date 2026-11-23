@@ -393,6 +393,16 @@ class ObservabilityConfig(Frozen):
     traces: Literal["none", "console"] = "none"
 
 
+class TemporalConfig(Frozen):
+    """Driving runs with Temporal (ADR-017). With no ``address``, runs are driven in the
+    process that starts or answers them; with one, ``msa worker`` drives them, and answers
+    reach a run's workflow as signals."""
+
+    address: str | None = None  # host:port of a Temporal frontend, e.g. localhost:7233
+    namespace: str = "default"
+    task_queue: str = "aegis"
+
+
 class ReviewConfig(Frozen):
     """REVIEWING and NEGOTIATING (PLAN §4, ADR-014)."""
 
@@ -419,6 +429,7 @@ class MsaConfig(Frozen):
     release: ReleaseConfig = ReleaseConfig()
     service: ServiceConfig = ServiceConfig()
     observability: ObservabilityConfig = ObservabilityConfig()
+    temporal: TemporalConfig = TemporalConfig()
 
     @model_validator(mode="after")
     def _repro_tests_are_the_testers(self) -> Self:
