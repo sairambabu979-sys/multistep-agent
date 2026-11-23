@@ -46,7 +46,7 @@ def journaled(db: str, d: Driver) -> None:
     with SqliteJournal(db) as journal:
         journal.create(environment, d.events[0], d.steps[0].state)  # type: ignore[arg-type]
         for event, step in zip(d.events[1:], d.steps[1:], strict=True):
-            journal.append(event, step.state, snapshot=False)  # type: ignore[arg-type]
+            journal.append(event, step.state, snapshot=False)
 
 
 def load(db: str) -> RunState:

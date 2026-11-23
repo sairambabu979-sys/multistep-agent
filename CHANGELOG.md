@@ -22,6 +22,8 @@ by [git-cliff](https://git-cliff.org). Regenerate with `make changelog`; do not 
 - **core:** objective arbitration before a human, and no clock while one is asked ([`cc15a59`](https://github.com/sairambabu979-sys/multistep-agent/commit/cc15a5983d25ae2479a5c63fe26f080f44a3d04c))
 - **agents:** the Reviewer and the Arbiter, author moves and repro tests (M8) ([`743362b`](https://github.com/sairambabu979-sys/multistep-agent/commit/743362bd9a67d01a534a9c2da414fe38aebda5c1))
 - **runtime:** review, negotiation and the arbitration ladder; msa approve and msa rule (M8) ([`519186b`](https://github.com/sairambabu979-sys/multistep-agent/commit/519186b6ddeba6fce1d12700383cf91279bc7a11))
+- **core:** rebuild the state machine on the twenty AEGIS phases ([`dd35f40`](https://github.com/sairambabu979-sys/multistep-agent/commit/dd35f402bcbdb58ff23681fd3e0ca238d59da6ab))
+- **runtime:** executors for admission, context, integration, security, release ([`ed140ca`](https://github.com/sairambabu979-sys/multistep-agent/commit/ed140caf368cf7336924de438afa1df4383bef2c))
 
 ### Bug fixes
 
@@ -37,6 +39,7 @@ by [git-cliff](https://git-cliff.org). Regenerate with `make changelog`; do not 
 - **tools:** protect the .git file of linked worktrees and submodules ([`ff01412`](https://github.com/sairambabu979-sys/multistep-agent/commit/ff014128d4a21fb3cc9c4721f92ea407b875e61a))
 - **runtime:** keep pytest from collecting TesterExecutor as a test class ([`d71bfc4`](https://github.com/sairambabu979-sys/multistep-agent/commit/d71bfc48544d9a2af046532a5d029a7fdc03650e))
 - **runtime:** only acceptance tests that ran count, on the delivered tree (ADR-013) ([`d956d7c`](https://github.com/sairambabu979-sys/multistep-agent/commit/d956d7c1e7123b75ac4bd15e0ecbbebee0688c68))
+- **core:** a run waiting on a person never expires while it waits ([`a100d68`](https://github.com/sairambabu979-sys/multistep-agent/commit/a100d68c98f9e7c0a31ed7bf47eb0adc49ab9960))
 
 ### Refactoring
 
@@ -60,12 +63,16 @@ by [git-cliff](https://git-cliff.org). Regenerate with `make changelog`; do not 
 - ADR-013 for evidence integrity, and I-17 in PLAN and README ([`3a06c34`](https://github.com/sairambabu979-sys/multistep-agent/commit/3a06c34749a65727bb1cba810e3cb14a7d6de822))
 - **changelog:** regenerate for the t3 merge and ADR-013 ([`6aa70f8`](https://github.com/sairambabu979-sys/multistep-agent/commit/6aa70f82e4f29cda3f5d21947764b5182ae191dd))
 - ADR-014 for review and negotiation, and M8 status in PLAN and README ([`e066fd9`](https://github.com/sairambabu979-sys/multistep-agent/commit/e066fd95b630d0f9b38c1902960e1bfb7796480b))
+- **changelog:** regenerate for M8 ([`60925bc`](https://github.com/sairambabu979-sys/multistep-agent/commit/60925bc8359f506b1fba9e3062d2089776491450))
+- the AEGIS workflow in the README, ADR-015 verification, PLAN name map ([`e63c227`](https://github.com/sairambabu979-sys/multistep-agent/commit/e63c2275236e85eb513a33fb189a826050c2b9e5))
 
 ### Tests
 
 - **core:** mutation testing kills all 1,070 core mutants ([`22c4800`](https://github.com/sairambabu979-sys/multistep-agent/commit/22c4800f21b50b8bb3dd0a05e5957bda9d59e6aa))
 - **cli:** make the budget-override test deterministic ([`eb4f6b9`](https://github.com/sairambabu979-sys/multistep-agent/commit/eb4f6b94a7ac98de26bb9bb5514bb060413e7d8b))
 - **tools:** expect the requested file in permission errors ([`e16e5db`](https://github.com/sairambabu979-sys/multistep-agent/commit/e16e5dbeb26663dd42f6fb43e4ecfd2a2041b61a))
+- **chaos:** race the symlink swap from its own process, not a thread ([`f57ac8c`](https://github.com/sairambabu979-sys/multistep-agent/commit/f57ac8c5391ded662b6486aa77d757c18c23ce79))
+- AEGIS stages on real worktrees and the human gates on the CLI ([`34542d5`](https://github.com/sairambabu979-sys/multistep-agent/commit/34542d5e8a2331ef5a930dd95006a62be49d2e46))
 
 ### Build and tooling
 
