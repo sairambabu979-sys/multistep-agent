@@ -24,6 +24,7 @@ class Rejection(StrEnum):
     UNKNOWN_FINDING = "unknown_finding"
     ILLEGAL_VERDICT = "illegal_verdict"
     INCOMPLETE_RULING = "incomplete_ruling"
+    NOT_PAUSABLE = "not_pausable"
 
 
 class TransitionRejected(Exception):

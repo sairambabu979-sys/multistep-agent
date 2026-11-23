@@ -24,7 +24,7 @@ from msa.core.ids import (
     ValidRunId,
     ValidTreeHash,
 )
-from msa.core.values import FindingRef, Limits, PlanRef, Resolution, Triage
+from msa.core.values import FindingRef, Limits, Person, PlanRef, Resolution, Triage
 
 
 class EventBase(Frozen):
@@ -71,19 +71,48 @@ class DeadlineExceeded(EventBase):
     kind: Literal["deadline_exceeded"] = "deadline_exceeded"
 
 
-# ---------- intake and planning
+class PauseRequested(EventBase):
+    """An operator pauses the run: in-flight work is cancelled, and it resumes where it
+    was. Not while a person is already being asked something."""
+
+    kind: Literal["pause_requested"] = "pause_requested"
+    by: Person
+    reason: str = ""
 
 
-class IntakeCompleted(Completion):
-    completes: ClassVar[frozenset[str]] = frozenset({"prepare_workspace"})
-    kind: Literal["intake_completed"] = "intake_completed"
-    base_tree: ValidTreeHash
+# ---------- admission, validation, context
 
 
-class IntakeRejected(Completion):
-    completes: ClassVar[frozenset[str]] = frozenset({"prepare_workspace"})
-    kind: Literal["intake_rejected"] = "intake_rejected"
+class RunAdmitted(Completion):
+    completes: ClassVar[frozenset[str]] = frozenset({"admit_run"})
+    kind: Literal["run_admitted"] = "run_admitted"
+
+
+class RunDenied(Completion):
+    completes: ClassVar[frozenset[str]] = frozenset({"admit_run"})
+    kind: Literal["run_denied"] = "run_denied"
     reason: str
+
+
+class RequestValidated(Completion):
+    completes: ClassVar[frozenset[str]] = frozenset({"validate_request"})
+    kind: Literal["request_validated"] = "request_validated"
+
+
+class RequestRejected(Completion):
+    completes: ClassVar[frozenset[str]] = frozenset({"validate_request"})
+    kind: Literal["request_rejected"] = "request_rejected"
+    reason: str
+
+
+class ContextLoaded(Completion):
+    completes: ClassVar[frozenset[str]] = frozenset({"load_context"})
+    kind: Literal["context_loaded"] = "context_loaded"
+    base_tree: ValidTreeHash
+    context: ValidDigest  # the repository context the Planner reads
+
+
+# ---------- planning
 
 
 class PlanProduced(SpendingCompletion):
@@ -95,15 +124,17 @@ class PlanProduced(SpendingCompletion):
 class PlanApproved(Completion):
     completes: ClassVar[frozenset[str]] = frozenset({"await_plan_approval"})
     kind: Literal["plan_approved"] = "plan_approved"
+    by: Person
 
 
 class PlanRejected(Completion):
     completes: ClassVar[frozenset[str]] = frozenset({"await_plan_approval"})
     kind: Literal["plan_rejected"] = "plan_rejected"
+    by: Person
     feedback: str
 
 
-# ---------- building
+# ---------- implementing
 
 
 class ImplementationCompleted(SpendingCompletion):
@@ -122,37 +153,64 @@ class BuildIntegrated(Completion):
     head_tree: ValidTreeHash
 
 
-# ---------- verification and tests
+# ---------- the gates: every one is evidence for exactly one tree
 
 
-class VerificationPassed(Completion):
-    completes: ClassVar[frozenset[str]] = frozenset({"run_verification"})
-    kind: Literal["verification_passed"] = "verification_passed"
+class StaticAnalysisPassed(Completion):
+    completes: ClassVar[frozenset[str]] = frozenset({"run_static_analysis"})
+    kind: Literal["static_analysis_passed"] = "static_analysis_passed"
     tree: ValidTreeHash
 
 
-class VerificationFailed(Completion):
-    completes: ClassVar[frozenset[str]] = frozenset({"run_verification"})
-    kind: Literal["verification_failed"] = "verification_failed"
+class StaticAnalysisFailed(Completion):
+    completes: ClassVar[frozenset[str]] = frozenset({"run_static_analysis"})
+    kind: Literal["static_analysis_failed"] = "static_analysis_failed"
     tree: ValidTreeHash
     report: ValidDigest
 
 
-class TestsPassed(SpendingCompletion):
-    """All tests green on ``tree`` and fail-before/pass-after held against the base tree."""
+class UnitTestsPassed(SpendingCompletion):
+    """Spending: a run that passes may still have paid to triage an earlier failure."""
 
-    __test__ = False  # not a pytest test class
-    completes: ClassVar[frozenset[str]] = frozenset({"run_test_suite"})
-    kind: Literal["tests_passed"] = "tests_passed"
+    completes: ClassVar[frozenset[str]] = frozenset({"run_unit_tests"})
+    kind: Literal["unit_tests_passed"] = "unit_tests_passed"
     tree: ValidTreeHash
 
 
-class TestsFailed(SpendingCompletion):
+class UnitTestsFailed(SpendingCompletion):
     __test__ = False  # not a pytest test class
-    completes: ClassVar[frozenset[str]] = frozenset({"run_test_suite"})
-    kind: Literal["tests_failed"] = "tests_failed"
+    completes: ClassVar[frozenset[str]] = frozenset({"run_unit_tests"})
+    kind: Literal["unit_tests_failed"] = "unit_tests_failed"
     tree: ValidTreeHash
     triage: Triage
+    report: ValidDigest
+
+
+class IntegrationTestsPassed(Completion):
+    completes: ClassVar[frozenset[str]] = frozenset({"run_integration_tests"})
+    kind: Literal["integration_tests_passed"] = "integration_tests_passed"
+    tree: ValidTreeHash
+
+
+class IntegrationTestsFailed(Completion):
+    completes: ClassVar[frozenset[str]] = frozenset({"run_integration_tests"})
+    kind: Literal["integration_tests_failed"] = "integration_tests_failed"
+    tree: ValidTreeHash
+    triage: Triage
+    report: ValidDigest
+
+
+class SecurityReviewPassed(Completion):
+    completes: ClassVar[frozenset[str]] = frozenset({"run_security_review"})
+    kind: Literal["security_review_passed"] = "security_review_passed"
+    tree: ValidTreeHash
+    report: ValidDigest
+
+
+class SecurityReviewFailed(Completion):
+    completes: ClassVar[frozenset[str]] = frozenset({"run_security_review"})
+    kind: Literal["security_review_failed"] = "security_review_failed"
+    tree: ValidTreeHash
     report: ValidDigest
 
 
@@ -190,17 +248,18 @@ class NegotiationRoundCompleted(_Resolving):
 
 
 class ArbitrationRuled(_Resolving):
-    """The Arbiter role's ruling. It must resolve every open finding."""
+    """The ladder's ruling: complete with the Arbiter role, partial without it."""
 
     completes: ClassVar[frozenset[str]] = frozenset({"request_arbitration"})
     kind: Literal["arbitration_ruled"] = "arbitration_ruled"
 
 
 class HumanRuled(Completion):
-    """A human's ruling. It must resolve every open finding."""
+    """A person's ruling. It must resolve every open finding."""
 
     completes: ClassVar[frozenset[str]] = frozenset({"await_human_ruling"})
     kind: Literal["human_ruled"] = "human_ruled"
+    by: Person
     resolutions: tuple[Resolution, ...]
 
     @field_validator("resolutions")
@@ -210,15 +269,7 @@ class HumanRuled(Completion):
         return value
 
 
-class HumanAborted(Completion):
-    """A human, asked to approve a plan or rule on a dispute, chose to stop the run."""
-
-    completes: ClassVar[frozenset[str]] = frozenset({"await_plan_approval", "await_human_ruling"})
-    kind: Literal["human_aborted"] = "human_aborted"
-    reason: str = ""
-
-
-# ---------- revision and finalization
+# ---------- rework, release, people
 
 
 class RevisionCompleted(SpendingCompletion):
@@ -227,11 +278,68 @@ class RevisionCompleted(SpendingCompletion):
     head_tree: ValidTreeHash
 
 
-class Finalized(Completion):
-    completes: ClassVar[frozenset[str]] = frozenset({"finalize"})
-    kind: Literal["finalized"] = "finalized"
+class ReleaseVerified(Completion):
+    completes: ClassVar[frozenset[str]] = frozenset({"verify_release"})
+    kind: Literal["release_verified"] = "release_verified"
     tree: ValidTreeHash
-    artifact: ValidDigest
+    bundle: ValidDigest  # the PR: title, description, release notes, audit trail, patch
+
+
+class ReleaseVerificationFailed(Completion):
+    completes: ClassVar[frozenset[str]] = frozenset({"verify_release"})
+    kind: Literal["release_verification_failed"] = "release_verification_failed"
+    tree: ValidTreeHash
+    report: ValidDigest
+
+
+class ReleaseApproved(Completion):
+    completes: ClassVar[frozenset[str]] = frozenset({"await_release_approval"})
+    kind: Literal["release_approved"] = "release_approved"
+    by: Person
+
+
+class ReleaseRejected(Completion):
+    completes: ClassVar[frozenset[str]] = frozenset({"await_release_approval"})
+    kind: Literal["release_rejected"] = "release_rejected"
+    by: Person
+    feedback: str
+
+
+class ReleasePublished(Completion):
+    completes: ClassVar[frozenset[str]] = frozenset({"publish_release"})
+    kind: Literal["release_published"] = "release_published"
+    tree: ValidTreeHash
+    reference: str  # the branch, commit and PR that hold it
+
+
+class Unblocked(Completion):
+    completes: ClassVar[frozenset[str]] = frozenset({"await_unblock"})
+    kind: Literal["unblocked"] = "unblocked"
+    by: Person
+    note: str = ""
+
+
+class Resumed(Completion):
+    completes: ClassVar[frozenset[str]] = frozenset({"await_resume"})
+    kind: Literal["resumed"] = "resumed"
+    by: Person
+
+
+class HumanAborted(Completion):
+    """A person, asked something, chose to stop the run."""
+
+    completes: ClassVar[frozenset[str]] = frozenset(
+        {
+            "await_plan_approval",
+            "await_human_ruling",
+            "await_release_approval",
+            "await_unblock",
+            "await_resume",
+        }
+    )
+    kind: Literal["human_aborted"] = "human_aborted"
+    by: Person
+    reason: str = ""
 
 
 # ---------- agent failures (any spending effect)
@@ -254,7 +362,7 @@ class AgentRefused(SpendingCompletion):
 
 
 class EffectFailed(Completion):
-    """A non-LLM effect (workspace, verification, merge, finalize) failed in its executor.
+    """A non-LLM effect (a stage, a merge, publishing) failed in its executor.
 
     Without it, an executor crash would leave its effect pending forever and the run would
     stall until the deadline. With it, the run fails fast and says why.
@@ -269,25 +377,39 @@ AnyEvent = Annotated[
     RunStarted
     | CancelRequested
     | DeadlineExceeded
-    | IntakeCompleted
-    | IntakeRejected
+    | PauseRequested
+    | RunAdmitted
+    | RunDenied
+    | RequestValidated
+    | RequestRejected
+    | ContextLoaded
     | PlanProduced
     | PlanApproved
     | PlanRejected
     | ImplementationCompleted
     | AcceptanceTestsAuthored
     | BuildIntegrated
-    | VerificationPassed
-    | VerificationFailed
-    | TestsPassed
-    | TestsFailed
+    | StaticAnalysisPassed
+    | StaticAnalysisFailed
+    | UnitTestsPassed
+    | UnitTestsFailed
+    | IntegrationTestsPassed
+    | IntegrationTestsFailed
+    | SecurityReviewPassed
+    | SecurityReviewFailed
     | ReviewProduced
     | NegotiationRoundCompleted
     | ArbitrationRuled
     | HumanRuled
-    | HumanAborted
     | RevisionCompleted
-    | Finalized
+    | ReleaseVerified
+    | ReleaseVerificationFailed
+    | ReleaseApproved
+    | ReleaseRejected
+    | ReleasePublished
+    | Unblocked
+    | Resumed
+    | HumanAborted
     | AgentFailed
     | AgentRefused
     | EffectFailed,
@@ -298,25 +420,39 @@ EVENT_TYPES: tuple[type[EventBase], ...] = (
     RunStarted,
     CancelRequested,
     DeadlineExceeded,
-    IntakeCompleted,
-    IntakeRejected,
+    PauseRequested,
+    RunAdmitted,
+    RunDenied,
+    RequestValidated,
+    RequestRejected,
+    ContextLoaded,
     PlanProduced,
     PlanApproved,
     PlanRejected,
     ImplementationCompleted,
     AcceptanceTestsAuthored,
     BuildIntegrated,
-    VerificationPassed,
-    VerificationFailed,
-    TestsPassed,
-    TestsFailed,
+    StaticAnalysisPassed,
+    StaticAnalysisFailed,
+    UnitTestsPassed,
+    UnitTestsFailed,
+    IntegrationTestsPassed,
+    IntegrationTestsFailed,
+    SecurityReviewPassed,
+    SecurityReviewFailed,
     ReviewProduced,
     NegotiationRoundCompleted,
     ArbitrationRuled,
     HumanRuled,
-    HumanAborted,
     RevisionCompleted,
-    Finalized,
+    ReleaseVerified,
+    ReleaseVerificationFailed,
+    ReleaseApproved,
+    ReleaseRejected,
+    ReleasePublished,
+    Unblocked,
+    Resumed,
+    HumanAborted,
     AgentFailed,
     AgentRefused,
     EffectFailed,

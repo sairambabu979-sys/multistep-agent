@@ -30,10 +30,22 @@ class Command(Frozen):
     human: ClassVar[bool] = False
 
 
-class PrepareWorkspace(Command):
-    """Validate the task, snapshot the base tree, resolve preferences."""
+class AdmitRun(Command):
+    """CREATED: admission control. Policy, quotas and the submitter's permissions."""
 
-    kind: Literal["prepare_workspace"] = "prepare_workspace"
+    kind: Literal["admit_run"] = "admit_run"
+
+
+class ValidateRequest(Command):
+    """VALIDATING: the repository and the task are usable; the preferences resolve."""
+
+    kind: Literal["validate_request"] = "validate_request"
+
+
+class LoadContext(Command):
+    """CONTEXT: snapshot the base tree, build the repository's context, make worktrees."""
+
+    kind: Literal["load_context"] = "load_context"
 
 
 class RequestPlan(Command):
@@ -50,7 +62,7 @@ class AwaitPlanApproval(Command):
 
 
 class ImplementPlan(Command):
-    """Coder region of BUILDING."""
+    """Coder region of IMPLEMENTING."""
 
     spends: ClassVar[bool] = True
     kind: Literal["implement_plan"] = "implement_plan"
@@ -59,7 +71,7 @@ class ImplementPlan(Command):
 
 
 class AuthorAcceptanceTests(Command):
-    """Tester region of BUILDING. Written from the plan, not from the implementation."""
+    """Tester region of IMPLEMENTING. Written from the plan, not from the implementation."""
 
     spends: ClassVar[bool] = True
     kind: Literal["author_acceptance_tests"] = "author_acceptance_tests"
@@ -68,26 +80,41 @@ class AuthorAcceptanceTests(Command):
 
 
 class IntegrateBuild(Command):
-    """Join the two BUILDING worktrees. Path ownership makes the merge conflict-free."""
+    """Join the two IMPLEMENTING worktrees. Path ownership makes the merge conflict-free."""
 
     kind: Literal["integrate_build"] = "integrate_build"
     base_tree: ValidTreeHash
 
 
-class RunVerification(Command):
-    """Deterministic checks only: format, lint, types, preference checkers, unit tests."""
+class RunStaticAnalysis(Command):
+    """Deterministic checks only: format, lint, types, preference checkers."""
 
-    kind: Literal["run_verification"] = "run_verification"
+    kind: Literal["run_static_analysis"] = "run_static_analysis"
     tree: ValidTreeHash
 
 
-class RunTestSuite(Command):
-    """Full suite plus fail-before/pass-after against the base tree. Triage may use an LLM."""
+class RunUnitTests(Command):
+    """The repository's tests plus fail-before/pass-after acceptance tests. Triage may
+    use an LLM."""
 
     spends: ClassVar[bool] = True
-    kind: Literal["run_test_suite"] = "run_test_suite"
+    kind: Literal["run_unit_tests"] = "run_unit_tests"
     tree: ValidTreeHash
     base_tree: ValidTreeHash
+
+
+class RunIntegrationTests(Command):
+    """The integration suite, in an isolated environment. Deterministic."""
+
+    kind: Literal["run_integration_tests"] = "run_integration_tests"
+    tree: ValidTreeHash
+
+
+class RunSecurityReview(Command):
+    """Secret scan, insecure-code rules, dependency audit. A gate: never negotiated."""
+
+    kind: Literal["run_security_review"] = "run_security_review"
+    tree: ValidTreeHash
 
 
 class RequestReview(Command):
@@ -109,7 +136,7 @@ class RequestArbitration(Command):
     """The arbitration ladder (PLAN §4.2), cheapest and most objective rung first: a repro
     test for correctness and security, the preference store for preferences, the author
     for uncovered style. With ``arbiter``, the Arbiter role rules on whatever those leave
-    open, so the ruling covers every finding. Without it, a human does (AWAITING_HUMAN)."""
+    open, so the ruling covers every finding. Without it, a person does (BLOCKED)."""
 
     spends: ClassVar[bool] = True
     kind: Literal["request_arbitration"] = "request_arbitration"
@@ -132,11 +159,46 @@ class ReviseChanges(Command):
     tree: ValidTreeHash
     findings: tuple[ValidFindingId, ...] = ()
     failure_report: ValidDigest | None = None
+    feedback: str | None = None  # a person's reason for sending the release back
 
 
-class Finalize(Command):
-    kind: Literal["finalize"] = "finalize"
+class VerifyRelease(Command):
+    """FINAL_VERIFICATION: every gate on this tree, no open finding, the scope, no secret;
+    then the PR bundle (title, description, release notes, audit trail)."""
+
+    kind: Literal["verify_release"] = "verify_release"
     tree: ValidTreeHash
+
+
+class AwaitReleaseApproval(Command):
+    human: ClassVar[bool] = True
+    kind: Literal["await_release_approval"] = "await_release_approval"
+    tree: ValidTreeHash
+    bundle: ValidDigest
+
+
+class PublishRelease(Command):
+    """Commit the tree to a branch and open the PR. Only after a person approved."""
+
+    kind: Literal["publish_release"] = "publish_release"
+    tree: ValidTreeHash
+    bundle: ValidDigest
+
+
+class AwaitUnblock(Command):
+    """BLOCKED on the environment: a stage could not run (a missing tool or service). A
+    person fixes it and unblocks, and the stage runs again."""
+
+    human: ClassVar[bool] = True
+    kind: Literal["await_unblock"] = "await_unblock"
+    reason: str
+
+
+class AwaitResume(Command):
+    """PAUSED: an operator paused the run; it resumes where it was."""
+
+    human: ClassVar[bool] = True
+    kind: Literal["await_resume"] = "await_resume"
 
 
 class CancelEffects(Command):
@@ -152,40 +214,56 @@ class PublishOutcome(Command):
 
 
 AnyCommand = Annotated[
-    PrepareWorkspace
+    AdmitRun
+    | ValidateRequest
+    | LoadContext
     | RequestPlan
     | AwaitPlanApproval
     | ImplementPlan
     | AuthorAcceptanceTests
     | IntegrateBuild
-    | RunVerification
-    | RunTestSuite
+    | RunStaticAnalysis
+    | RunUnitTests
+    | RunIntegrationTests
+    | RunSecurityReview
     | RequestReview
     | RunNegotiationRound
     | RequestArbitration
     | AwaitHumanRuling
     | ReviseChanges
-    | Finalize
+    | VerifyRelease
+    | AwaitReleaseApproval
+    | PublishRelease
+    | AwaitUnblock
+    | AwaitResume
     | CancelEffects
     | PublishOutcome,
     Field(discriminator="kind"),
 ]
 
 COMMAND_TYPES: tuple[type[Command], ...] = (
-    PrepareWorkspace,
+    AdmitRun,
+    ValidateRequest,
+    LoadContext,
     RequestPlan,
     AwaitPlanApproval,
     ImplementPlan,
     AuthorAcceptanceTests,
     IntegrateBuild,
-    RunVerification,
-    RunTestSuite,
+    RunStaticAnalysis,
+    RunUnitTests,
+    RunIntegrationTests,
+    RunSecurityReview,
     RequestReview,
     RunNegotiationRound,
     RequestArbitration,
     AwaitHumanRuling,
     ReviseChanges,
-    Finalize,
+    VerifyRelease,
+    AwaitReleaseApproval,
+    PublishRelease,
+    AwaitUnblock,
+    AwaitResume,
     CancelEffects,
     PublishOutcome,
 )

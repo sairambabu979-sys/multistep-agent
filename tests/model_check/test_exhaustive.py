@@ -33,9 +33,9 @@ def test_every_reachable_live_state_is_waiting_on_something(
 
 @CONFIGS
 def test_done_is_reachable_from_every_live_state(gate: PlanGate, escalation: Escalation) -> None:
-    """Liveness (EF DONE): no reachable state is doomed to fail or abort."""
+    """Liveness (EF COMPLETED): no reachable state is doomed to fail or be cancelled."""
     exploration = explore_config(gate, escalation)
-    can_finish = exploration.can_reach(Phase.DONE)
+    can_finish = exploration.can_reach(Phase.COMPLETED)
     doomed = [
         state.phase
         for key, state in exploration.states.items()
@@ -49,6 +49,39 @@ def test_negotiation_never_repeats_a_round_without_progress(
     gate: PlanGate, escalation: Escalation
 ) -> None:
     assert explore_config(gate, escalation).stalled_negotiations == []
+
+
+@CONFIGS
+def test_pausing_and_resuming_returns_to_the_state_that_was_paused(
+    gate: PlanGate, escalation: Escalation
+) -> None:
+    """Checked in every reachable state that accepts a pause: the same phase, the same work
+    in flight, the same evidence and findings, the same loop counters."""
+    exploration = explore_config(gate, escalation)
+    assert exploration.pause_mismatches == []
+    assert sum(s.phase is Phase.PAUSED for s in exploration.states.values()) > 1_000
+
+
+@CONFIGS
+def test_a_pause_is_refused_only_while_a_person_is_already_asked(
+    gate: PlanGate, escalation: Escalation
+) -> None:
+    exploration = explore_config(gate, escalation)
+    asking = [
+        s for s in exploration.states.values() if not s.is_terminal and s.waiting_since is not None
+    ]
+    assert exploration.pause_refusals > 0
+    # Each such state is explored once and refuses the one pause offered to it.
+    assert exploration.pause_refusals == len(asking)
+
+
+@CONFIGS
+def test_every_phase_the_configuration_allows_is_reached(
+    gate: PlanGate, escalation: Escalation
+) -> None:
+    reached = {s.phase for s in explore_config(gate, escalation).states.values()}
+    expected = set(Phase) if gate is PlanGate.HUMAN else set(Phase) - {Phase.PLAN_APPROVAL}
+    assert reached == expected
 
 
 @CONFIGS
@@ -82,11 +115,12 @@ def test_every_declared_edge_is_exercised() -> None:
 def test_every_rule_driven_outcome_is_reachable() -> None:
     reached = set().union(*(explore_config(*config).outcomes for config in MODEL_CHECK_CONFIGS))
     # Budget, deadline, cancel, and agent failures are global escapes, covered elsewhere.
+    # Environment failures no longer end a run: they block it.
     assert reached == {
         OutcomeReason.COMPLETED,
-        OutcomeReason.INTAKE_REJECTED,
+        OutcomeReason.ADMISSION_DENIED,
+        OutcomeReason.REQUEST_REJECTED,
         OutcomeReason.REPLAN_LIMIT,
         OutcomeReason.REVISION_LIMIT,
-        OutcomeReason.ENVIRONMENT_FAILURE,
         OutcomeReason.HUMAN_ABORTED,
     }

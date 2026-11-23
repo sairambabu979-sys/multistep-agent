@@ -6,7 +6,7 @@ from datetime import timedelta
 from typing import Any
 
 import pytest
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from msa.core.events import HumanRuled, ReviewProduced, RunStarted
 from msa.core.ids import EffectId, FindingId
@@ -15,13 +15,14 @@ from msa.core.values import (
     Outcome,
     OutcomeReason,
     Owner,
+    Person,
     Phase,
     Resolution,
     Severity,
     Triage,
     Verdict,
 )
-from tests.support.factory import BUILD, T0, digest, finding, limits
+from tests.support.factory import BUILD, PERSON, T0, digest, finding, limits
 
 
 def test_triage_requires_an_owner_unless_the_environment_is_at_fault() -> None:
@@ -36,16 +37,37 @@ def test_triage_requires_an_owner_unless_the_environment_is_at_fault() -> None:
 @pytest.mark.parametrize(
     ("reason", "phase"),
     [
-        (OutcomeReason.COMPLETED, Phase.DONE),
-        (OutcomeReason.CANCELLED, Phase.ABORTED),
-        (OutcomeReason.HUMAN_ABORTED, Phase.ABORTED),
+        (OutcomeReason.COMPLETED, Phase.COMPLETED),
+        (OutcomeReason.CANCELLED, Phase.CANCELLED),
+        (OutcomeReason.HUMAN_ABORTED, Phase.CANCELLED),
         (OutcomeReason.BUDGET_EXHAUSTED, Phase.FAILED),
         (OutcomeReason.REVISION_LIMIT, Phase.FAILED),
+        (OutcomeReason.ADMISSION_DENIED, Phase.FAILED),
+        (OutcomeReason.REQUEST_REJECTED, Phase.FAILED),
     ],
 )
 def test_an_outcome_determines_its_terminal_phase(reason: OutcomeReason, phase: Phase) -> None:
     assert Outcome(reason=reason).phase is phase
     assert phase.is_terminal
+
+
+def test_only_completed_failed_and_cancelled_are_terminal() -> None:
+    assert {p for p in Phase if p.is_terminal} == {
+        Phase.COMPLETED,
+        Phase.FAILED,
+        Phase.CANCELLED,
+    }
+
+
+@pytest.mark.parametrize("name", ["agent:coder", "agent:", ""])
+def test_a_person_is_never_an_agent_or_nobody(name: str) -> None:
+    with pytest.raises(ValidationError):
+        TypeAdapter(Person).validate_python(name)
+
+
+@pytest.mark.parametrize("name", ["ada", "ops@example.com", "agent-smith"])
+def test_people_may_have_any_other_name(name: str) -> None:
+    assert TypeAdapter(Person).validate_python(name) == name
 
 
 @pytest.mark.parametrize(
@@ -89,7 +111,7 @@ def test_a_review_cannot_report_the_same_finding_twice() -> None:
 def test_a_ruling_cannot_resolve_the_same_finding_twice() -> None:
     twice = Resolution(finding_id=FindingId("f"), verdict=Verdict.UPHELD)
     with pytest.raises(ValidationError, match="Value error, a finding can be resolved at most"):
-        HumanRuled(at=T0, effect_id=EffectId("r:1:0"), resolutions=(twice, twice))
+        HumanRuled(at=T0, effect_id=EffectId("r:1:0"), by=PERSON, resolutions=(twice, twice))
 
 
 @pytest.mark.parametrize(

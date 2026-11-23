@@ -7,7 +7,8 @@ plays the role TLC plays for a TLA+ spec, except the model is the production cod
 States are deduplicated by an *abstract key* that drops what cannot change future behavior:
 the event sequence number, timestamps, effect ids, and the ledger. The ledger can be dropped
 because exploration uses zero spend and an effectively unlimited budget. Budget behavior is
-covered separately by the property tests.
+covered separately by the property tests. Terminal states are keyed by their outcome alone,
+since nothing follows them.
 """
 
 from __future__ import annotations
@@ -18,17 +19,21 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from functools import cache
 
-from msa.core import Edge, RunState, start, transition
+from msa.core import Edge, RunState, TransitionRejected, start, transition
 from msa.core.effects import RunNegotiationRound
-from msa.core.events import NegotiationRoundCompleted
+from msa.core.state import GATES
+from msa.core.events import AnyEvent, NegotiationRoundCompleted, PauseRequested, Resumed
 from msa.core.values import Escalation, Limits, OutcomeReason, Phase, PlanGate
-from msa.runtime.simulation import outcomes
+from msa.runtime.simulation import PERSON, outcomes
 from tests.support.factory import run_started
 
 type Key = Hashable
 
 
 def abstract_key(state: RunState) -> Key:
+    if state.outcome is not None:
+        # A terminal state has no future: only how it ended can matter.
+        return (state.phase, state.outcome.reason)
     return (
         state.phase,
         state.base_tree,
@@ -38,10 +43,16 @@ def abstract_key(state: RunState) -> Key:
         state.revisions,
         state.negotiation_round,
         state.build,
-        state.evidence,
+        # Evidence only ever counts when it names the head (heads never repeat), so which
+        # gates hold for the head is all of it that can matter.
+        tuple(getattr(state.evidence, gate) == state.head_tree for gate in GATES),
         state.findings,
         tuple(sorted((e.command for e in state.pending), key=repr)),
         state.outcome,
+        state.resume_phase,
+        tuple(sorted(state.resume_commands, key=repr)),
+        state.release,
+        state.approved_by,
     )
 
 
@@ -53,6 +64,8 @@ class Exploration:
     edges: set[Edge] = field(default_factory=set)
     transitions: int = 0
     stalled_negotiations: list[str] = field(default_factory=list)
+    pause_refusals: int = 0
+    pause_mismatches: list[str] = field(default_factory=list)
 
     @property
     def outcomes(self) -> set[OutcomeReason]:
@@ -74,7 +87,8 @@ class Exploration:
         return seen
 
 
-def explore(limits: Limits, *, rich: bool = False) -> Exploration:
+def explore(limits: Limits, *, rich: bool = False, pause: bool = True) -> Exploration:
+    """Every reachable state. With ``pause``, an operator may pause in every live state."""
     result = Exploration(limits=limits)
     initial = start(run_started(limits)).state
     result.states[abstract_key(initial)] = initial
@@ -83,18 +97,42 @@ def explore(limits: Limits, *, rich: bool = False) -> Exploration:
         state = queue.popleft()
         key = abstract_key(state)
         at = state.updated_at + timedelta(seconds=1)
-        for effect in state.pending:
-            for event in outcomes(effect, at, rich=rich):
+        events: list[AnyEvent] = [
+            event for effect in state.pending for event in outcomes(effect, at, rich=rich)
+        ]
+        if pause and state.outcome is None:
+            events.append(PauseRequested(at=at, by=PERSON, reason="maintenance"))
+        for event in events:
+            try:
                 step = transition(state, event)  # raises on any invariant violation
-                result.transitions += 1
-                result.edges.add(step.edge)
-                _check_negotiation_progress(result, state, event, step.state, step.effects)
-                nxt = abstract_key(step.state)
-                result.successors[key].add(nxt)
-                if nxt not in result.states:
-                    result.states[nxt] = step.state
-                    queue.append(step.state)
+            except TransitionRejected:
+                # Only an operator's pause may be refused: while paused or while a person
+                # is already asked. Every answer to a pending effect must be accepted.
+                if not isinstance(event, PauseRequested):
+                    raise
+                result.pause_refusals += 1
+                continue
+            if isinstance(event, PauseRequested):
+                _check_pause_round_trip(result, key, step.state)
+            result.transitions += 1
+            result.edges.add(step.edge)
+            _check_negotiation_progress(result, state, event, step.state, step.effects)
+            nxt = abstract_key(step.state)
+            result.successors[key].add(nxt)
+            if nxt not in result.states:
+                result.states[nxt] = step.state
+                queue.append(step.state)
     return result
+
+
+def _check_pause_round_trip(result: Exploration, key: Key, paused: RunState) -> None:
+    """Pausing and resuming at once lands in the state that was paused: the same phase, the
+    same work in flight, the same evidence and findings."""
+    (await_resume,) = paused.pending
+    at = paused.updated_at + timedelta(seconds=1)
+    resumed = transition(paused, Resumed(at=at, effect_id=await_resume.id, by=PERSON)).state
+    if abstract_key(resumed) != key:
+        result.pause_mismatches.append(f"{paused.resume_phase}: {key} -> {abstract_key(resumed)}")
 
 
 def _check_negotiation_progress(

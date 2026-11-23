@@ -11,12 +11,14 @@ from msa.core.values import Limits
 
 # Deterministic identifiers are shared with the simulator, so tests and `msa simulate`
 # describe the same world.
-from msa.runtime.simulation import BASE, BUILD, digest, finding, plan_ref, tree
+from msa.runtime.simulation import BASE, BUILD, PERSON, bundle, digest, finding, plan_ref, tree
 
 __all__ = [
     "BASE",
     "BUILD",
+    "PERSON",
     "T0",
+    "bundle",
     "digest",
     "finding",
     "limits",

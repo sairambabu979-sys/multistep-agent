@@ -13,14 +13,14 @@ import pytest
 
 from msa.core import RunState
 from msa.core.budget import Reservation, Spend
-from msa.core.effects import ImplementPlan
-from msa.core.events import ImplementationCompleted
+from msa.core.effects import AwaitResume, ImplementPlan
+from msa.core.events import ImplementationCompleted, PauseRequested
 from msa.core.ids import EffectId, FindingId
 from msa.core.invariants import violations
 from msa.core.state import Evidence, Finding, FindingStatus
 from msa.core.values import Outcome, OutcomeReason, Phase, PlanGate, Severity
 from tests.support.driver import Driver
-from tests.support.factory import BUILD, finding, limits, tree
+from tests.support.factory import BUILD, PERSON, bundle, finding, limits, tree
 
 
 @pytest.fixture
@@ -28,7 +28,7 @@ def negotiating() -> RunState:
     d = Driver()
     d.to_review()
     d.review(finding("f1", Severity.BLOCKER))
-    assert d.phase is Phase.NEGOTIATING
+    assert d.phase is Phase.NEGOTIATION
     return d.state
 
 
@@ -37,7 +37,26 @@ def finalizing() -> RunState:
     d = Driver()
     d.to_review()
     d.review()
-    assert d.phase is Phase.FINALIZING
+    assert d.phase is Phase.FINAL_VERIFICATION
+    return d.state
+
+
+@pytest.fixture
+def approving() -> RunState:
+    d = Driver()
+    d.to_review()
+    d.review()
+    d.verify_release()
+    assert d.phase is Phase.HUMAN_APPROVAL
+    return d.state
+
+
+@pytest.fixture
+def paused() -> RunState:
+    d = Driver()
+    d.to_review()
+    d.send(PauseRequested(at=d.tick(), by=PERSON))
+    assert d.phase is Phase.PAUSED
     return d.state
 
 
@@ -45,9 +64,11 @@ def corrupt(state: RunState, **updates: Any) -> tuple[str, ...]:
     return violations(state.model_copy(update=updates))
 
 
-def test_valid_states_have_no_violations(negotiating: RunState, finalizing: RunState) -> None:
-    assert violations(negotiating) == ()
-    assert violations(finalizing) == ()
+def test_valid_states_have_no_violations(
+    negotiating: RunState, finalizing: RunState, approving: RunState, paused: RunState
+) -> None:
+    for state in (negotiating, finalizing, approving, paused):
+        assert violations(state) == ()
 
 
 def test_terminal_shape(negotiating: RunState) -> None:
@@ -55,7 +76,7 @@ def test_terminal_shape(negotiating: RunState) -> None:
     assert any("inconsistent with outcome" in v for v in corrupt(negotiating, outcome=done))
     assert any("belongs to" in v for v in corrupt(negotiating, phase=Phase.FAILED, outcome=done))
     assert any(
-        "still has pending" in v for v in corrupt(negotiating, phase=Phase.DONE, outcome=done)
+        "still has pending" in v for v in corrupt(negotiating, phase=Phase.COMPLETED, outcome=done)
     )
 
 
@@ -66,20 +87,55 @@ def test_never_stuck(negotiating: RunState) -> None:
     )
 
 
-def test_finalization_gate(finalizing: RunState) -> None:
-    assert any("without verify+test" in v for v in corrupt(finalizing, evidence=Evidence()))
+def test_finalization_gate(finalizing: RunState, approving: RunState) -> None:
+    assert any("without every gate passed" in v for v in corrupt(finalizing, evidence=Evidence()))
+    assert any("without every gate passed" in v for v in corrupt(approving, evidence=Evidence()))
+    assert "human_approval without a verified release bundle" in corrupt(approving, release=None)
+    assert "an approval recorded before the release was verified" in corrupt(
+        finalizing, approved_by=PERSON
+    )
     open_finding = Finding(
         id=FindingId("x"), severity=Severity.BLOCKER, raised_on=BUILD, status=FindingStatus.OPEN
     )
     assert any("open blocking findings" in v for v in corrupt(finalizing, findings=(open_finding,)))
 
 
+def test_a_release_bundle_and_an_approval_live_only_in_the_approval_stage(
+    negotiating: RunState,
+) -> None:
+    assert "negotiation still holds a release bundle for an earlier tree" in corrupt(
+        negotiating, release=bundle(BUILD)
+    )
+    assert "negotiation holds an approval outside the approval stage" in corrupt(
+        negotiating, approved_by=PERSON
+    )
+
+
 def test_evidence_must_match_the_head(negotiating: RunState) -> None:
     assert any(
-        "without current verify+test" in v for v in corrupt(negotiating, head_tree=tree("other"))
+        "without security evidence" in v for v in corrupt(negotiating, head_tree=tree("other"))
     )
-    assert any(
-        "not verified" in v for v in corrupt(negotiating, phase=Phase.TESTING, evidence=Evidence())
+
+
+@pytest.mark.parametrize(
+    ("phase", "gate", "missing"),
+    [
+        (Phase.UNIT_TESTING, "static", "static"),
+        (Phase.INTEGRATION_TESTING, "unit", "static"),
+        (Phase.INTEGRATION_TESTING, "unit", "unit"),
+        (Phase.SECURITY_REVIEW, "integration", "integration"),
+        (Phase.CODE_REVIEW, "security", "static"),
+        (Phase.CODE_REVIEW, "security", "security"),
+    ],
+)
+def test_each_gate_needs_every_earlier_gate_on_the_head(
+    negotiating: RunState, phase: Phase, gate: str, missing: str
+) -> None:
+    """Dropping any one earlier gate's evidence is caught, not only dropping all of it."""
+    head = negotiating.require_head()
+    evidence = negotiating.evidence.model_copy(update={missing: None})
+    assert f"{phase} on tree {head} without {gate} evidence for it: {evidence}" in corrupt(
+        negotiating, phase=phase, evidence=evidence
     )
 
 
@@ -113,7 +169,7 @@ def test_phase_prerequisites(negotiating: RunState) -> None:
     assert any("head tree" in v for v in corrupt(negotiating, head_tree=None))
     assert any("no open findings" in v for v in corrupt(negotiating, findings=()))
     assert any(
-        "counted revision" in v for v in corrupt(negotiating, phase=Phase.REVISING, revisions=0)
+        "counted revision" in v for v in corrupt(negotiating, phase=Phase.REWORK, revisions=0)
     )
 
 
@@ -145,35 +201,26 @@ PENDING_OR_RESERVED = "terminal run still has pending effects or reservations"
 def test_a_terminal_run_with_only_pending_or_only_reservations_is_caught(
     negotiating: RunState,
 ) -> None:
-    done = {"phase": Phase.DONE, "outcome": Outcome(reason=OutcomeReason.COMPLETED)}
+    done = {"phase": Phase.COMPLETED, "outcome": Outcome(reason=OutcomeReason.COMPLETED)}
     only_pending = corrupt(negotiating, **done, ledger=negotiating.ledger.release_all())
     only_reserved = corrupt(negotiating, **done, pending=())
     assert PENDING_OR_RESERVED in only_pending
     assert PENDING_OR_RESERVED in only_reserved
 
 
-def test_finalizing_with_only_one_kind_of_evidence_is_caught(finalizing: RunState) -> None:
+@pytest.mark.parametrize("missing", ["static", "unit", "integration", "security"])
+def test_releasing_without_any_one_gate_is_caught(finalizing: RunState, missing: str) -> None:
     head = finalizing.require_head()
-    message = f"finalizing without verify+test evidence for head {head}: "
-    for evidence in (Evidence(verified=head), Evidence(tested=head)):
-        assert message + str(evidence) in corrupt(finalizing, evidence=evidence)
-
-
-def test_disputing_with_only_one_kind_of_evidence_is_caught(negotiating: RunState) -> None:
-    head = negotiating.require_head()
-    for evidence in (Evidence(verified=head), Evidence(tested=head)):
-        assert "negotiating on a tree without current verify+test evidence" in corrupt(
-            negotiating, evidence=evidence
-        )
+    evidence = finalizing.evidence.model_copy(update={missing: None})
+    message = f"final_verification without every gate passed for head {head}: {evidence}"
+    assert message in corrupt(finalizing, evidence=evidence)
 
 
 def test_static_messages_are_exact(negotiating: RunState) -> None:
-    assert "testing a tree that was not verified" in corrupt(
-        negotiating, phase=Phase.TESTING, evidence=Evidence()
+    assert "reworking without a counted revision" in corrupt(
+        negotiating, phase=Phase.REWORK, revisions=0
     )
-    assert "revising without a counted revision" in corrupt(
-        negotiating, phase=Phase.REVISING, revisions=0
-    )
+    assert "negotiation with no open findings to dispute" in corrupt(negotiating, findings=())
     before_start = negotiating.started_at - timedelta(seconds=1)
     assert "updated_at precedes started_at" in corrupt(negotiating, updated_at=before_start)
     drifted = negotiating.deadline + timedelta(seconds=1)
@@ -230,3 +277,46 @@ def test_build_progress_must_match_pending_work() -> None:
     assert "build progress for implement_plan is False while it is not pending" in corrupt(
         d.state, build=forgot
     )
+
+
+# ---------- interruptions: PAUSED and BLOCKED
+
+
+def test_a_paused_run_knows_what_it_resumes(paused: RunState) -> None:
+    pending = sorted(e.command.kind for e in paused.pending)
+    assert f"paused with resume_phase None (pending: {pending})" in corrupt(
+        paused, resume_phase=None
+    )
+    assert "paused has nothing to resume" in corrupt(paused, resume_commands=())
+
+
+def test_only_an_interrupted_run_carries_resume_state(negotiating: RunState) -> None:
+    pending = sorted(e.command.kind for e in negotiating.pending)
+    assert f"negotiation with resume_phase code_review (pending: {pending})" in corrupt(
+        negotiating, resume_phase=Phase.CODE_REVIEW
+    )
+    assert "negotiation carries resume commands it will never issue" in corrupt(
+        negotiating, resume_commands=(AwaitResume(),)
+    )
+
+
+def test_a_paused_run_waits_on_its_operator_and_nothing_else(
+    paused: RunState, negotiating: RunState
+) -> None:
+    extra = (*paused.pending, *negotiating.pending)
+    kinds = sorted(e.command.kind for e in extra)
+    assert f"paused but waiting on {kinds}" in corrupt(
+        paused, pending=extra, ledger=negotiating.ledger
+    )
+
+
+def test_a_blocked_run_asks_one_question(negotiating: RunState) -> None:
+    assert "blocked on []: exactly one question at a time" in corrupt(
+        negotiating, phase=Phase.BLOCKED, pending=(), ledger=negotiating.ledger.release_all()
+    )
+
+
+def test_a_paused_run_is_held_to_the_rules_of_the_stage_it_paused_in(paused: RunState) -> None:
+    """Evidence and prerequisites are judged by the stage a paused run will resume."""
+    assert any("without security evidence" in v for v in corrupt(paused, evidence=Evidence()))
+    assert "code_review without a head tree" in corrupt(paused, head_tree=None)

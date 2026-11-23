@@ -16,10 +16,29 @@ from datetime import timedelta
 from msa.core.state import FindingStatus, RunState
 from msa.core.values import Phase
 
-_AFTER_INTAKE = frozenset(Phase) - {Phase.INTAKE, Phase.FAILED, Phase.ABORTED}
-_AFTER_PLANNING = _AFTER_INTAKE - {Phase.PLANNING}
-_AFTER_BUILDING = _AFTER_PLANNING - {Phase.PLAN_GATE, Phase.BUILDING}
-_DISPUTE_PHASES = frozenset({Phase.NEGOTIATING, Phase.AWAITING_HUMAN})
+P = Phase
+# What a phase can assume, by the phase whose work the run is doing (``_working``).
+_AFTER_CONTEXT = frozenset(P) - {P.CREATED, P.VALIDATING, P.CONTEXT, P.FAILED, P.CANCELLED}
+_AFTER_PLANNING = _AFTER_CONTEXT - {P.PLANNING}
+_AFTER_IMPLEMENTING = _AFTER_PLANNING - {P.PLAN_APPROVAL, P.IMPLEMENTING}
+# Each gate runs only on a tree that passed every gate before it.
+_NEEDS: dict[Phase, str] = {
+    P.UNIT_TESTING: "static",
+    P.INTEGRATION_TESTING: "unit",
+    P.SECURITY_REVIEW: "integration",
+    P.CODE_REVIEW: "security",
+    P.NEGOTIATION: "security",
+}
+_RELEASE_PHASES = frozenset({P.FINAL_VERIFICATION, P.HUMAN_APPROVAL, P.COMPLETED})
+
+
+def _working(s: RunState) -> Phase:
+    """The phase whose work a paused or environment-blocked run will resume."""
+    return s.resume_phase if s.resume_phase is not None else s.phase
+
+
+def _ruling(s: RunState) -> bool:
+    return any(e.command.kind == "await_human_ruling" for e in s.pending)
 
 
 def _terminal_shape(s: RunState) -> Iterator[str]:
@@ -39,31 +58,56 @@ def _never_stuck(s: RunState) -> Iterator[str]:
 
 
 def _finalization_gate(s: RunState) -> Iterator[str]:
-    """(2) Nothing is finalized without current evidence and zero open blocking findings."""
-    if s.phase not in {Phase.FINALIZING, Phase.DONE}:
+    """(2) Nothing reaches release without every gate passed for the current head tree and
+    zero open blocking findings; nothing is approved or published without a verified bundle."""
+    phase = _working(s)
+    if not s.is_terminal and phase is not P.HUMAN_APPROVAL and s.release is not None:
+        yield f"{phase} still holds a release bundle for an earlier tree"
+    if not s.is_terminal and phase is not P.HUMAN_APPROVAL and s.approved_by is not None:
+        yield f"{phase} holds an approval outside the approval stage"
+    if phase not in _RELEASE_PHASES:
         return
     head = s.head_tree
-    if head is None or s.evidence.verified != head or s.evidence.tested != head:
-        yield f"{s.phase} without verify+test evidence for head {head}: {s.evidence}"
+    if not s.evidence.holds_through("security", head):
+        yield f"{phase} without every gate passed for head {head}: {s.evidence}"
     if s.open_finding_ids:
-        yield f"{s.phase} with open blocking findings {s.open_finding_ids}"
+        yield f"{phase} with open blocking findings {s.open_finding_ids}"
+    if phase is not P.FINAL_VERIFICATION and s.release is None:
+        yield f"{phase} without a verified release bundle"
+    if s.approved_by is not None and phase is P.FINAL_VERIFICATION:
+        yield "an approval recorded before the release was verified"
 
 
 def _evidence_is_current(s: RunState) -> Iterator[str]:
-    """(+) Each phase sees only evidence for the current head tree."""
-    head = s.head_tree
-    if s.phase is Phase.TESTING and s.evidence.verified != head:
-        yield "testing a tree that was not verified"
-    if s.phase in {Phase.REVIEWING} | _DISPUTE_PHASES and (
-        s.evidence.verified != head or s.evidence.tested != head
-    ):
-        yield f"{s.phase} on a tree without current verify+test evidence"
+    """(+) Each gate runs only on a tree every earlier gate passed, and disputes happen
+    only about such a tree."""
+    phase, head = _working(s), s.head_tree
+    gate = _NEEDS.get(P.NEGOTIATION if s.phase is P.BLOCKED and _ruling(s) else phase)
+    if gate is not None and not s.evidence.holds_through(gate, head):
+        yield f"{phase} on tree {head} without {gate} evidence for it: {s.evidence}"
+
+
+def _interruptions(s: RunState) -> Iterator[str]:
+    """(+) A paused run, or one blocked on the environment, knows what it resumes; no other
+    run carries resume state."""
+    pending = {e.command.kind for e in s.pending}
+    interrupted = s.phase is P.PAUSED or "await_unblock" in pending
+    if interrupted != (s.resume_phase is not None):
+        yield f"{s.phase} with resume_phase {s.resume_phase} (pending: {sorted(pending)})"
+    if interrupted and not s.resume_commands:
+        yield f"{s.phase} has nothing to resume"
+    if not interrupted and s.resume_commands:
+        yield f"{s.phase} carries resume commands it will never issue"
+    if s.phase is P.PAUSED and pending != {"await_resume"}:
+        yield f"paused but waiting on {sorted(pending)}"
+    if s.phase is P.BLOCKED and len(pending) != 1:
+        yield f"blocked on {sorted(pending)}: exactly one question at a time"
 
 
 def _build_progress_matches_pending_work(s: RunState) -> Iterator[str]:
-    """(+) While BUILDING, a region is recorded done exactly when its effect is no longer
-    pending, so integration can only start after both regions really finished."""
-    if s.phase is not Phase.BUILDING:
+    """(+) While IMPLEMENTING, a region is recorded done exactly when its effect is no
+    longer pending, so integration can only start after both regions really finished."""
+    if s.phase is not P.IMPLEMENTING:
         return
     pending = {e.command.kind for e in s.pending}
     for done, kind in (
@@ -106,16 +150,18 @@ def _budget_safety(s: RunState) -> Iterator[str]:
 
 def _phase_prerequisites(s: RunState) -> Iterator[str]:
     """(+) Facts a phase depends on are established before it is entered."""
-    if s.phase in _AFTER_INTAKE and s.base_tree is None:
-        yield f"{s.phase} without a base tree"
-    if s.phase in _AFTER_PLANNING and s.plan is None:
-        yield f"{s.phase} without a plan"
-    if s.phase in _AFTER_BUILDING and s.head_tree is None:
-        yield f"{s.phase} without a head tree"
-    if s.phase in _DISPUTE_PHASES and not s.open_finding_ids:
+    phase = _working(s)
+    if phase in _AFTER_CONTEXT and s.base_tree is None:
+        yield f"{phase} without a base tree"
+    if phase in _AFTER_PLANNING and s.plan is None:
+        yield f"{phase} without a plan"
+    if phase in _AFTER_IMPLEMENTING and s.head_tree is None:
+        yield f"{phase} without a head tree"
+    disputed = phase is P.NEGOTIATION or (s.phase is P.BLOCKED and _ruling(s))
+    if disputed and not s.open_finding_ids:
         yield f"{s.phase} with no open findings to dispute"
-    if s.phase is Phase.REVISING and s.revisions == 0:
-        yield "revising without a counted revision"
+    if phase is P.REWORK and s.revisions == 0:
+        yield "reworking without a counted revision"
 
 
 def _identities(s: RunState) -> Iterator[str]:
@@ -157,6 +203,7 @@ CHECKS: tuple[Callable[[RunState], Iterator[str]], ...] = (
     _never_stuck,
     _finalization_gate,
     _evidence_is_current,
+    _interruptions,
     _build_progress_matches_pending_work,
     _bounded_work,
     _budget_safety,

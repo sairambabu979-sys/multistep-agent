@@ -13,29 +13,35 @@ from msa.core.ids import ValidDigest, ValidFindingId, ValidPlanId
 
 
 class Phase(StrEnum):
-    """Lifecycle phase of a run. See docs/PLAN.md §2.1."""
+    """Lifecycle phase of a run: the AEGIS workflow (ADR-015)."""
 
-    INTAKE = "intake"
+    CREATED = "created"  # submitted; waits for admission
+    VALIDATING = "validating"  # the repository and the request are checked
+    CONTEXT = "context"  # the base tree and the repository's context are loaded
     PLANNING = "planning"
-    PLAN_GATE = "plan_gate"
-    BUILDING = "building"
-    VERIFYING = "verifying"
-    TESTING = "testing"
-    REVIEWING = "reviewing"
-    NEGOTIATING = "negotiating"
-    AWAITING_HUMAN = "awaiting_human"
-    REVISING = "revising"
-    FINALIZING = "finalizing"
-    DONE = "done"
+    PLAN_APPROVAL = "plan_approval"  # a person approves the plan (plan_gate = human)
+    IMPLEMENTING = "implementing"  # the Coder and the blind Tester, in parallel
+    STATIC_ANALYSIS = "static_analysis"
+    UNIT_TESTING = "unit_testing"
+    INTEGRATION_TESTING = "integration_testing"
+    SECURITY_REVIEW = "security_review"
+    CODE_REVIEW = "code_review"
+    NEGOTIATION = "negotiation"
+    REWORK = "rework"  # the owner revises; every gate runs again after
+    FINAL_VERIFICATION = "final_verification"  # the release verifier
+    HUMAN_APPROVAL = "human_approval"  # a person approves the release; then it is published
+    COMPLETED = "completed"
+    PAUSED = "paused"  # an operator paused the run; it resumes where it was
+    BLOCKED = "blocked"  # a person must rule on a dispute, or fix the environment
     FAILED = "failed"
-    ABORTED = "aborted"
+    CANCELLED = "cancelled"
 
     @property
     def is_terminal(self) -> bool:
         return self in TERMINAL_PHASES
 
 
-TERMINAL_PHASES: frozenset[Phase] = frozenset({Phase.DONE, Phase.FAILED, Phase.ABORTED})
+TERMINAL_PHASES: frozenset[Phase] = frozenset({Phase.COMPLETED, Phase.FAILED, Phase.CANCELLED})
 
 
 class PlanGate(StrEnum):
@@ -151,7 +157,8 @@ class Triage(Frozen):
 
 class OutcomeReason(StrEnum):
     COMPLETED = "completed"
-    INTAKE_REJECTED = "intake_rejected"
+    ADMISSION_DENIED = "admission_denied"
+    REQUEST_REJECTED = "request_rejected"
     REPLAN_LIMIT = "replan_limit"
     REVISION_LIMIT = "revision_limit"
     BUDGET_EXHAUSTED = "budget_exhausted"
@@ -159,7 +166,6 @@ class OutcomeReason(StrEnum):
     AGENT_FAILED = "agent_failed"
     AGENT_REFUSED = "agent_refused"
     EFFECT_FAILED = "effect_failed"
-    ENVIRONMENT_FAILURE = "environment_failure"
     CANCELLED = "cancelled"
     HUMAN_ABORTED = "human_aborted"
 
@@ -167,9 +173,9 @@ class OutcomeReason(StrEnum):
     def phase(self) -> Phase:
         """The only terminal phase this reason is compatible with."""
         if self is OutcomeReason.COMPLETED:
-            return Phase.DONE
+            return Phase.COMPLETED
         if self in {OutcomeReason.CANCELLED, OutcomeReason.HUMAN_ABORTED}:
-            return Phase.ABORTED
+            return Phase.CANCELLED
         return Phase.FAILED
 
 
@@ -180,3 +186,19 @@ class Outcome(Frozen):
     @property
     def phase(self) -> Phase:
         return self.reason.phase
+
+
+AGENT_PREFIX = "agent:"
+
+
+def _person(value: str) -> str:
+    """A principal that may approve: a person, never an agent (ADR-015 §4)."""
+    if not value.strip():
+        raise ValueError("an approval names who gave it")
+    if value.startswith(AGENT_PREFIX):
+        raise ValueError(f"{value} is an agent: no agent may approve")
+    return value
+
+
+# Who approved, ruled or unblocked: always a person. Agents act as "agent:<role>".
+Person = Annotated[str, AfterValidator(_person)]

@@ -1,7 +1,7 @@
 """A small DSL for scripting runs in example-based tests.
 
 d = Driver()
-d.intake(); d.plan(); d.build(); d.verify(); d.test()
+d.intake(); d.plan(); d.build(); d.gates()
 d.review(finding("f1", Severity.BLOCKER))
 d.complete(RunNegotiationRound, NegotiationRoundCompleted, resolutions=(...))
 """
@@ -15,32 +15,46 @@ import pytest
 
 from msa.core import RunState, Step, TransitionRejected, start, transition
 from msa.core.effects import (
+    AdmitRun,
     AuthorAcceptanceTests,
+    AwaitReleaseApproval,
     Command,
     Effect,
     ImplementPlan,
     IntegrateBuild,
-    PrepareWorkspace,
+    LoadContext,
+    PublishRelease,
     RequestPlan,
     RequestReview,
-    RunTestSuite,
-    RunVerification,
+    RunIntegrationTests,
+    RunSecurityReview,
+    RunStaticAnalysis,
+    RunUnitTests,
+    ValidateRequest,
+    VerifyRelease,
 )
 from msa.core.events import (
     AcceptanceTestsAuthored,
     BuildIntegrated,
     Completion,
+    ContextLoaded,
     EventBase,
     ImplementationCompleted,
-    IntakeCompleted,
+    IntegrationTestsPassed,
     PlanProduced,
+    ReleaseApproved,
+    ReleasePublished,
+    ReleaseVerified,
+    RequestValidated,
     ReviewProduced,
-    TestsPassed,
-    VerificationPassed,
+    RunAdmitted,
+    SecurityReviewPassed,
+    StaticAnalysisPassed,
+    UnitTestsPassed,
 )
 from msa.core.ids import TreeHash
 from msa.core.values import FindingRef, Limits, Phase
-from tests.support.factory import BASE, BUILD, T0, plan_ref, run_started
+from tests.support.factory import BASE, BUILD, PERSON, T0, bundle, digest, plan_ref, run_started
 
 
 class Driver:
@@ -114,7 +128,10 @@ class Driver:
     # ---------- canned stages
 
     def intake(self) -> Step:
-        return self.complete(PrepareWorkspace, IntakeCompleted, base_tree=BASE)
+        """CREATED through CONTEXT: admitted, validated, context loaded."""
+        self.complete(AdmitRun, RunAdmitted)
+        self.complete(ValidateRequest, RequestValidated)
+        return self.complete(LoadContext, ContextLoaded, base_tree=BASE, context=digest("ctx"))
 
     def plan(self) -> Step:
         attempt = self.effect(RequestPlan).command
@@ -126,11 +143,26 @@ class Driver:
         self.complete(AuthorAcceptanceTests, AcceptanceTestsAuthored)
         return self.complete(IntegrateBuild, BuildIntegrated, head_tree=head)
 
-    def verify(self) -> Step:
-        return self.complete(RunVerification, VerificationPassed, tree=self.head)
+    def static(self) -> Step:
+        return self.complete(RunStaticAnalysis, StaticAnalysisPassed, tree=self.head)
 
-    def test(self) -> Step:
-        return self.complete(RunTestSuite, TestsPassed, tree=self.head)
+    def unit(self) -> Step:
+        return self.complete(RunUnitTests, UnitTestsPassed, tree=self.head)
+
+    def integration(self) -> Step:
+        return self.complete(RunIntegrationTests, IntegrationTestsPassed, tree=self.head)
+
+    def security(self) -> Step:
+        return self.complete(
+            RunSecurityReview, SecurityReviewPassed, tree=self.head, report=digest("sec")
+        )
+
+    def gates(self) -> Step:
+        """The four mandatory gates, all passing on the head tree."""
+        self.static()
+        self.unit()
+        self.integration()
+        return self.security()
 
     def review(self, *findings: FindingRef) -> Step:
         return self.complete(RequestReview, ReviewProduced, tree=self.head, findings=findings)
@@ -139,5 +171,23 @@ class Driver:
         self.intake()
         self.plan()
         self.build()
-        self.verify()
-        return self.test()
+        return self.gates()
+
+    def verify_release(self) -> Step:
+        return self.complete(
+            VerifyRelease, ReleaseVerified, tree=self.head, bundle=bundle(self.head)
+        )
+
+    def approve_release(self, by: str = PERSON) -> Step:
+        return self.complete(AwaitReleaseApproval, ReleaseApproved, by=by)
+
+    def publish(self) -> Step:
+        return self.complete(
+            PublishRelease, ReleasePublished, tree=self.head, reference="aegis/run-1"
+        )
+
+    def release(self) -> Step:
+        """FINAL_VERIFICATION through COMPLETED."""
+        self.verify_release()
+        self.approve_release()
+        return self.publish()

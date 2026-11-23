@@ -3,9 +3,9 @@
 These checks look at the *declared* graph, not sampled runs, so they are proofs over the
 table rather than evidence from tests:
 
-* every phase is reachable from INTAKE;
-* every live phase can reach DONE using rules alone. Global escapes (cancel, deadline,
-  budget) do not count, because they reach FAILED/ABORTED trivially and would hide a phase
+* every phase is reachable from CREATED (PAUSED through the global pause);
+* every live phase can reach COMPLETED using rules alone. Global escapes (cancel, deadline,
+  budget) do not count, because they reach FAILED/CANCELLED trivially and would hide a phase
   that can only fail;
 * terminal phases have no outgoing rules, and live phases have at least one.
 """
@@ -18,7 +18,8 @@ from msa.core.table import TransitionTable
 from msa.core.values import TERMINAL_PHASES, Phase
 
 GLOBAL_ESCAPES: tuple[tuple[str, Phase, str], ...] = (
-    ("CancelRequested", Phase.ABORTED, "operator cancellation"),
+    ("CancelRequested", Phase.CANCELLED, "operator cancellation"),
+    ("PauseRequested", Phase.PAUSED, "an operator pauses (not while a person is being asked)"),
     ("DeadlineExceeded", Phase.FAILED, "wall-clock limit (also any event stamped after it)"),
     ("AgentFailed", Phase.FAILED, "agent invocation failed after gateway retries"),
     ("AgentRefused", Phase.FAILED, "model and every fallback declined"),
@@ -31,6 +32,11 @@ def successors(table: TransitionTable) -> dict[Phase, set[Phase]]:
     graph: dict[Phase, set[Phase]] = defaultdict(set)
     for rule in table:
         graph[rule.source] |= rule.targets
+    # The global pause reaches PAUSED from every phase a resume can return to.
+    resumes = {t for rule in table if rule.source is Phase.PAUSED for t in rule.targets}
+    for phase in resumes:
+        if phase is not Phase.CANCELLED:
+            graph[phase].add(Phase.PAUSED)
     return graph
 
 
@@ -48,23 +54,23 @@ def analyze(table: TransitionTable) -> list[str]:
     """Return every structural problem in ``table``; an empty list means the table is sound."""
     graph = successors(table)
     problems: list[str] = []
-    from_intake = reachable(graph, Phase.INTAKE)
+    from_start = reachable(graph, Phase.CREATED)
     for phase in Phase:
-        if phase not in from_intake:
-            problems.append(f"{phase.name} is unreachable from INTAKE")
+        if phase not in from_start:
+            problems.append(f"{phase.name} is unreachable from CREATED")
         if phase in TERMINAL_PHASES:
             if graph.get(phase):
                 problems.append(f"terminal {phase.name} has outgoing rules")
             continue
         if not graph.get(phase):
             problems.append(f"live {phase.name} has no outgoing rules")
-        if Phase.DONE not in reachable(graph, phase):
-            problems.append(f"{phase.name} cannot reach DONE through rules")
+        if Phase.COMPLETED not in reachable(graph, phase):
+            problems.append(f"{phase.name} cannot reach COMPLETED through rules")
     return problems
 
 
 def render_mermaid(table: TransitionTable) -> str:
-    lines = ["stateDiagram-v2", f"    [*] --> {Phase.INTAKE.name}: RunStarted"]
+    lines = ["stateDiagram-v2", f"    [*] --> {Phase.CREATED.name}: RunStarted"]
     for rule in table:
         for target in sorted(rule.targets, key=list(Phase).index):
             if target is rule.source:
@@ -91,7 +97,7 @@ def render_markdown(table: TransitionTable) -> str:
             "",
             "Generated from the transition table in `src/msa/core/transitions.py`. A contract",
             "test fails if this page and the table disagree. The design rationale is in",
-            "[PLAN.md §2](PLAN.md#2-the-state-machine).",
+            "[ADR-015](adr/015-aegis-architecture.md).",
             "",
             "```mermaid",
             render_mermaid(table),

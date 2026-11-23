@@ -22,6 +22,7 @@ from msa.core.events import (
     Completion,
     DeadlineExceeded,
     EffectFailed,
+    PauseRequested,
     RunStarted,
     SpendingCompletion,
 )
@@ -69,6 +70,7 @@ def test_every_completion_has_a_rule_or_is_a_global_escape() -> None:
         RunStarted,
         CancelRequested,
         DeadlineExceeded,
+        PauseRequested,
         AgentFailed,
         AgentRefused,
         EffectFailed,

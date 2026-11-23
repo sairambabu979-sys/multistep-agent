@@ -9,9 +9,10 @@ from pydantic import AwareDatetime, NonNegativeInt, PositiveInt
 
 from msa.core._frozen import Frozen
 from msa.core.budget import Ledger
-from msa.core.effects import Effect
+from msa.core.effects import AnyCommand, Effect
 from msa.core.errors import InvariantViolation
 from msa.core.ids import (
+    Digest,
     EffectId,
     FindingId,
     TreeHash,
@@ -60,14 +61,24 @@ class BuildProgress(Frozen):
 
 
 class Evidence(Frozen):
-    """Which tree each kind of evidence was produced for.
+    """Which tree each gate passed for.
 
     Evidence is valid only for the tree it names. A revision moves ``head_tree`` and so
     invalidates all earlier evidence automatically. Nothing needs to be cleared.
     """
 
-    verified: ValidTreeHash | None = None
-    tested: ValidTreeHash | None = None
+    static: ValidTreeHash | None = None
+    unit: ValidTreeHash | None = None
+    integration: ValidTreeHash | None = None
+    security: ValidTreeHash | None = None
+
+    def holds_through(self, gate: str, head: TreeHash | None) -> bool:
+        """Every gate up to and including ``gate`` passed for ``head``."""
+        gates = GATES[: GATES.index(gate) + 1]
+        return head is not None and all(getattr(self, g) == head for g in gates)
+
+
+GATES = ("static", "unit", "integration", "security")  # in the order they run
 
 
 class RunState(Frozen):
@@ -99,6 +110,12 @@ class RunState(Frozen):
     pending: tuple[Effect, ...] = ()
     outcome: Outcome | None = None
 
+    # PAUSED and BLOCKED (on the environment) resume a phase by issuing its work again.
+    resume_phase: Phase | None = None
+    resume_commands: tuple[AnyCommand, ...] = ()
+    release: ValidDigest | None = None  # the verified PR bundle for the head tree
+    approved_by: str | None = None  # the person who approved the release
+
     @property
     def is_terminal(self) -> bool:
         return self.phase.is_terminal
@@ -115,15 +132,20 @@ class RunState(Frozen):
         return next((e for e in self.pending if e.id == effect_id), None)
 
     def require_head(self) -> TreeHash:
-        """The head tree. Only valid after BUILDING, which is enforced as an invariant."""
+        """The head tree. Only valid after IMPLEMENTING, which is enforced as an invariant."""
         if self.head_tree is None:
-            raise InvariantViolation(("head_tree is not set before BUILDING completes",))
+            raise InvariantViolation(("head_tree is not set before IMPLEMENTING completes",))
         return self.head_tree
 
     def require_base(self) -> TreeHash:
         if self.base_tree is None:
-            raise InvariantViolation(("base_tree is not set before INTAKE completes",))
+            raise InvariantViolation(("base_tree is not set before CONTEXT completes",))
         return self.base_tree
+
+    def require_release(self) -> Digest:
+        if self.release is None:
+            raise InvariantViolation(("release is not set before FINAL_VERIFICATION passes",))
+        return self.release
 
     def require_plan(self) -> PlanRef:
         if self.plan is None:

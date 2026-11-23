@@ -10,7 +10,8 @@ The pipeline for every event, in order:
    A person's answer (to a plan gate or a dispute) also moves the deadline by however long
    they took: waiting for a person is not work.
 3. Global guards: cancellation, deadline, budget overcommitment, agent failure/refusal.
-   These may end the run from any phase.
+   These may end the run from any phase. Then a pause, which may stop any phase that is not
+   already waiting on a person.
 4. Rule dispatch: look up ``(phase, event type)`` in the table and run the handler.
    The resulting phase must be one the rule declared.
 5. Commit: assign deterministic effect ids, reserve budget for spending effects, seal
@@ -27,7 +28,14 @@ from collections.abc import Iterable
 from datetime import datetime
 
 from msa.core.budget import InsufficientBudget, Ledger
-from msa.core.effects import AnyCommand, CancelEffects, Effect, PrepareWorkspace, PublishOutcome
+from msa.core.effects import (
+    AdmitRun,
+    AnyCommand,
+    AwaitResume,
+    CancelEffects,
+    Effect,
+    PublishOutcome,
+)
 from msa.core.errors import InvariantViolation, Rejection, ReplayError, TransitionRejected
 from msa.core.events import (
     AgentFailed,
@@ -37,6 +45,7 @@ from msa.core.events import (
     DeadlineExceeded,
     EffectFailed,
     EventBase,
+    PauseRequested,
     RunStarted,
     spend_of,
 )
@@ -53,7 +62,7 @@ def start(event: RunStarted) -> Step:
     state = RunState(
         run_id=event.run_id,
         seq=1,
-        phase=Phase.INTAKE,
+        phase=Phase.CREATED,
         started_at=event.at,
         updated_at=event.at,
         deadline=event.at + event.limits.wall_clock,
@@ -61,7 +70,7 @@ def start(event: RunStarted) -> Step:
         limits=event.limits,
         ledger=Ledger(limit_usd_micros=event.limits.budget_usd_micros),
     )
-    return _commit(None, event, Decision(state, (PrepareWorkspace(),)), escape=False)
+    return _commit(None, event, Decision(state, (AdmitRun(),)), escape=False)
 
 
 def transition(state: RunState, event: EventBase, *, table: TransitionTable = TABLE) -> Step:
@@ -70,6 +79,8 @@ def transition(state: RunState, event: EventBase, *, table: TransitionTable = TA
 
     if (escape := _global_guard(current, event)) is not None:
         return _commit(source, event, escape, escape=True)
+    if isinstance(event, PauseRequested):
+        return _commit(source, event, _pause(current, event), escape=True)
 
     rule = table.get(source, type(event))
     if rule is None:
@@ -180,6 +191,26 @@ def _global_guard(state: RunState, event: EventBase) -> Decision | None:
     return None
 
 
+def _pause(state: RunState, event: PauseRequested) -> Decision:
+    """Cancel what is in flight and wait for an operator. The run resumes in the same
+    phase, with the same work issued again (effects are idempotent by design)."""
+    if state.phase is Phase.PAUSED or any(e.command.human for e in state.pending):
+        raise TransitionRejected(
+            Rejection.NOT_PAUSABLE, f"{state.phase} is already waiting on a person"
+        )
+    cancel = CancelEffects(effect_ids=tuple(e.id for e in state.pending))
+    paused = state.model_copy(
+        update={
+            "phase": Phase.PAUSED,
+            "resume_phase": state.phase,
+            "resume_commands": tuple(e.command for e in state.pending),
+            "pending": (),
+            "ledger": state.ledger.release_all(),
+        }
+    )
+    return Decision(paused, (cancel, AwaitResume()))
+
+
 def _terminal(state: RunState, reason: OutcomeReason, detail: str) -> Decision:
     outcome = Outcome(reason=reason, detail=detail)
     return Decision(state.model_copy(update={"phase": outcome.phase, "outcome": outcome}))
@@ -211,7 +242,14 @@ def _seal(state: RunState) -> tuple[RunState, tuple[AnyCommand, ...]]:
         commands.append(CancelEffects(effect_ids=tuple(e.id for e in state.pending)))
     commands.append(PublishOutcome(outcome=state.outcome))
     sealed = state.model_copy(
-        update={"pending": (), "ledger": state.ledger.release_all(), "waiting_since": None}
+        update={
+            "pending": (),
+            "ledger": state.ledger.release_all(),
+            "waiting_since": None,
+            # A run that ends while paused or blocked will never resume.
+            "resume_phase": None,
+            "resume_commands": (),
+        }
     )
     return sealed, tuple(commands)
 
