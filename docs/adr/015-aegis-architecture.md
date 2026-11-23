@@ -113,6 +113,55 @@ or a person only for what neither can decide.
 Tokens are hashed at rest; the server never logs them. Every API action is an audit event,
 with the principal on it.
 
+### 5. The stages without a model
+
+- **CREATED** admits a run only within `[admission]`: a budget and wall-clock ceiling, and
+  at most `max_live_runs` live runs per repository (parked ones count).
+- **VALIDATING** refuses a task that holds a secret (it would be journaled and sent to the
+  model); `msa run` refuses it before anything is journaled at all.
+- **CONTEXT** records the base commit beside the tree, so publishing has a parent.
+- **INTEGRATION_TESTING** runs `[integration].paths` without network where the kernel
+  allows (`unshare -rn`; `isolate_network = always` blocks where it cannot). A failure that
+  also fails on the base tree is not the change's: it blocks for a person, as does a
+  flaky one. Only failures on the head alone go to the Coder. No suite: the stage passes
+  with nothing run, and the report and the PR say exactly that.
+- **SECURITY_REVIEW** judges only what the change adds: secrets on any added line, and
+  insecure calls found in the syntax tree of added Python lines. A dependency manifest the
+  change touched is always listed; `forbid_new_dependencies` and `audit_command` can make
+  it block. A blocking finding goes to the Tester only when all of them are in its files.
+- **FINAL_VERIFICATION** rebuilds the patch and checks it again (non-empty, every path one
+  the Coder or the Tester may write, no secret), and requires each gate's own record to
+  name the exact tree, so the run files must agree with the journal. Then it writes
+  `pr.md` and the bundle.
+- **Publishing** commits the tree onto the base commit as `<branch_prefix><run>`, with
+  `Approved-by:` naming the person. It never pushes, never moves an existing branch that
+  holds anything else, and reuses its own commit when it runs again after a crash.
+
+## Verification
+
+- **The model checker** explores every reachable state at the production default limits,
+  with an operator's pause offered in every state: 225,300 states over four
+  configurations (78 s). No state is stuck; COMPLETED is reachable from every live
+  state; every declared edge is taken and no undeclared one; and pausing then resuming
+  returns to exactly the state that was paused, in every state that accepts a pause. It
+  found two bugs while this was built: a run cancelled while paused kept its resume state,
+  and BLOCKED declared resume edges into stages that can never block.
+- **The abstraction behind it** keys a state by which gates hold for the head (heads never
+  repeat, and evidence only counts when it names the head) and a terminal state by its
+  outcome alone. Both are sound for liveness. Without them the same exploration visits
+  about 890,000 states.
+- **Mutation testing of the core** catches all 1,475 mutants: 1,472 killed, 3 by timeout.
+  Its first run on this core found twelve survivors, all real gaps: unchecked refusal
+  messages, a dead parameter, and no corrupted-state test for a run blocked on a ruling.
+- **A bug found by a test of the command line**, not by the model checker (which never
+  lets time pass a deadline): a run waiting on a person failed with `deadline_exceeded`
+  when an operator paused it after the nominal deadline. The clock now stops for every
+  event while a person is asked. A regression test fails without the fix.
+- **The stages run on real worktrees** in `tests/unit/runtime/test_stages.py`, and whole
+  runs in `tests/integration`: approved, published to a branch whose tree, parent and
+  `Approved-by` trailer are checked. Hand mutants of the base-tree comparison, the
+  evidence check and the owner routing were each shown to fail those tests.
+
 ## Consequences
 
 - PLAN §2's phase names are replaced. Old journals do not replay; none exist outside tests

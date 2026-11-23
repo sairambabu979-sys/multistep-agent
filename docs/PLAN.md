@@ -61,6 +61,16 @@
 
 ## 2. The state machine
 
+> **Superseded names (ADR-015).** The phases below are the original design. The workflow
+> that runs today has twenty states; the generated [`fsm.md`](fsm.md) is authoritative.
+> The mapping: INTAKE → CREATED, VALIDATING, CONTEXT; PLAN_GATE → PLAN_APPROVAL;
+> BUILDING → IMPLEMENTING; VERIFYING → STATIC_ANALYSIS (no tests); TESTING → UNIT_TESTING,
+> then the new INTEGRATION_TESTING and SECURITY_REVIEW; REVIEWING → CODE_REVIEW;
+> NEGOTIATING → NEGOTIATION; REVISING → REWORK; AWAITING_HUMAN → BLOCKED (which now also
+> covers environment failures); FINALIZING → FINAL_VERIFICATION, then HUMAN_APPROVAL;
+> DONE → COMPLETED; ABORTED → CANCELLED; and PAUSED is new. The invariants of §2.4 hold
+> under the new names.
+
 ### 2.1 Phases
 
 | Phase | Responsibility | Exits to |

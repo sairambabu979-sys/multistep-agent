@@ -1,5 +1,31 @@
 {
   "$defs": {
+    "AdmissionConfig": {
+      "additionalProperties": false,
+      "description": "CREATED (ADR-015): what a run may ask for before any work starts.",
+      "properties": {
+        "max_budget_usd": {
+          "default": 50.0,
+          "exclusiveMinimum": 0,
+          "title": "Max Budget Usd",
+          "type": "number"
+        },
+        "max_live_runs": {
+          "default": 4,
+          "exclusiveMinimum": 0,
+          "title": "Max Live Runs",
+          "type": "integer"
+        },
+        "max_wall_clock_minutes": {
+          "default": 240,
+          "exclusiveMinimum": 0,
+          "title": "Max Wall Clock Minutes",
+          "type": "integer"
+        }
+      },
+      "title": "AdmissionConfig",
+      "type": "object"
+    },
     "AgentsConfig": {
       "additionalProperties": false,
       "description": "Bounds on one agent invocation, on top of its effect's budget reservation.",
@@ -193,6 +219,34 @@
       "title": "Escalation",
       "type": "string"
     },
+    "IntegrationConfig": {
+      "additionalProperties": false,
+      "description": "INTEGRATION_TESTING (ADR-015): the repository's integration suite.",
+      "properties": {
+        "isolate_network": {
+          "default": "auto",
+          "enum": [
+            "auto",
+            "always",
+            "never"
+          ],
+          "title": "Isolate Network",
+          "type": "string"
+        },
+        "paths": {
+          "default": [
+            "tests/integration"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "title": "Paths",
+          "type": "array"
+        }
+      },
+      "title": "IntegrationConfig",
+      "type": "object"
+    },
     "JournalConfig": {
       "additionalProperties": false,
       "properties": {
@@ -368,6 +422,20 @@
       "title": "Pricing",
       "type": "object"
     },
+    "ReleaseConfig": {
+      "additionalProperties": false,
+      "description": "FINAL_VERIFICATION and publishing (ADR-015).",
+      "properties": {
+        "branch_prefix": {
+          "default": "aegis/",
+          "pattern": "^[a-z0-9][a-z0-9/_-]*/$",
+          "title": "Branch Prefix",
+          "type": "string"
+        }
+      },
+      "title": "ReleaseConfig",
+      "type": "object"
+    },
     "ReviewConfig": {
       "additionalProperties": false,
       "description": "REVIEWING and NEGOTIATING (PLAN \u00a74, ADR-014).",
@@ -525,6 +593,27 @@
       "title": "SandboxConfig",
       "type": "object"
     },
+    "SecurityConfig": {
+      "additionalProperties": false,
+      "description": "SECURITY_REVIEW (ADR-015): deterministic rules over what the change adds.",
+      "properties": {
+        "audit_command": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Audit Command",
+          "type": "array"
+        },
+        "forbid_new_dependencies": {
+          "default": false,
+          "title": "Forbid New Dependencies",
+          "type": "boolean"
+        }
+      },
+      "title": "SecurityConfig",
+      "type": "object"
+    },
     "TestingConfig": {
       "additionalProperties": false,
       "description": "TESTING (PLAN \u00a76.1): how failures are told apart.",
@@ -555,14 +644,13 @@
     },
     "VerifyConfig": {
       "additionalProperties": false,
-      "description": "VERIFYING (PLAN \u00a72): deterministic checks on the head tree, in this order. Each runs\nover the whole worktree. Hard preference checks always run as well.",
+      "description": "STATIC_ANALYSIS (ADR-015): deterministic checks on the head tree, in this order. Each\nruns over the whole worktree. Hard preference checks always run as well. Tests do not\nrun here: UNIT_TESTING and INTEGRATION_TESTING run them, and judge their failures.",
       "properties": {
         "commands": {
           "default": [
             "ruff_check",
             "ruff_format_check",
-            "mypy",
-            "pytest"
+            "mypy"
           ],
           "items": {
             "$ref": "#/$defs/VerifyCommand"
@@ -578,6 +666,14 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {
+    "admission": {
+      "$ref": "#/$defs/AdmissionConfig",
+      "default": {
+        "max_budget_usd": 50.0,
+        "max_live_runs": 4,
+        "max_wall_clock_minutes": 240
+      }
+    },
     "agents": {
       "$ref": "#/$defs/AgentsConfig",
       "default": {
@@ -636,6 +732,15 @@
         }
       }
     },
+    "integration": {
+      "$ref": "#/$defs/IntegrationConfig",
+      "default": {
+        "isolate_network": "auto",
+        "paths": [
+          "tests/integration"
+        ]
+      }
+    },
     "journal": {
       "$ref": "#/$defs/JournalConfig",
       "default": {
@@ -666,6 +771,12 @@
       },
       "title": "Pricing",
       "type": "object"
+    },
+    "release": {
+      "$ref": "#/$defs/ReleaseConfig",
+      "default": {
+        "branch_prefix": "aegis/"
+      }
     },
     "review": {
       "$ref": "#/$defs/ReviewConfig",
@@ -700,6 +811,13 @@
         "view_limit_chars": 100000
       }
     },
+    "security": {
+      "$ref": "#/$defs/SecurityConfig",
+      "default": {
+        "audit_command": [],
+        "forbid_new_dependencies": false
+      }
+    },
     "testing": {
       "$ref": "#/$defs/TestingConfig",
       "default": {
@@ -713,8 +831,7 @@
         "commands": [
           "ruff_check",
           "ruff_format_check",
-          "mypy",
-          "pytest"
+          "mypy"
         ]
       }
     }
