@@ -444,9 +444,8 @@ def _resume(state: RunState) -> Decision:
     whatever was in flight was cancelled, and effects are idempotent by design)."""
     phase, commands = state.resume_phase, state.resume_commands
     if phase is None:  # pragma: no cover - set whenever AwaitUnblock or AwaitResume is issued
-        raise TransitionRejected(
-            Rejection.NOT_ACCEPTED_IN_PHASE, "nothing to resume"
-        )  # pragma: no mutate
+        detail = "nothing to resume"  # pragma: no mutate (unreachable, see above)
+        raise TransitionRejected(Rejection.NOT_ACCEPTED_IN_PHASE, detail)  # pragma: no mutate
     return _go(state, phase, *commands, resume_phase=None, resume_commands=())
 
 

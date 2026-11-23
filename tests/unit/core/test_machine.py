@@ -84,7 +84,7 @@ from msa.core.events import (
     UnitTestsFailed,
     UnitTestsPassed,
 )
-from msa.core.ids import EffectId, FindingId
+from msa.core.ids import Digest, EffectId, FindingId
 from msa.core.state import FindingStatus
 from msa.core.table import Decision, Rule, TransitionTable
 from msa.core.values import (
@@ -358,7 +358,7 @@ def test_a_failed_deterministic_gate_sends_the_coder_back_with_the_report(
     passed: int,
     command_type: type[Command],
     failure_type: type[Completion],
-    fields: dict[str, object],
+    fields: dict[str, Digest],
 ) -> None:
     d = Driver()
     d.intake()
@@ -1328,6 +1328,45 @@ def test_cancelling_while_a_person_is_asked_stops_waiting_without_moving_the_dea
         original,
         timedelta(0),
     )
+
+
+@pytest.mark.parametrize("where", ["plan_gate", "blocked", "release_approval", "paused"])
+def test_a_run_waiting_on_a_person_never_expires_while_it_waits(where: str) -> None:
+    """Hours after the nominal deadline, an operator's pause is refused for the reason it
+    is (a person is already asked), not taken as the event that expires the run; and the
+    person's answer still lands. Regression: the guard used the deadline as it stood when
+    the person was asked."""
+    d = Driver(limits(plan_gate=PlanGate.HUMAN))
+    d.intake()
+    d.plan()
+    if where != "plan_gate":
+        d.complete(AwaitPlanApproval, PlanApproved, by=PERSON)
+        d.build()
+        d.gates()
+        if where == "blocked":
+            d.review(finding("f1", Severity.BLOCKER))
+            _to_human(d)
+        elif where == "release_approval":
+            d.review()
+            d.verify_release()
+        else:
+            _pause(d)
+    d.tick(3 * HOUR)
+    if where != "paused":
+        late = PauseRequested(at=d.tick(), by=PERSON)
+        assert d.reject(late).reason is Rejection.NOT_PAUSABLE
+    d.send(CancelRequested(at=d.tick(), reason="stop"))
+    assert d.state.outcome is not None
+    assert d.state.outcome.reason is OutcomeReason.CANCELLED  # not DEADLINE_EXCEEDED
+
+
+def test_an_explicit_deadline_event_still_expires_a_waiting_run() -> None:
+    d = Driver(limits(plan_gate=PlanGate.HUMAN))
+    d.intake()
+    d.plan()
+    d.send(DeadlineExceeded(at=d.tick()))
+    assert d.state.outcome is not None
+    assert d.state.outcome.reason is OutcomeReason.DEADLINE_EXCEEDED
 
 
 def test_agent_work_never_stops_the_clock() -> None:

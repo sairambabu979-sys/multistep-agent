@@ -13,8 +13,18 @@ import pytest
 
 from msa.core import RunState
 from msa.core.budget import Reservation, Spend
-from msa.core.effects import AwaitResume, ImplementPlan
-from msa.core.events import ImplementationCompleted, PauseRequested
+from msa.core.effects import (
+    AwaitResume,
+    ImplementPlan,
+    RequestArbitration,
+    RunNegotiationRound,
+)
+from msa.core.events import (
+    ArbitrationRuled,
+    ImplementationCompleted,
+    NegotiationRoundCompleted,
+    PauseRequested,
+)
 from msa.core.ids import EffectId, FindingId
 from msa.core.invariants import violations
 from msa.core.state import Evidence, Finding, FindingStatus
@@ -320,3 +330,25 @@ def test_a_paused_run_is_held_to_the_rules_of_the_stage_it_paused_in(paused: Run
     """Evidence and prerequisites are judged by the stage a paused run will resume."""
     assert any("without security evidence" in v for v in corrupt(paused, evidence=Evidence()))
     assert "code_review without a head tree" in corrupt(paused, head_tree=None)
+
+
+@pytest.fixture
+def ruling() -> RunState:
+    """BLOCKED on a person's ruling: still a dispute about the head tree."""
+    d = Driver()
+    d.to_review()
+    d.review(finding("f1", Severity.BLOCKER))
+    d.complete(RunNegotiationRound, NegotiationRoundCompleted, resolutions=())
+    d.complete(RequestArbitration, ArbitrationRuled, resolutions=())
+    assert d.phase is Phase.BLOCKED
+    return d.state
+
+
+def test_a_ruling_is_held_to_the_rules_of_a_dispute(ruling: RunState) -> None:
+    assert violations(ruling) == ()
+    head = ruling.require_head()
+    evidence = ruling.evidence.model_copy(update={"security": None})
+    assert f"blocked on tree {head} without security evidence for it: {evidence}" in corrupt(
+        ruling, evidence=evidence
+    )
+    assert "blocked with no open findings to dispute" in corrupt(ruling, findings=())

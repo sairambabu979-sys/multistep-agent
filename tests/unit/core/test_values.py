@@ -65,6 +65,18 @@ def test_a_person_is_never_an_agent_or_nobody(name: str) -> None:
         TypeAdapter(Person).validate_python(name)
 
 
+@pytest.mark.parametrize(
+    ("name", "message"),
+    [
+        ("  ", "Value error, an approval names who gave it"),
+        ("agent:coder", "Value error, agent:coder is an agent: no agent may approve"),
+    ],
+)
+def test_a_refused_principal_is_told_why(name: str, message: str) -> None:
+    with pytest.raises(ValidationError, match=message):
+        TypeAdapter(Person).validate_python(name)
+
+
 @pytest.mark.parametrize("name", ["ada", "ops@example.com", "agent-smith"])
 def test_people_may_have_any_other_name(name: str) -> None:
     assert TypeAdapter(Person).validate_python(name) == name

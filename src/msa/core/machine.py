@@ -80,7 +80,7 @@ def transition(state: RunState, event: EventBase, *, table: TransitionTable = TA
     if (escape := _global_guard(current, event)) is not None:
         return _commit(source, event, escape, escape=True)
     if isinstance(event, PauseRequested):
-        return _commit(source, event, _pause(current, event), escape=True)
+        return _commit(source, event, _pause(current), escape=True)
 
     rule = table.get(source, type(event))
     if rule is None:
@@ -176,7 +176,7 @@ def _global_guard(state: RunState, event: EventBase) -> Decision | None:
     """Transitions that apply in every live phase, in priority order."""
     if isinstance(event, CancelRequested):
         return _terminal(state, OutcomeReason.CANCELLED, event.reason)
-    if isinstance(event, DeadlineExceeded) or event.at > state.deadline:
+    if isinstance(event, DeadlineExceeded) or event.at > _deadline_at(state, event.at):
         return _terminal(state, OutcomeReason.DEADLINE_EXCEEDED, f"deadline {state.deadline}")
     if state.ledger.overcommitted:
         ledger = state.ledger
@@ -191,7 +191,17 @@ def _global_guard(state: RunState, event: EventBase) -> Decision | None:
     return None
 
 
-def _pause(state: RunState, event: PauseRequested) -> Decision:
+def _deadline_at(state: RunState, now: datetime) -> datetime:
+    """The deadline as it stands at ``now``. While a person is asked the clock is stopped,
+    so the time since they were asked does not count: an operator's pause or a stray event
+    then cannot expire a run that is only waiting. (An answer moves the deadline for good,
+    in ``_resume_clock``, before this runs.)"""
+    if state.waiting_since is None:
+        return state.deadline
+    return state.deadline + (now - state.waiting_since)
+
+
+def _pause(state: RunState) -> Decision:
     """Cancel what is in flight and wait for an operator. The run resumes in the same
     phase, with the same work issued again (effects are idempotent by design)."""
     if state.phase is Phase.PAUSED or any(e.command.human for e in state.pending):
