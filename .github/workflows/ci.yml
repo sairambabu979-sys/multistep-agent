@@ -127,6 +127,25 @@ jobs:
           tests/unit/runtime/test_journal.py
           tests/chaos
 
+  audit:
+    # Known vulnerabilities in every locked Python dependency (dev tools and extras too),
+    # from PyPI's advisory data. The workbench's npm dependencies are audited in `web`.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+          enable-cache: true
+
+      - name: Audit locked Python dependencies
+        run: |
+          uv export --locked --format requirements-txt --no-hashes --no-emit-project \
+            --all-extras > "$RUNNER_TEMP/requirements.txt"
+          uvx pip-audit@2.9.0 --strict --disable-pip --no-deps -r "$RUNNER_TEMP/requirements.txt"
+
   web:
     # The workbench: types, unit tests, a dependency audit, and end to end against a real
     # `msa serve` on seeded runs, with an accessibility check (axe) of every page.

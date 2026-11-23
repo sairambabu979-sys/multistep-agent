@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := check
-.PHONY: sync fmt lint types imports fsm test cov check nightly chaos mutation changelog docs demo
+.PHONY: sync fmt lint types imports fsm test cov check nightly chaos mutation changelog docs demo audit
 
 sync:     ## Install the locked environment
 	uv sync --locked
@@ -28,7 +28,12 @@ cov:      ## Tests with coverage gates (85% overall, 95% core)
 	uv run pytest --cov --cov-report=term-missing
 	uv run coverage report --include='src/msa/core/*' --fail-under=95
 
-check: lint types imports fsm cov  ## Everything CI runs
+check: lint types imports fsm cov  ## Everything CI runs, except `make audit` (its own job)
+
+audit:    ## Known vulnerabilities in the locked Python dependencies (needs network)
+	uv export --locked --format requirements-txt --no-hashes --no-emit-project --all-extras > .audit-requirements.txt
+	uvx pip-audit@2.9.0 --strict --disable-pip --no-deps -r .audit-requirements.txt
+	rm -f .audit-requirements.txt
 
 nightly:  ## 10k examples per property, 100 crash trials, mutation testing (slow)
 	HYPOTHESIS_PROFILE=nightly uv run pytest tests/property tests/model_based tests/unit
