@@ -1,0 +1,189 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  commits:
+    # The changelog is generated from commit subjects, so they must parse.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Conventional commit subjects
+        env:
+          BASE: ${{ github.base_ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/conventional_commits.py --range "origin/$BASE..$HEAD_SHA"
+
+  check:
+    name: check (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13"]
+    services:
+      # The PostgreSQL journal runs the same contract, crash-recovery and API tests as
+      # SQLite. Trust auth on a throwaway container: there is no password anywhere.
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: msa
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s --health-timeout 5s --health-retries 30
+    env:
+      HYPOTHESIS_PROFILE: ci
+      MSA_TEST_POSTGRES_URL: postgresql://postgres@localhost:5432/msa
+      MSA_REQUIRE_POSTGRES: "1"  # a missing server fails those tests instead of skipping
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python }}
+          enable-cache: true
+
+      - name: Install (locked)
+        run: uv sync --locked
+
+      - name: ripgrep (the search tool runs it)
+        run: command -v rg || { sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep; }
+
+      - name: Lint
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+
+      - name: Types (mypy --strict)
+        run: uv run mypy
+
+      - name: Architecture contracts
+        run: uv run lint-imports
+
+      - name: State machine static analysis
+        run: uv run msa fsm check
+
+      - name: Settings file
+        run: uv run msa config check
+
+      - name: Tests (unit, property, model-based, exhaustive model check, contracts)
+        run: uv run pytest --cov --cov-report=term-missing
+
+      - name: Core coverage gate (95% branch)
+        run: uv run coverage report --include='src/msa/core/*' --fail-under=95
+
+  backends:
+    # PostgreSQL and Temporal, against real servers: the journal contract and crash
+    # recovery on PostgreSQL, and the Temporal driver against the SDK's test server (which
+    # it downloads), through the API and the CLI too.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: msa
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s --health-timeout 5s --health-retries 30
+    env:
+      MSA_TEST_POSTGRES_URL: postgresql://postgres@localhost:5432/msa
+      MSA_REQUIRE_POSTGRES: "1"
+      MSA_TEST_TEMPORAL: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+          enable-cache: true
+
+      - name: Install (locked)
+        run: uv sync --locked
+
+      - name: Temporal and PostgreSQL
+        run: >-
+          uv run pytest -p no:randomly -rs
+          tests/integration/test_temporal.py
+          tests/unit/runtime/test_temporal_activities.py
+          tests/unit/runtime/test_journal.py
+          tests/chaos
+
+  audit:
+    # Known vulnerabilities in every locked Python dependency (dev tools and extras too),
+    # from PyPI's advisory data. The workbench's npm dependencies are audited in `web`.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+          enable-cache: true
+
+      - name: Audit locked Python dependencies
+        run: |
+          uv export --locked --format requirements-txt --no-hashes --no-emit-project \
+            --all-extras > "$RUNNER_TEMP/requirements.txt"
+          uvx pip-audit@2.9.0 --strict --disable-pip --no-deps -r "$RUNNER_TEMP/requirements.txt"
+
+  web:
+    # The workbench: types, unit tests, a dependency audit, and end to end against a real
+    # `msa serve` on seeded runs, with an accessibility check (axe) of every page.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+          enable-cache: true
+
+      - name: Install (locked)
+        run: |
+          npm ci
+          uv sync --locked --project ..
+
+      - name: Types
+        run: npx tsc --noEmit
+
+      - name: Unit tests
+        run: npx vitest run
+
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Browser
+        run: npx playwright install --with-deps chromium
+
+      - name: End to end (real API, seeded runs, axe)
+        run: npx playwright test

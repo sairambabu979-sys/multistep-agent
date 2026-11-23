@@ -1,0 +1,127 @@
+diff --git a/src/inventory/__init__.py b/src/inventory/__init__.py
+index ed8da697f07bf9b9726be24858bc6f5c81ed6418..284940ece7d9e4556c50a001193ed581e792f73e 100644
+--- a/src/inventory/__init__.py
++++ b/src/inventory/__init__.py
+@@ -1,7 +1,8 @@
+ """A tiny inventory."""
+ 
+ from inventory.models import Item
++from inventory.receiving import receive
+ from inventory.report import low_stock, to_csv
+ from inventory.store import Store
+ 
+-__all__ = ["Item", "Store", "low_stock", "to_csv"]
++__all__ = ["Item", "Store", "low_stock", "receive", "to_csv"]
+diff --git a/src/inventory/receiving.py b/src/inventory/receiving.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..b15cf399354ada6058e29e09f005b53847111d7b
+--- /dev/null
++++ b/src/inventory/receiving.py
+@@ -0,0 +1,23 @@
++"""Deliveries: a note of "sku,quantity" lines, applied to a store."""
++
++from inventory.store import Store
++
++
++def receive(store: Store, note: str) -> int:
++    """Restock ``store`` from ``note``, all or nothing; returns the number of lines applied.
++
++    Every line is parsed and checked before any is applied, so a bad line leaves the store
++    as it was."""
++    deliveries = [_parse(line) for line in note.splitlines() if line.strip()]
++    for sku, quantity in deliveries:
++        if quantity <= 0:
++            raise ValueError(f"{sku}: a restock must add a positive quantity")
++        store.quantity(sku)  # raises KeyError for an unknown SKU
++    for sku, quantity in deliveries:
++        store.restock(sku, quantity)
++    return len(deliveries)
++
++
++def _parse(line: str) -> tuple[str, int]:
++    sku, quantity = line.split(",")
++    return sku.strip(), int(quantity)
+diff --git a/src/inventory/store.py b/src/inventory/store.py
+index 8ac911cbbf893ebcacc8a992921b15f154ffb1f8..8c97bb86e6ce6fdb9e942d3362573479f0cd4749 100644
+--- a/src/inventory/store.py
++++ b/src/inventory/store.py
+@@ -17,3 +17,9 @@ class Store:
+ 
+     def items(self) -> list[Item]:
+         return sorted(self._items.values(), key=lambda item: item.sku)
++
++    def restock(self, sku: str, quantity: int) -> None:
++        if quantity <= 0:
++            raise ValueError("a restock must add a positive quantity")
++        item = self._items[sku]
++        self._items[sku] = Item(sku, item.quantity + quantity)
+diff --git a/tests/acceptance/test_restocking.py b/tests/acceptance/test_restocking.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..a5f82838829e189ce0ec4cb7c8fbc78eb14f9ade
+--- /dev/null
++++ b/tests/acceptance/test_restocking.py
+@@ -0,0 +1,32 @@
++import pytest
++
++from inventory import Store, receive
++
++
++def test_restock_adds_to_an_existing_item() -> None:
++    store = Store()
++    store.add("bolt", 10)
++    store.restock("bolt", 5)
++    assert store.quantity("bolt") == 15
++
++
++@pytest.mark.parametrize("quantity", [0, -3])
++def test_restock_rejects_a_quantity_that_is_not_positive(quantity: int) -> None:
++    store = Store()
++    store.add("bolt", 10)
++    with pytest.raises(ValueError):
++        store.restock("bolt", quantity)
++    assert store.quantity("bolt") == 10
++
++
++def test_restock_of_an_unknown_sku_raises_key_error() -> None:
++    with pytest.raises(KeyError):
++        Store().restock("nut", 1)
++
++
++def test_receive_applies_a_delivery_note() -> None:
++    store = Store()
++    store.add("bolt", 1)
++    store.add("nut", 2)
++    assert receive(store, "bolt,4\nnut,1\n") == 2
++    assert (store.quantity("bolt"), store.quantity("nut")) == (5, 3)
+diff --git a/tests/test_restock.py b/tests/test_restock.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..a69c5acad98dfbbc8e28953b93fc6157a5ef3c45
+--- /dev/null
++++ b/tests/test_restock.py
+@@ -0,0 +1,26 @@
++import pytest
++
++from inventory import Store, receive
++
++
++def test_restock_adds_to_the_stock() -> None:
++    store = Store()
++    store.add("apple", 3)
++    store.restock("apple", 2)
++    assert store.quantity("apple") == 5
++
++
++def test_receive_applies_each_line() -> None:
++    store = Store()
++    store.add("apple", 1)
++    store.add("pear", 0)
++    assert receive(store, "apple,2\npear,5\n") == 2
++    assert [(i.sku, i.quantity) for i in store.items()] == [("apple", 3), ("pear", 5)]
++
++
++def test_a_bad_line_leaves_the_store_unchanged() -> None:
++    store = Store()
++    store.add("apple", 1)
++    with pytest.raises(ValueError, match="positive"):
++        receive(store, "apple,2\napple,0\n")
++    assert store.quantity("apple") == 1
