@@ -60,7 +60,7 @@ STAND_IN = textwrap.dedent(
 def alive(pid: int) -> bool:
     try:
         stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):  # reaped before the open, or mid-read
         return False
     return stat.rpartition(")")[2].split()[0] != "Z"  # a zombie is dead, merely unreaped
 

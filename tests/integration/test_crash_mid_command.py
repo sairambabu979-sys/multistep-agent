@@ -86,7 +86,7 @@ def running_pytest(root: int) -> list[int]:
 def gone(pid: int) -> bool:
     try:
         stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):  # reaped before the open, or mid-read
         return True
     return stat.rpartition(")")[2].split()[0] == "Z"
 
