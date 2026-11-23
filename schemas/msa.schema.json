@@ -555,6 +555,16 @@
           "title": "Env Passthrough",
           "type": "array"
         },
+        "isolate_network": {
+          "default": "auto",
+          "enum": [
+            "auto",
+            "always",
+            "never"
+          ],
+          "title": "Isolate Network",
+          "type": "string"
+        },
         "launcher": {
           "default": [
             "uv",
@@ -848,6 +858,7 @@
           "TMPDIR",
           "TERM"
         ],
+        "isolate_network": "auto",
         "launcher": [
           "uv",
           "run",

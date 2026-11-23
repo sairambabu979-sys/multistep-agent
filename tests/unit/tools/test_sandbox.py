@@ -13,9 +13,18 @@ from typing import Any
 
 import pytest
 
+from msa.tools import sandbox as sandbox_module
 from msa.tools.errors import CommandRejected, CommandUnavailable, PathRejected
 from msa.tools.paths import Root
-from msa.tools.sandbox import DEAD_PROXY, Completed, LocalSandbox, SearchResult, _rg_match
+from msa.tools.sandbox import (
+    DEAD_PROXY,
+    NETWORK_NAMESPACE,
+    Completed,
+    LocalSandbox,
+    SearchResult,
+    _rg_match,
+    network_namespace,
+)
 from tests.support.tools import Tree, build_tree, sandbox_config
 
 PY = sys.executable
@@ -147,7 +156,7 @@ def test_pytest_runs_through_the_launcher_with_confined_paths(tree: Tree) -> Non
     (tests / "test_ok.py").write_text("def test_ok():\n    assert True\n")
     (tests / "test_bad.py").write_text("def test_bad():\n    assert False\n")
     (tree.repo / "-k").write_text("")  # a file named like an option stays a path
-    box = sandbox(tree)
+    box = sandbox(tree, isolate_network="never")  # the exact command line, whatever the host
     passed = asyncio.run(box.run("pytest", ["tests/unit/test_ok.py"]))
     assert passed.exit_code == 0, passed.render()
     assert passed.command == "pytest -q ./tests/unit/test_ok.py"
@@ -156,6 +165,43 @@ def test_pytest_runs_through_the_launcher_with_confined_paths(tree: Tree) -> Non
     assert failed.command == "pytest -q -kbad ./tests/unit"
     assert "1 failed" in failed.stdout
     assert asyncio.run(box.run("pytest", ["."], keyword="nothing")).command.endswith(" .")
+
+
+# ---------- no network for agent commands
+
+NET_TEST = (
+    "import socket\n\n\ndef test_reach_out():\n"
+    "    socket.create_connection(('1.1.1.1', 80), timeout=2).close()\n"
+)
+
+
+@pytest.mark.skipif(network_namespace() is None, reason="no unprivileged network namespaces here")
+def test_an_agent_command_has_no_network_at_all(tree: Tree) -> None:
+    (tree.repo / "test_net.py").write_text(NET_TEST)
+    done = asyncio.run(sandbox(tree).run("pytest", ["test_net.py"]))
+    assert done.exit_code == 1, done.render()
+    assert "Network is unreachable" in done.stdout
+    assert done.command == "pytest -q ./test_net.py (without network)"
+
+
+def test_isolation_follows_the_setting(tree: Tree, monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[list[str]] = []
+
+    async def record(self: LocalSandbox, argv: list[str], **_: Any) -> Completed:
+        seen.append(list(argv))
+        return Completed("x", 0, 0.0, "", "", 0)
+
+    monkeypatch.setattr(LocalSandbox, "execute", record)
+    monkeypatch.setattr(sandbox_module, "network_namespace", lambda: NETWORK_NAMESPACE)
+    asyncio.run(sandbox(tree).run("pytest"))
+    asyncio.run(sandbox(tree, isolate_network="never").run("pytest"))
+    assert seen[0][: len(NETWORK_NAMESPACE)] == list(NETWORK_NAMESPACE)
+    assert seen[1][0] == PY  # straight to the launcher
+    monkeypatch.setattr(sandbox_module, "network_namespace", lambda: None)
+    asyncio.run(sandbox(tree).run("pytest"))  # auto: run anyway, with the dead proxy only
+    assert seen[2][0] == PY
+    with pytest.raises(CommandUnavailable, match="isolate_network = always"):
+        asyncio.run(sandbox(tree, isolate_network="always").run("pytest"))
 
 
 # ---------- search

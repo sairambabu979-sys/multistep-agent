@@ -21,11 +21,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import json
 import os
 import re
 import shutil
 import signal
+import subprocess
 import sys
 import time
 from collections.abc import Sequence
@@ -109,6 +111,28 @@ class SearchResult:
         return "\n".join(lines)
 
 
+NETWORK_NAMESPACE = ("unshare", "--user", "--map-root-user", "--net", "--")
+
+
+@functools.cache
+def network_namespace() -> tuple[str, ...] | None:
+    """The wrapper that runs a command with no network at all, if an unprivileged user may
+    create the namespace here; None otherwise. Probed once per process."""
+    program = shutil.which("unshare")
+    if program is None:
+        return None
+    try:
+        done = subprocess.run(  # a fixed argv, no shell: only `true` runs inside
+            [program, *NETWORK_NAMESPACE[1:], "true"],
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return NETWORK_NAMESPACE if done.returncode == 0 else None
+
+
 class LocalSandbox:
     def __init__(
         self,
@@ -136,7 +160,21 @@ class LocalSandbox:
                 raise CommandRejected("keyword applies to pytest only")
             argv.append(f"-k{_bounded(keyword, 'keyword')}")
         argv.extend(self._path_args(paths))  # "./x" can never parse as an option
-        return await self.execute([*self.config.launcher, *argv], shown=" ".join(argv))
+        wrapper = self._isolation()
+        shown = " ".join(argv) + (" (without network)" if wrapper else "")
+        return await self.execute([*wrapper, *self.config.launcher, *argv], shown=shown)
+
+    def _isolation(self) -> tuple[str, ...]:
+        mode = self.config.isolate_network
+        if mode == "never":
+            return ()
+        wrapper = network_namespace()
+        if wrapper is None and mode == "always":
+            raise CommandUnavailable(
+                "[sandbox].isolate_network = always, but this machine cannot create a network "
+                "namespace (unshare -rn): commands cannot run here"
+            )
+        return wrapper or ()
 
     async def search(self, pattern: str, glob: str | None = None) -> SearchResult:
         """ripgrep: linear-time regexes, so a hostile pattern cannot hang the run, and it

@@ -24,7 +24,8 @@ def tree(tmp_path: Path) -> Tree:
 
 
 def tools(tree: Tree) -> dict[str, Tool[Any]]:
-    sandbox = tree.sandbox(launcher=(sys.executable, "-m"))
+    # The exact tool output, whatever the host: isolation adds "(without network)".
+    sandbox = tree.sandbox(launcher=(sys.executable, "-m"), isolate_network="never")
     return {t.name: t for t in toolset(tree.workspace(Role.CODER), sandbox)}
 
 

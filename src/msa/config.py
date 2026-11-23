@@ -253,6 +253,11 @@ class SandboxConfig(Frozen):
     cpu_seconds: PositiveInt = 1800  # RLIMIT_CPU per command
     max_file_bytes: PositiveInt = 1024**3  # RLIMIT_FSIZE per command
     env_passthrough: tuple[EnvName, ...] = ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "TERM")
+    # Commands an agent runs (its `run` tool) get a network namespace of their own
+    # (`unshare -rn`): no host is reachable, whatever the program does with proxies.
+    # auto: where the kernel allows it; always: refuse to run them where it does not;
+    # never: only the dead proxy in their environment.
+    isolate_network: Literal["auto", "always", "never"] = "auto"
 
 
 # The sandbox's allowlisted commands (msa.tools.sandbox.COMMANDS; a contract test keeps the

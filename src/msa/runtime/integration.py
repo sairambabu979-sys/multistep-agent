@@ -34,9 +34,9 @@ from msa.runtime.context import RunContext
 from msa.runtime.testing import Case, Run, SuiteUnrunnable, run_pytest
 from msa.runtime.verify import removed_section
 from msa.tools.errors import CommandUnavailable
-from msa.tools.sandbox import LocalSandbox
+from msa.tools.sandbox import NETWORK_NAMESPACE, LocalSandbox
 
-ISOLATION = ("unshare", "--user", "--map-root-user", "--net", "--")
+ISOLATION = NETWORK_NAMESPACE
 RECORDS = "integrations.jsonl"
 
 
