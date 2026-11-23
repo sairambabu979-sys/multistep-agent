@@ -169,14 +169,22 @@ class Interpreter:
             for task in tasks.values():
                 task.cancel()
             await asyncio.gather(*tasks.values(), return_exceptions=True)
+        self.settled(state)
+        return state
+
+    @property
+    def executor(self) -> Executor:
+        return self._executor
+
+    def settled(self, state: RunState) -> None:
+        """What happens when driving stops: a terminal run publishes its outcome, a parked
+        one writes what it waits for. Published here rather than on the PublishOutcome
+        effect, so that resuming an already-terminal run publishes again: at-least-once."""
         if not state.is_terminal:
             if self._on_park is not None:
                 self._on_park(state)
         elif self._on_outcome is not None:
-            # Published after the loop rather than on the PublishOutcome effect, so that
-            # resuming an already-terminal run publishes again: at-least-once delivery.
             self._on_outcome(state)
-        return state
 
     async def _next(self, state: RunState, inbox: Inbox) -> tuple[EffectId | None, AnyEvent | None]:
         budget = self._clock.wait_budget(state)
@@ -196,23 +204,12 @@ class Interpreter:
         event: AnyEvent,
         tasks: dict[EffectId, asyncio.Task[None]],
     ) -> RunState:
-        try:
-            step = transition(state, event)
-        except TransitionRejected as rejected:
-            self._observer.rejected(event, rejected)
-            effect = state.pending_effect(source) if source else None
-            if effect is None:
-                # Defensive: each task answers once, so a stale or duplicate answer cannot
-                # arrive today. If one ever does, dropping it is the correct response.
-                return state
-            # The executor answered its own pending effect with something the core
-            # rejects. That is an executor bug; fail the run loudly rather than stall.
-            failure = _failure(effect, f"executor answer rejected: {rejected}", event.at)
-            step = transition(state, failure)
-            event = failure
-
+        decided = decide(state, source, event, on_rejected=self._observer.rejected)
+        if decided is None:
+            return state
+        step, event = decided
         self._observer.before_commit(event, step)
-        snapshot = step.state.is_terminal or step.state.seq % self._snapshot_every == 0
+        snapshot = snapshot_due(step.state, self._snapshot_every)
         self._journal.append(event, step.state, snapshot=snapshot)
         self._observer.after_commit(event, step)
 
@@ -228,24 +225,59 @@ class Interpreter:
 
     async def _run(self, effect: Effect, state: RunState, inbox: Inbox) -> None:
         self._observer.effect_started(effect)
-        now = self._clock.stamp(state)
-        try:
-            event = await self._executor.execute(effect, now=now)
-        except asyncio.CancelledError:
-            raise
-        except Parked:
-            inbox.put_nowait((effect.id, None))
-            return
-        except Exception as exc:  # executor bugs become failure events, never crashes
-            event = _failure(effect, f"{type(exc).__name__}: {exc}", now)
-        else:
-            if not (isinstance(event, Completion) and event.effect_id == effect.id):
-                detail = f"executor returned {type(event).__name__} for {effect.id}"
-                event = _failure(effect, detail, now)
+        event = await execute_effect(self._executor, effect, now=self._clock.stamp(state))
         inbox.put_nowait((effect.id, event))  # unbounded queue: never blocks
 
 
-def _failure(effect: Effect, error: str, at: datetime) -> AnyEvent:
+# ---------- the rules any driver of the core follows (this one, and msa.runtime.temporal)
+
+
+async def execute_effect(executor: Executor, effect: Effect, *, now: datetime) -> AnyEvent | None:
+    """``effect``'s completion, or None when it waits on a person (``Parked``). Executor
+    bugs become failure events, never crashes: an exception, or an answer that is not
+    this effect's completion."""
+    try:
+        event = await executor.execute(effect, now=now)
+    except asyncio.CancelledError:
+        raise
+    except Parked:
+        return None
+    except Exception as exc:
+        return failure(effect, f"{type(exc).__name__}: {exc}", now)
+    if not (isinstance(event, Completion) and event.effect_id == effect.id):
+        return failure(effect, f"executor returned {type(event).__name__} for {effect.id}", now)
+    return event
+
+
+def decide(
+    state: RunState,
+    source: EffectId | None,
+    event: AnyEvent,
+    *,
+    on_rejected: Callable[[AnyEvent, TransitionRejected], None] | None = None,
+) -> tuple[Step, AnyEvent] | None:
+    """The step ``event`` takes, and the event to journal for it; None to drop it.
+
+    An answer the core rejects from an executor for its own pending effect is an executor
+    bug: the run fails loudly rather than stalling. Any other rejected event (stale, or a
+    duplicate) is dropped: each executor answers once, so none arrives today."""
+    try:
+        return transition(state, event), event
+    except TransitionRejected as rejected:
+        if on_rejected is not None:
+            on_rejected(event, rejected)
+        effect = state.pending_effect(source) if source else None
+        if effect is None:
+            return None
+        failed = failure(effect, f"executor answer rejected: {rejected}", event.at)
+        return transition(state, failed), failed
+
+
+def snapshot_due(state: RunState, every: int) -> bool:
+    return state.is_terminal or state.seq % every == 0
+
+
+def failure(effect: Effect, error: str, at: datetime) -> AnyEvent:
     if effect.command.spends:
         return AgentFailed(at=at, effect_id=effect.id, error=error)
     return EffectFailed(at=at, effect_id=effect.id, error=error)
