@@ -72,6 +72,7 @@ from msa.runtime.simulation import (
     SimulationConfig,
     digest,
 )
+from msa.skills import policy, registry
 from msa.skills.preferences import Preference, PreferenceError, Resolved, Scope, store
 from msa.skills.preferences.lint import lint
 from msa.skills.preferences.resolve import Layer, resolve
@@ -85,10 +86,14 @@ fsm_app = typer.Typer(no_args_is_help=True, help="Inspect the orchestrator state
 config_app = typer.Typer(no_args_is_help=True, help="Validate msa.toml and export its schema.")
 llm_app = typer.Typer(no_args_is_help=True, help="Check and record the model API connection.")
 prefs_app = typer.Typer(no_args_is_help=True, help="Inspect, check and change coding preferences.")
+skills_app = typer.Typer(no_args_is_help=True, help="Manage versioned skills for the roles.")
+policy_app = typer.Typer(no_args_is_help=True, help="Show the security policy.")
 app.add_typer(fsm_app, name="fsm")
 app.add_typer(config_app, name="config")
 app.add_typer(llm_app, name="llm")
 app.add_typer(prefs_app, name="prefs")
+app.add_typer(skills_app, name="skills")
+app.add_typer(policy_app, name="policy")
 
 Db = Annotated[
     Path | None,
@@ -296,8 +301,9 @@ def _layers(repo: Path, pref: list[str] | None) -> list[Layer]:
 
 
 def _resolved(repo: Path, pref: list[str] | None) -> Resolved:
+    """The preferences as a run would use them: every layer, then the policy's locks."""
     try:
-        return resolve(_layers(repo, pref))
+        return policy.apply(resolve(_layers(repo, pref)), policy.load(repo.resolve()))
     except PreferenceError as exc:
         raise _fail(str(exc)) from exc
 
@@ -415,6 +421,41 @@ def prefs_add(
     typer.echo(f"added {preference_id} to {target}")
 
 
+@prefs_app.command(name="delete")
+def prefs_delete(
+    preference_id: Annotated[str, typer.Argument(metavar="ID")],
+    user: Annotated[bool, typer.Option("--user", help="Delete from your user layer.")] = False,
+    repo: Repo = Path("."),
+) -> None:
+    """Remove a preference from the repo layer (or --user), keeping the file's comments.
+
+    Refused if the preferences would no longer resolve without it. To switch off a built-in
+    preference, add `enforcement: off` for it in a layer instead."""
+    target = store.user_path() if user else repo.resolve() / store.REPO_FILE
+    try:
+        store.delete(
+            target, preference_id, others=_layers(repo, None), name="user" if user else "repo"
+        )
+    except PreferenceError as exc:
+        raise _fail(str(exc)) from exc
+    typer.echo(f"deleted {preference_id} from {target}")
+
+
+@prefs_app.command(name="export")
+def prefs_export(
+    output: Annotated[Path | None, typer.Option(help="Write here instead of stdout.")] = None,
+    repo: Repo = Path("."),
+    pref: Pref = None,
+) -> None:
+    """The resolved preferences, policy locks applied, as one complete layer document."""
+    text = store.export(_resolved(repo, pref))
+    if output is None:
+        typer.echo(text, nl=False)
+        return
+    output.write_text(text, encoding="utf-8")
+    typer.echo(f"wrote {output}")
+
+
 @prefs_app.command(name="lint")
 def prefs_lint(repo: Repo = Path("."), pref: Pref = None) -> None:
     """Problems resolution lets through: unchecked hard rules, checks that miss their examples."""
@@ -529,6 +570,148 @@ def _all_files(ctx: typer.Context, repo: Path) -> list[str]:
 
 
 # ---------- version and state machine
+
+
+# ---------- skills and the security policy (ADR-016)
+
+
+SkillLayer = Annotated[
+    str, typer.Option("--layer", help="repo (.msa/skills) or user (~/.config/msa/skills).")
+]
+
+
+def _layer(name: str) -> registry.LayerName:
+    if name not in {"repo", "user"}:
+        raise _fail(f"--layer {name!r}: expected repo or user")
+    return "repo" if name == "repo" else "user"
+
+
+def _registry(repo: Path) -> registry.Registry:
+    try:
+        return registry.Registry.load(repo.resolve())
+    except registry.SkillError as exc:
+        raise _fail(str(exc)) from exc
+
+
+def _policy(repo: Path) -> policy.Policy:
+    try:
+        return policy.load(repo.resolve())
+    except PreferenceError as exc:
+        raise _fail(str(exc)) from exc
+
+
+def _skill_settings(ctx: typer.Context) -> MsaConfig:
+    settings = _settings(ctx)
+    if settings is None:
+        raise _fail("skills are checked against msa.toml's capabilities: it is missing")
+    return settings
+
+
+@skills_app.command(name="list")
+def skills_list(repo: Repo = Path(".")) -> None:
+    """Every skill, its versions, the roles of its latest version, and where it lives."""
+    found = _registry(repo)
+    if not found.ids():
+        typer.echo("no skills")
+        return
+    for skill_id in found.ids():
+        try:
+            latest = found.latest(skill_id)
+        except registry.SkillError as exc:
+            typer.echo(f"{skill_id}: BROKEN: {exc}")
+            continue
+        roles = ", ".join(r.value for r in latest.roles)
+        versions = ", ".join(found.versions(skill_id))
+        typer.echo(f"{latest.reference}  [{roles}]  versions {versions}  {latest.source}")
+
+
+@skills_app.command(name="show")
+def skills_show(
+    reference: Annotated[str, typer.Argument(metavar="ID[@VERSION]")], repo: Repo = Path(".")
+) -> None:
+    """A skill as its roles see it, inheritance resolved."""
+    try:
+        skill = _registry(repo).lookup(reference)
+    except registry.SkillError as exc:
+        raise _fail(str(exc)) from exc
+    typer.echo(registry.render([skill]), nl=False)
+    tools = ", ".join(skill.allowed_tools) if skill.allowed_tools is not None else "any"
+    typer.echo(f"\nroles: {', '.join(r.value for r in skill.roles)}\ntools: {tools}")
+    typer.echo(f"lineage: {' -> '.join(skill.lineage)}\nsource: {skill.source}")
+
+
+@skills_app.command(name="add")
+def skills_add(
+    ctx: typer.Context,
+    file: Annotated[Path, typer.Argument(exists=True, dir_okay=False, help="The skill YAML.")],
+    layer: SkillLayer = "repo",
+    repo: Repo = Path("."),
+) -> None:
+    """Add a new skill version. Versions are immutable: to change one, add the next."""
+    settings = _skill_settings(ctx)
+    rules = _policy(repo)
+    try:
+        skill = registry.add(
+            repo.resolve(),
+            file.read_text(encoding="utf-8"),
+            layer=_layer(layer),
+            capabilities=settings.capabilities,
+            forbidden=rules.forbidden_tools,
+        )
+    except registry.SkillError as exc:
+        raise _fail(str(exc)) from exc
+    typer.echo(f"added {skill.reference} ({skill.source})")
+
+
+@skills_app.command(name="export")
+def skills_export(
+    reference: Annotated[str, typer.Argument(metavar="ID[@VERSION]")], repo: Repo = Path(".")
+) -> None:
+    """A skill, inheritance resolved, as a standalone document another repository can add."""
+    try:
+        typer.echo(registry.export(_registry(repo).lookup(reference)), nl=False)
+    except registry.SkillError as exc:
+        raise _fail(str(exc)) from exc
+
+
+@skills_app.command(name="delete")
+def skills_delete(
+    reference: Annotated[str, typer.Argument(metavar="ID@VERSION")],
+    layer: SkillLayer = "repo",
+    repo: Repo = Path("."),
+) -> None:
+    """Delete one version. Refused while another skill extends it."""
+    try:
+        path = registry.delete(repo.resolve(), reference, layer=_layer(layer))
+    except registry.SkillError as exc:
+        raise _fail(str(exc)) from exc
+    typer.echo(f"deleted {reference} ({path})")
+
+
+@skills_app.command(name="check")
+def skills_check(ctx: typer.Context, repo: Repo = Path(".")) -> None:
+    """Resolve every skill and check what each grants against capabilities and policy."""
+    settings = _skill_settings(ctx)
+    found = _registry(repo)
+    try:
+        found.validate(settings.capabilities, _policy(repo).forbidden_tools)
+    except registry.SkillError as exc:
+        raise _fail(str(exc)) from exc
+    typer.echo(f"ok: {len(found.entries)} skill version(s)")
+
+
+@policy_app.command(name="show")
+def policy_show(repo: Repo = Path(".")) -> None:
+    """The security policy in force: locked preferences and forbidden tools."""
+    rules = _policy(repo)
+    typer.echo(f"source: {rules.source}")
+    if not rules.locked and not rules.forbidden_tools:
+        typer.echo("no locks and no forbidden tools")
+    for lock in rules.locked:
+        why = f": {lock.reason}" if lock.reason else ""
+        typer.echo(f"locked {lock.id} = {lock.enforcement}{why}")
+    for role, tools in sorted(rules.forbidden_tools.items()):
+        typer.echo(f"forbidden for {role.value}: {', '.join(tools)}")
 
 
 @app.command()

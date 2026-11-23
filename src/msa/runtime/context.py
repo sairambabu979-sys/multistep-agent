@@ -14,6 +14,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from msa.agents.toolset import toolset
 from msa.config import MsaConfig, Role
 from msa.core.budget import NO_SPEND, Spend
 from msa.core.effects import Effect
@@ -25,12 +26,16 @@ from msa.llm.gateway import (
     InvocationFailed,
     InvocationRefused,
     InvocationResult,
+    Tool,
     Turn,
 )
 from msa.runtime.artifacts import RunFiles
 from msa.runtime.worktree import RunWorktree
+from msa.skills.policy import Policy
 from msa.skills.preferences import Resolved
 from msa.skills.preferences.render import render
+from msa.skills.registry import Registry, allowed_tools
+from msa.skills.registry import render as render_skills
 from msa.tools.audit import Violation, log_violation
 from msa.tools.capabilities import WritePolicy
 from msa.tools.paths import Root
@@ -49,9 +54,14 @@ class RunContext:
     base_worktree: RunWorktree  # scratch, for running acceptance tests against the base
     repro_worktree: RunWorktree  # scratch, where the Tester writes repro tests at the head
     files: RunFiles
-    preferences: Callable[[], Resolved]  # resolved at INTAKE, or again on resume
+    preferences: Callable[[], Resolved]  # resolved at VALIDATING, or again on resume
     on_violation: Callable[[Violation], None] = log_violation
+    # Read from the user's repository and user layer, never from a worktree: no agent can
+    # add a skill or loosen the policy (ADR-016).
+    skills: Callable[[], Registry] = Registry.empty
+    policy: Callable[[], Policy] = Policy
     _block: dict[TreeHash, str] = field(default_factory=dict)
+    _guidance: dict[Role, str] = field(default_factory=dict)
 
     # ---------- the tool layer, bound to one worktree for one role
 
@@ -66,7 +76,27 @@ class RunContext:
         policy = WritePolicy(role, self.config.capabilities, root.case_insensitive)
         return Workspace(root, policy, self.config.sandbox, on_violation=self.on_violation)
 
+    def tools(self, role: Role, *, worktree: RunWorktree | None = None) -> tuple[Tool[Any], ...]:
+        """The role's tools: narrowed by its skills, and never one the policy forbids it."""
+        tools = toolset(
+            self.workspace(role, worktree=worktree), self.sandbox(role, worktree=worktree)
+        )
+        allowed = allowed_tools(self.skills().for_role(role))
+        forbidden = set(self.policy().forbids(role))
+        return tuple(
+            t for t in tools if (allowed is None or t.name in allowed) and t.name not in forbidden
+        )
+
     # ---------- prompt inputs that must be byte-stable for the run
+
+    async def guidance(self, role: Role) -> str:
+        """The system prompt's tail for ``role``: the preference block, then the role's
+        skills. Byte-stable for the run, like each part."""
+        preferences = await self.preference_block()
+        if role not in self._guidance:
+            self._guidance[role] = render_skills(self.skills().for_role(role))
+        skills = self._guidance[role]
+        return "\n".join(part for part in (preferences, skills) if part)
 
     async def preference_block(self) -> str:
         """The preferences that apply to the base tree's files, rendered once per run."""

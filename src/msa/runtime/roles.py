@@ -31,7 +31,6 @@ from pydantic import BaseModel
 
 from msa.agents import coder, planner, tester
 from msa.agents.schemas import ImplementationSummary, Plan
-from msa.agents.toolset import toolset
 from msa.config import Role
 from msa.core.effects import (
     AuthorAcceptanceTests,
@@ -71,9 +70,9 @@ class PlannerExecutor:
         invocation = planner.invocation(
             task=ctx.task,
             files=await ctx.worktree.files(await ctx.worktree.base_tree()),
-            preferences=await ctx.preference_block(),
+            preferences=await ctx.guidance(role),
             feedback=command.feedback,
-            tools=toolset(ctx.workspace(role), ctx.sandbox(role)),
+            tools=ctx.tools(role),
             budget_usd_micros=reservation(effect),
             key=effect.id,
             max_files=ctx.config.agents.repo_map_max_paths,
@@ -110,7 +109,7 @@ class CoderExecutor:
         invocation = coder.implement(
             task=ctx.task,
             plan=plan,
-            preferences=await ctx.preference_block(),
+            preferences=await ctx.guidance(Role.CODER),
             tools=self._tools(),
             budget_usd_micros=reservation(effect),
             key=effect.id,
@@ -134,7 +133,7 @@ class CoderExecutor:
         if not ctx.has_paid_turns(effect):
             await ctx.worktree.reset(command.tree)
             self._place_repro_tests(command.findings)
-        plan, preferences = Plan.model_validate_json(stored), await ctx.preference_block()
+        plan, preferences = Plan.model_validate_json(stored), await ctx.guidance(Role.CODER)
         budget, turns = reservation(effect), ctx.config.agents.coder_max_turns
         if command.findings:
             invocation = coder.revise_findings(
@@ -168,7 +167,7 @@ class CoderExecutor:
 
     def _tools(self) -> tuple[Tool[Any], ...]:
         ctx = self.context
-        return toolset(ctx.workspace(Role.CODER), ctx.sandbox(Role.CODER))
+        return ctx.tools(Role.CODER)
 
     def _place_repro_tests(self, finding_ids: Sequence[str]) -> None:
         """The harness writes them, not the Coder: they are the Tester's files."""
@@ -215,8 +214,8 @@ class TesterExecutor:
         invocation = tester.author(
             task=ctx.task,
             plan=Plan.model_validate_json(ctx.files.get(command.plan.digest)),
-            preferences=await ctx.preference_block(),
-            tools=toolset(ctx.workspace(role, worktree=mine), ctx.sandbox(role, worktree=mine)),
+            preferences=await ctx.guidance(role),
+            tools=ctx.tools(role, worktree=mine),
             budget_usd_micros=reservation(effect),
             key=effect.id,
             max_turns=ctx.config.agents.tester_max_turns,
@@ -244,9 +243,9 @@ class TesterExecutor:
         invocation = tester.revise(
             task=ctx.task,
             plan=Plan.model_validate_json(stored),
-            preferences=await ctx.preference_block(),
+            preferences=await ctx.guidance(role),
             failure_report=ctx.files.text(command.failure_report),
-            tools=toolset(ctx.workspace(role), ctx.sandbox(role)),
+            tools=ctx.tools(role),
             budget_usd_micros=reservation(effect),
             key=effect.id,
             max_turns=ctx.config.agents.tester_max_turns,

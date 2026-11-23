@@ -7,7 +7,7 @@ a model:
 - **It stays in scope**: every changed path is one the Coder or the Tester may write, and
   none is protected. The tool layer already enforced this on every write; this checks the
   result, whatever produced it.
-- **It holds no secret**: the whole patch is scanned again (``msa.tools.secrets``).
+- **It holds no secret**: the whole patch is scanned again (``msa.secrets``).
 - **Every gate's record names this tree**: static analysis, unit tests, integration tests
   and the security review each recorded a pass for exactly the tree being released. The
   core already refuses to get here otherwise; the run files must agree with the journal.
@@ -47,8 +47,8 @@ from msa.runtime.context import RunContext
 from msa.runtime.intake import base_commit
 from msa.runtime.review import FINDINGS, RULINGS
 from msa.runtime.worktree import GitError, git
+from msa.secrets import scan_lines
 from msa.tools.capabilities import WritePolicy
-from msa.tools.secrets import scan_lines
 
 PR_FILE = "pr.md"
 TITLE_LIMIT = 72

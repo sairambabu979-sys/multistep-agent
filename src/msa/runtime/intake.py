@@ -5,8 +5,9 @@
   holds worktrees and may be waiting on a person). Denied runs fail with the reason.
 - **Validation** (``validate_request``): the task holds no secret (it is journaled and
   sent to the model); the preferences resolve, with no two hard preferences in conflict
-  (I-16); the root is a git repository with a commit to start from. A rejection names
-  what to fix.
+  (I-16), and the security policy's locks applied over them; every skill resolves and
+  grants no role a tool it may not have (ADR-016); the root is a git repository with a
+  commit to start from. A rejection names what to fix.
 - **Context** (``load_context``): the base commit and tree, the run's worktrees at that
   tree, and the repository map, stored as ``context.json``. Evidence is bound to tree
   hashes, so a run starts from a committed state: ``HEAD^{tree}``.
@@ -23,7 +24,7 @@ from collections.abc import Callable, Sequence
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from msa.config import AdmissionConfig
+from msa.config import AdmissionConfig, MsaConfig
 from msa.core.effects import AdmitRun, Effect, LoadContext, ValidateRequest
 from msa.core.events import (
     AnyEvent,
@@ -37,9 +38,11 @@ from msa.core.ids import TREE_HASH_PATTERN, RunId, TreeHash
 from msa.core.values import Limits
 from msa.runtime.artifacts import RunFiles
 from msa.runtime.worktree import RunWorktree
-from msa.skills.preferences import PreferenceError, Resolved, store
+from msa.secrets import scan
+from msa.skills import policy
+from msa.skills.preferences import PreferenceError, Resolved
+from msa.skills.registry import Registry, SkillError
 from msa.tools.sandbox import LocalSandbox
-from msa.tools.secrets import scan
 
 _TREE = re.compile(TREE_HASH_PATTERN)
 _GIT = ["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null"]
@@ -114,12 +117,14 @@ class ValidationExecutor:
         task: str,
         overrides: Sequence[str] = (),
         load: Callable[[Path, Sequence[str]], Resolved] | None = None,
+        config: MsaConfig | None = None,
     ) -> None:
         self.root = root
         self.sandbox = sandbox
         self.task = task
         self.overrides = tuple(overrides)
-        self._load = load or store.load
+        self._load = load or policy.preferences
+        self.config = config  # with it, the skills are validated too
         self.resolved: Resolved | None = None  # the run's preferences, once validated
 
     async def execute(self, effect: Effect, *, now: datetime) -> AnyEvent:
@@ -133,6 +138,12 @@ class ValidationExecutor:
             resolved = self._load(self.root, self.overrides)
         except PreferenceError as exc:
             return RequestRejected(at=now, effect_id=effect.id, reason=f"preferences: {exc}")
+        if self.config is not None:
+            try:
+                rules = policy.load(self.root)
+                Registry.load(self.root).validate(self.config.capabilities, rules.forbidden_tools)
+            except (SkillError, PreferenceError) as exc:
+                return RequestRejected(at=now, effect_id=effect.id, reason=f"skills: {exc}")
         if await base_tree(self.sandbox) is None:
             reason = "the root is not a git repository with a commit to start from"
             return RequestRejected(at=now, effect_id=effect.id, reason=reason)

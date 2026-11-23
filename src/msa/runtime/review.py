@@ -37,7 +37,6 @@ from msa.agents.schemas import (
     ReviewFinding,
     RulingVerdict,
 )
-from msa.agents.toolset import toolset
 from msa.config import Role
 from msa.core.effects import Effect, RequestArbitration, RequestReview, RunNegotiationRound
 from msa.core.events import (
@@ -206,7 +205,7 @@ class ReviewExecutor:
         invocation = reviewer.review(
             task=ctx.task,
             plan=_plan(ctx),
-            preferences=await ctx.preference_block(),
+            preferences=await ctx.guidance(role),
             test_report=ctx.files.text(Digest(tests[-1]["report"])) if tests else "(none)",
             changed=render_lines(change),
             earlier=(
@@ -216,7 +215,7 @@ class ReviewExecutor:
                 if previous
                 else None
             ),
-            tools=toolset(ctx.workspace(role), ctx.sandbox(role)),
+            tools=ctx.tools(role),
             budget_usd_micros=reservation(effect),
             key=effect.id,
             max_turns=ctx.config.agents.reviewer_max_turns,
@@ -276,14 +275,14 @@ class NegotiationExecutor:
         records = findings(ctx)
         open_ids = list(command.findings)
         purse = Purse(reservation(effect))
-        plan, preferences = _plan(ctx), await ctx.preference_block()
+        plan = _plan(ctx)
 
         author = coder.respond(
             task=ctx.task,
             plan=plan,
-            preferences=preferences,
+            preferences=await ctx.guidance(Role.CODER),
             findings="\n\n".join(_with_history(ctx, records[f]) for f in open_ids),
-            tools=toolset(ctx.workspace(Role.CODER), ctx.sandbox(Role.CODER)),
+            tools=ctx.tools(Role.CODER),
             budget_usd_micros=purse.left,
             key=f"{effect.id}:author",
             max_turns=ctx.config.agents.author_max_turns,
@@ -299,9 +298,9 @@ class NegotiationExecutor:
             reply = reviewer.reply(
                 task=ctx.task,
                 plan=plan,
-                preferences=preferences,
+                preferences=await ctx.guidance(Role.REVIEWER),
                 contested="\n\n".join(_contest(records[f], chosen[f]) for f in to_reply),
-                tools=toolset(ctx.workspace(Role.REVIEWER), ctx.sandbox(Role.REVIEWER)),
+                tools=ctx.tools(Role.REVIEWER),
                 budget_usd_micros=purse.left,
                 key=f"{effect.id}:reviewer",
                 max_turns=ctx.config.agents.reviewer_max_turns,
@@ -394,12 +393,10 @@ class ArbitrationExecutor:
         invocation = tester.repro(
             task=ctx.task,
             plan=_plan(ctx),
-            preferences=await ctx.preference_block(),
+            preferences=await ctx.guidance(role),
             dispute=_with_history(ctx, record),
             path=path,
-            tools=toolset(
-                ctx.workspace(role, worktree=scratch), ctx.sandbox(role, worktree=scratch)
-            ),
+            tools=ctx.tools(role, worktree=scratch),
             budget_usd_micros=purse.left,
             key=key,
             max_turns=ctx.config.agents.repro_max_turns,
@@ -453,7 +450,7 @@ class ArbitrationExecutor:
         invocation = arbiter.rule(
             task=ctx.task,
             plan=_plan(ctx),
-            preferences=await ctx.preference_block(),
+            preferences=await ctx.guidance(Role.ARBITER),
             disputes="\n\n".join(self._dispute(r) for r in records),
             budget_usd_micros=purse.left,
             key=f"{effect.id}:arbiter",

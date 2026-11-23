@@ -51,7 +51,6 @@ from xml.etree import ElementTree
 
 from msa.agents import tester
 from msa.agents.schemas import Plan, TriageKind
-from msa.agents.toolset import toolset
 from msa.config import Role
 from msa.core.effects import Effect, RunUnitTests
 from msa.core.events import AnyEvent, UnitTestsFailed, UnitTestsPassed
@@ -462,9 +461,9 @@ class TestSuiteExecutor:
         invocation = tester.triage(
             task=ctx.task,
             plan=Plan.model_validate_json(stored),
-            preferences=await ctx.preference_block(),
+            preferences=await ctx.guidance(role),
             failure_report=draft,
-            tools=toolset(ctx.workspace(role), ctx.sandbox(role)),
+            tools=ctx.tools(role),
             budget_usd_micros=reservation(effect),
             key=effect.id,
             max_turns=ctx.config.agents.triage_max_turns,

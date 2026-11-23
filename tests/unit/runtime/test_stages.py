@@ -518,3 +518,72 @@ def test_publishing_never_moves_a_branch_that_holds_something_else(run: RunConte
     with pytest.raises(RuntimeError, match="already exists and holds another change"):
         asyncio.run(PublishExecutor(run).execute(publish, now=T0))
     assert git(repo, "rev-parse", "aegis/run-1") == git(repo, "rev-parse", "HEAD")
+
+
+# ---------- paths that block or refuse, rather than pass
+
+
+FLAKY = """from pathlib import Path
+
+
+def test_sometimes() -> None:
+    marker = Path(__file__).with_name("ran-once")
+    if not marker.exists():
+        marker.write_text("x")
+        raise AssertionError("first run fails")
+"""
+
+
+def test_a_flaky_integration_test_blocks_and_is_never_blamed_on_the_change(
+    run: RunContext,
+) -> None:
+    (run.worktree.path / ".gitignore").write_text("ran-once\n")
+    tree = change(run, {"tests/integration/test_flaky.py": FLAKY})
+    answer = _integrate(run, tree)
+    assert isinstance(answer, IntegrationTestsFailed)
+    assert (answer.triage.kind, answer.triage.owner) == (FailureKind.ENVIRONMENT, None)
+    report = run.files.text(answer.report)
+    assert "## Flaky: mixed results when rerun alone" in report
+    assert "tests/integration/test_flaky.py::test_sometimes" in report
+
+
+def test_an_integration_suite_that_cannot_run_blocks(run: RunContext) -> None:
+    broken = "raise RuntimeError('the fixture database is gone')\n"
+    tree = change(
+        run,
+        {"tests/integration/conftest.py": broken, "tests/integration/test_a.py": INTEGRATION_TEST},
+    )
+    answer = _integrate(run, tree)
+    assert isinstance(answer, IntegrationTestsFailed)
+    assert answer.triage.owner is None
+    assert "cannot run" in run.files.text(answer.report)
+
+
+@pytest.mark.parametrize(("command", "expected"), [("true", True), ("false", False)])
+def test_a_dependency_audit_gates_a_manifest_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: str, expected: bool
+) -> None:
+    monkeypatch.setenv("MSA_USER_PREFERENCES", str(tmp_path / "none.yaml"))
+    audited = base_config().security.model_copy(update={"audit_command": (command,)})
+    ctx = _context(tmp_path, security=audited)
+    pyproject = (ctx.worktree.path / "pyproject.toml").read_text(encoding="utf-8")
+    tree = change(ctx, {"pyproject.toml": pyproject + "\n# a new dependency\n"})
+    answer = asyncio.run(
+        SecurityExecutor(ctx).execute(effect(RunSecurityReview(tree=tree)), now=T0)
+    )
+    assert isinstance(answer, SecurityReviewPassed if expected else SecurityReviewFailed)
+    report = ctx.files.text(answer.report)
+    assert "## Dependency audit" in report
+    if not expected:
+        assert "dependency audit: `false` failed" in report
+
+
+def test_a_path_no_role_may_write_is_never_released(run: RunContext) -> None:
+    _with_context(run)
+    tree = change(run, {".msa/notes.txt": "who put this here\n", "src/ok.py": "X = 1\n"})
+    _passed_gates(run, tree)
+    answer = _verify(run, tree)
+    assert isinstance(answer, ReleaseVerificationFailed)
+    assert "Paths no role may write were changed: `.msa/notes.txt`." in run.files.text(
+        answer.report
+    )

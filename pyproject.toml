@@ -211,6 +211,6 @@ layers = [
     "msa.llm",
     "msa.skills | msa.tools | msa.observability",
     "msa.config",
-    "msa.globs",
+    "msa.globs | msa.secrets",
     "msa.core",
 ]

@@ -37,6 +37,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable, Sequence
 from datetime import datetime
+from functools import cache
 from pathlib import Path
 from typing import Literal
 
@@ -86,7 +87,10 @@ from msa.runtime.security import SecurityExecutor
 from msa.runtime.testing import TestSuiteExecutor
 from msa.runtime.verify import VerifyExecutor
 from msa.runtime.worktree import RunWorktree
-from msa.skills.preferences import Resolved, store
+from msa.skills import policy
+from msa.skills.policy import Policy
+from msa.skills.preferences import Resolved
+from msa.skills.registry import Registry
 from msa.tools.audit import Violation, log_violation
 from msa.tools.paths import Root
 from msa.tools.sandbox import LocalSandbox
@@ -274,7 +278,15 @@ def context(
     def preferences() -> Resolved:
         # Resolved by VALIDATING; after a resume that skipped it, resolved again from the
         # same layers (an edit to a layer file between crash and resume is picked up).
-        return validation.resolved or store.load(repo, environment.overrides)
+        return validation.resolved or policy.preferences(repo, environment.overrides)
+
+    @cache
+    def skills() -> Registry:
+        return Registry.load(repo)
+
+    @cache
+    def security() -> Policy:
+        return policy.load(repo)
 
     return RunContext(
         run_id=run_id,
@@ -288,6 +300,8 @@ def context(
         files=RunFiles.for_run(state_dir, run_id),
         preferences=preferences,
         on_violation=on_violation,
+        skills=skills,
+        policy=security,
     )
 
 
@@ -344,7 +358,7 @@ def interpreter(
     repo = Path(environment.repo)
     sandbox = LocalSandbox(Root.at(repo), config.sandbox, role="intake", on_violation=on_violation)
     validation = ValidationExecutor(
-        repo, sandbox, task=environment.task, overrides=environment.overrides
+        repo, sandbox, task=environment.task, overrides=environment.overrides, config=config
     )
     run = context(
         environment,

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from msa.tools.secrets import entropy, redact, scan, scan_lines
+from msa.secrets import entropy, redact, scan, scan_lines
 
 # Built at runtime so this file itself never contains a scannable credential.
 AWS = "AKIA" + "Q3EGX7PLMR2TBN5W"

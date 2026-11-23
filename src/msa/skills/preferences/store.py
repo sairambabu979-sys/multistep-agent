@@ -127,6 +127,48 @@ def add(
     return resolved
 
 
+def delete(
+    path: Path,
+    preference_id: str,
+    *,
+    others: Sequence[Layer],
+    name: LayerName = "repo",
+) -> Resolved:
+    """Remove ``preference_id``'s entry from the layer file at ``path``, keeping its
+    comments. Refused if the layer does not hold it, or if the layers would no longer
+    resolve without it (another layer may patch fields only this one completes)."""
+    if not path.exists():
+        raise PreferenceError(f"{path} does not exist")
+    yaml = _round_trip()
+    document: Any = yaml.load(path.read_text(encoding="utf-8"))
+    entries = (document or {}).get("preferences") or []
+    kept = [entry for entry in entries if entry.get("id") != preference_id]
+    if len(kept) == len(entries):
+        raise PreferenceError(f"{preference_id} is not in {path}")
+    document["preferences"] = kept
+    out = io.StringIO()
+    yaml.dump(document, out)
+    text = out.getvalue()
+    layer = Layer.from_document(name, str(path), _safe().load(text))
+    resolved = resolve([*(o for o in others if o.name != name), layer])
+    _write_atomic(path, text)
+    return resolved
+
+
+def export(resolved: Resolved) -> str:
+    """The resolved set as one complete layer document: it can be used as a layer
+    elsewhere, or kept as a record of what a run applied."""
+    document = {
+        "version": SCHEMA_VERSION,
+        "preferences": [
+            p.model_dump(mode="json", exclude_defaults=True) for p in resolved.preferences
+        ],
+    }
+    out = io.StringIO()
+    _round_trip().dump(document, out)
+    return out.getvalue()
+
+
 def _write_atomic(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")

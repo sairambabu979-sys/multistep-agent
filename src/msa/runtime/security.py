@@ -3,7 +3,7 @@
 ``run_security_review(tree)`` looks only at what the run changed from the base tree, so a
 repository's existing debt never blocks a run, and nothing the run adds escapes:
 
-1. **Secrets** in any added line, in any file, the Tester's included (``msa.tools.secrets``).
+1. **Secrets** in any added line, in any file, the Tester's included (``msa.secrets``).
    Always blocking.
 2. **Insecure code** in the added lines of Python files, found in the syntax tree, never by
    matching text: ``eval``/``exec``, shell commands (``shell=True``, ``os.system``,
@@ -38,7 +38,7 @@ from msa.core.events import AnyEvent, SecurityReviewFailed, SecurityReviewPassed
 from msa.core.values import Owner
 from msa.runtime.context import RunContext
 from msa.runtime.verify import removed_section
-from msa.tools.secrets import scan_lines
+from msa.secrets import scan_lines
 
 type Severity = Literal["critical", "high", "medium"]
 BLOCKING: frozenset[str] = frozenset({"critical", "high"})

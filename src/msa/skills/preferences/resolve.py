@@ -23,6 +23,7 @@ from typing import Any, Literal
 from pydantic import ValidationError
 
 from msa import globs
+from msa.secrets import scan
 from msa.skills.preferences.schema import Document, Preference, Scope
 
 type LayerName = Literal["built-in", "user", "repo", "run"]
@@ -59,7 +60,29 @@ class Layer:
                 f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}" for e in exc.errors()
             )
             raise PreferenceError(f"{source}: {problems}") from None
-        return cls(name, source, {p.id: p.fields() for p in document.preferences})
+        patches = {p.id: p.fields() for p in document.preferences}
+        if leaks := [
+            f"{key}: {m.rule} ({m.redacted})"
+            for key, fields in patches.items()
+            for text in _strings(fields)
+            for m in scan(text)
+        ]:
+            raise PreferenceError(
+                f"{source}: holds what looks like a secret ({'; '.join(leaks)}). Preferences "
+                "are sent to the model and stored: refer to credentials by name, never by value."
+            )
+        return cls(name, source, patches)
+
+
+def _strings(value: object) -> Iterable[str]:
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, Mapping):
+        for item in value.values():
+            yield from _strings(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _strings(item)
 
 
 def merge(lower: Mapping[str, Fields], higher: Mapping[str, Fields]) -> Patches:

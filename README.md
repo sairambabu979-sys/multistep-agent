@@ -9,9 +9,9 @@ negotiation with executable arbitration → release verification → a person ap
 a local branch, all shaped by a layered preferences skill.
 
 **Status.** The core workflow, every stage's executor, the human gates (plan, ruling,
-release, unblock, pause) and the CLI are built and tested end to end, with only the model
-scripted. Not yet built: the HTTP service, the web workbench, the skills registry, and the
-Temporal and Postgres backends ([ADR-015](docs/adr/015-aegis-architecture.md)). **No model
+release, unblock, pause), the skills registry and security policy, and the CLI are built
+and tested end to end, with only the model scripted. Not yet built: the HTTP service, the
+web workbench, and the Temporal and Postgres backends ([ADR-015](docs/adr/015-aegis-architecture.md)). **No model
 has run any of it yet**: the first live run needs `ANTHROPIC_API_KEY`.
 
 The full design is in [`docs/PLAN.md`](docs/PLAN.md), decisions are in
@@ -239,6 +239,28 @@ uv run msa prefs explain src/app.py:42
 
 ```bash
 uv run msa prefs check
+```
+
+**Skills** (`src/msa/skills/registry.py`, [ADR-016](docs/adr/016-skills-and-security-policy.md))
+are versioned instructions for a role: how this repository writes migrations, say, with the
+tools that takes and what it hands back. A role's skills join its system prompt and narrow
+its tools. Versions are immutable, and a skill that extends another can only narrow it:
+
+```bash
+uv run msa skills add migrations.yaml
+```
+
+```bash
+uv run msa skills show py.migrations
+```
+
+**The security policy** (`.msa/policy.yaml`) outranks every preference and every skill: a
+locked preference keeps its enforcement whatever a layer or `--pref` says, and a forbidden
+tool is never offered to that role. Skills, preferences and the policy all refuse to store
+anything that looks like a secret.
+
+```bash
+uv run msa policy show
 ```
 
 ## How it's verified
