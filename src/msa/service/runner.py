@@ -11,24 +11,23 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
-from pathlib import Path
 from typing import Any
 
 from msa.core import RunState
 from msa.core.ids import Digest, RunId
 from msa.core.values import Limits
 from msa.runtime.interpreter import Interpreter
-from msa.runtime.journal import SqliteJournal
+from msa.runtime.journal import SqlJournal
 
 # (run, its stored environment, the journal) -> an interpreter for it, open while in use
 type Factory = Callable[
-    [RunId, dict[str, Any], SqliteJournal], AbstractAsyncContextManager[Interpreter]
+    [RunId, dict[str, Any], SqlJournal], AbstractAsyncContextManager[Interpreter]
 ]
 
 
 class Runner:
-    def __init__(self, journal_path: Path, factory: Factory) -> None:
-        self.journal_path = journal_path
+    def __init__(self, journal: Callable[[], SqlJournal], factory: Factory) -> None:
+        self.journal = journal  # opens a connection to the run journal
         self.factory = factory
         self._tasks: dict[RunId, asyncio.Task[RunState]] = {}
         self.errors: dict[RunId, str] = {}
@@ -67,7 +66,7 @@ class Runner:
             self.errors[run_id] = f"{type(error).__name__}: {error}"
 
     async def _resume(self, run_id: RunId) -> RunState:
-        with SqliteJournal(self.journal_path) as journal:
+        with self.journal() as journal:
             environment = journal.environment(run_id)
             async with self.factory(run_id, environment, journal) as interpreter:
                 return await interpreter.resume(run_id)
@@ -75,7 +74,7 @@ class Runner:
     async def _start(
         self, run_id: RunId, task_digest: Digest, limits: Limits, environment: dict[str, Any]
     ) -> RunState:
-        with SqliteJournal(self.journal_path) as journal:
+        with self.journal() as journal:
             async with self.factory(run_id, environment, journal) as interpreter:
                 return await interpreter.start(
                     run_id=run_id, task_digest=task_digest, limits=limits, environment=environment

@@ -142,3 +142,35 @@ def test_missing_and_malformed_files_are_reported(tmp_path: Path) -> None:
         load_config(tmp_path / "absent.toml")
     with pytest.raises(ConfigError, match="invalid TOML"):
         load_config(write(tmp_path, "[models\n"))
+
+
+@pytest.mark.parametrize(
+    ("url", "problem"),
+    [
+        ("postgresql://msa@db.internal:5432/runs", None),
+        ("postgres://db.internal/runs", None),
+        ("postgresql://msa:hunter2@db.internal/runs", "holds a password"),
+        ("mysql://db.internal/runs", "starts with postgresql://"),
+    ],
+)
+def test_a_postgres_journal_url_may_not_hold_a_password(
+    tmp_path: Path, url: str, problem: str | None
+) -> None:
+    text = COMMITTED.read_text(encoding="utf-8")
+    old = "[journal]\n"
+    assert old in text
+    path = write(tmp_path, text.replace(old, f'{old}url = "{url}"\nschema_name = "aegis"\n', 1))
+    if problem is None:
+        journal = load_config(path).journal
+        assert (journal.url, journal.schema_name) == (url, "aegis")
+        return
+    with pytest.raises(ConfigError, match=problem) as caught:
+        load_config(path)
+    assert "hunter2" not in str(caught.value)  # the refusal never repeats the password
+
+
+def test_a_journal_schema_must_be_a_plain_identifier(tmp_path: Path) -> None:
+    text = COMMITTED.read_text(encoding="utf-8")
+    old = "[journal]\n"
+    with pytest.raises(ConfigError, match="schema_name"):
+        load_config(write(tmp_path, text.replace(old, f'{old}schema_name = "a; DROP"\n', 1)))

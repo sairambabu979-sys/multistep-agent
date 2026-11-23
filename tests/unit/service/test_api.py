@@ -7,8 +7,10 @@ run, so each gate is answered here through the API."""
 from __future__ import annotations
 
 import time
+import uuid
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -27,12 +29,13 @@ from msa.core.ids import RunId
 from msa.core.values import FailureKind, Severity, Triage
 from msa.runtime.clock import LogicalClock
 from msa.runtime.interpreter import Interpreter, Parked
-from msa.runtime.journal import SqliteJournal
+from msa.runtime.journal import SqlJournal
 from msa.runtime.simulation import Profile, SimulatedEnvironment, SimulationConfig
 from msa.service.app import Settings, create_app
 from msa.service.tokens import Role, TokenError, TokenStore
 from tests.support.driver import Driver
 from tests.support.factory import BUILD, digest, finding, limits
+from tests.support.journals import BACKENDS, POSTGRES_URL, drop_schema, needs_postgres
 
 HAPPY = SimulationConfig(seed=0, profile=Profile.HAPPY)
 
@@ -50,9 +53,7 @@ class People:
 
 
 @asynccontextmanager
-async def parking(
-    _: RunId, __: dict[str, Any], journal: SqliteJournal
-) -> AsyncIterator[Interpreter]:
+async def parking(_: RunId, __: dict[str, Any], journal: SqlJournal) -> AsyncIterator[Interpreter]:
     yield Interpreter(journal, People(), clock=LogicalClock())
 
 
@@ -69,11 +70,25 @@ def tokens(state_dir: Path) -> dict[str, str]:
     return {role.name.lower(): store.issue(f"{role.name.lower()}-person", role) for role in Role}
 
 
-@pytest.fixture
-def api(state_dir: Path, tmp_path: Path) -> Iterator[TestClient]:
+@pytest.fixture(params=BACKENDS)
+def settings(request: pytest.FixtureRequest, state_dir: Path, tmp_path: Path) -> Iterator[Settings]:
+    """The service's settings, with the journal on each backend in turn."""
     repo = tmp_path / "repo"
     repo.mkdir()
-    settings = Settings(repo=repo, state_dir=state_dir, poll_seconds=0.01, clock=LogicalClock())
+    base = Settings(repo=repo, state_dir=state_dir, poll_seconds=0.01, clock=LogicalClock())
+    if request.param == "sqlite":
+        yield base
+        return
+    needs_postgres()
+    schema = f"msa_test_{uuid.uuid4().hex[:12]}"
+    try:
+        yield replace(base, journal_url=POSTGRES_URL, journal_schema=schema)
+    finally:
+        drop_schema(schema)
+
+
+@pytest.fixture
+def api(settings: Settings) -> Iterator[TestClient]:
     with TestClient(create_app(settings, factory=parking)) as client:
         yield client
 
@@ -103,9 +118,9 @@ def start(api: TestClient, token: str, run_id: str = "r1") -> dict[str, Any]:
     return wait_until_parked(api, token, run_id)
 
 
-def journaled(state_dir: Path, d: Driver) -> None:
+def journaled(settings: Settings, d: Driver) -> None:
     """A run with ``d``'s history, as if it had been driven to here."""
-    with SqliteJournal(state_dir / "runs.db") as journal:
+    with settings.open_journal() as journal:
         journal.create(HAPPY.model_dump(mode="json"), d.events[0], d.steps[0].state)  # type: ignore[arg-type]
         for event, step in zip(d.events[1:], d.steps[1:], strict=True):
             journal.append(event, step.state, snapshot=False)
@@ -223,7 +238,7 @@ def test_answers_the_run_is_not_waiting_for_are_refused_by_the_core(
 
 
 def test_an_unblock_reruns_the_stage(
-    api: TestClient, tokens: dict[str, str], state_dir: Path
+    api: TestClient, tokens: dict[str, str], settings: Settings
 ) -> None:
     d = Driver(YEARS, run_id="b1")
     d.intake()
@@ -238,7 +253,7 @@ def test_an_unblock_reruns_the_stage(
         triage=Triage(kind=FailureKind.ENVIRONMENT, owner=None),
         report=digest("no db"),
     )
-    journaled(state_dir, d)
+    journaled(settings, d)
     response = api.post(
         "/api/runs/b1/unblock", json={"note": "started it"}, headers=auth(tokens["operator"])
     )
@@ -248,14 +263,14 @@ def test_an_unblock_reruns_the_stage(
 
 
 def test_a_dispute_is_ruled_on_through_the_api(
-    api: TestClient, tokens: dict[str, str], state_dir: Path
+    api: TestClient, tokens: dict[str, str], settings: Settings
 ) -> None:
     d = Driver(YEARS, run_id="d1")
     d.to_review()
     d.review(finding("c0-1", Severity.BLOCKER))
     d.complete(RunNegotiationRound, NegotiationRoundCompleted, resolutions=())
     d.complete(RequestArbitration, ArbitrationRuled, resolutions=())
-    journaled(state_dir, d)
+    journaled(settings, d)
     bad = api.post(
         "/api/runs/d1/rule",
         json={"verdicts": {"c0-1": "accepted"}},
@@ -272,11 +287,11 @@ def test_a_dispute_is_ruled_on_through_the_api(
 
 
 def test_pause_and_resume_through_the_api(
-    api: TestClient, tokens: dict[str, str], state_dir: Path
+    api: TestClient, tokens: dict[str, str], settings: Settings
 ) -> None:
     d = Driver(YEARS, run_id="p1")
     d.intake()
-    journaled(state_dir, d)
+    journaled(settings, d)
     paused = api.post(
         "/api/runs/p1/pause", json={"reason": "freeze"}, headers=auth(tokens["operator"])
     )

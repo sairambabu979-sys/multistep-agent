@@ -45,7 +45,7 @@ from msa.runtime.artifacts import RunFiles, digest_of
 from msa.runtime.clock import Clock, LogicalClock, SystemClock
 from msa.runtime.intake import secrets_in_task
 from msa.runtime.interpreter import Interpreter, Observer
-from msa.runtime.journal import JournalConflict, SqliteJournal, UnknownRun
+from msa.runtime.journal import JournalConflict, SqlJournal, UnknownRun, open_journal
 from msa.runtime.simulation import Profile, SimulatedEnvironment, SimulationConfig
 from msa.runtime.telemetry import Traced
 from msa.service.audit import AuditLog, Entry
@@ -81,10 +81,15 @@ class Settings:
     poll_seconds: float = 0.5
     heartbeat_seconds: float = 15.0
     clock: Clock = field(default_factory=SystemClock)
+    journal_url: str | None = None  # the journal in PostgreSQL; else runs.db in state_dir
+    journal_schema: str = "msa"
 
     @property
     def journal_path(self) -> Path:
         return self.state_dir / "runs.db"
+
+    def open_journal(self) -> SqlJournal:
+        return open_journal(self.journal_path, self.journal_url, schema=self.journal_schema)
 
 
 @dataclass
@@ -95,8 +100,8 @@ class Service:
     runner: Runner
 
     @contextmanager
-    def journal(self) -> Iterator[SqliteJournal]:
-        with SqliteJournal(self.settings.journal_path) as opened:
+    def journal(self) -> Iterator[SqlJournal]:
+        with self.settings.open_journal() as opened:
             yield opened
 
     def files(self, run_id: str) -> RunFiles:
@@ -199,7 +204,7 @@ def act(
     raise HTTPException(status, detail)
 
 
-def summary(svc: Service, run_id: RunId, opened: SqliteJournal) -> dict[str, Any]:
+def summary(svc: Service, run_id: RunId, opened: SqlJournal) -> dict[str, Any]:
     state = opened.load(run_id)
     asking = state.waiting_since is not None
     return {
@@ -465,7 +470,7 @@ def change(
     who: Principal,
     action: str,
     run_id: str,
-    do: Callable[[SqliteJournal], control.Done | None],
+    do: Callable[[SqlJournal], control.Done | None],
     *,
     drive: bool,
 ) -> dict[str, Any]:
@@ -599,7 +604,7 @@ def default_factory(settings: Settings) -> Factory:
 
     @asynccontextmanager
     async def make(
-        run_id: RunId, environment: dict[str, Any], journal: SqliteJournal
+        run_id: RunId, environment: dict[str, Any], journal: SqlJournal
     ) -> AsyncIterator[Interpreter]:
         snapshot_every = settings.config.journal.snapshot_every if settings.config else 50
         if environment.get("kind") == "simulation":
@@ -633,7 +638,7 @@ def default_factory(settings: Settings) -> Factory:
 
 
 def create_app(settings: Settings, *, factory: Factory | None = None) -> FastAPI:
-    runner = Runner(settings.journal_path, factory or default_factory(settings))
+    runner = Runner(settings.open_journal, factory or default_factory(settings))
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:

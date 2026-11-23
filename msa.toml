@@ -65,7 +65,11 @@ plan_gate = "auto"
 escalation = "human"
 
 [journal]
-path = ".msa/runs.db"
+path = ".msa/runs.db"  # SQLite; its directory holds run artifacts, tokens and the audit log
+# url = "postgresql://msa@db.internal:5432/msa"  # keep the journal in PostgreSQL instead.
+#   No password here: libpq reads PGPASSWORD or ~/.pgpass. --db on the command line
+#   still picks a SQLite file.
+# schema_name = "msa"  # the PostgreSQL schema the journal's tables live in
 snapshot_every = 50
 
 # Who may write what (ADR-006). Paths are globs relative to the worktree: `**` spans

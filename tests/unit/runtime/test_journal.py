@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from msa.config import postgres_url_problem
 from msa.core import RunState
 from msa.core.effects import AdmitRun
 from msa.core.events import CancelRequested, RunAdmitted
@@ -19,17 +20,21 @@ from msa.runtime.journal import (
     JournalConflict,
     JournalCorrupt,
     JournalError,
+    PostgresJournal,
     SqliteJournal,
+    SqlJournal,
     UnknownRun,
+    open_journal,
 )
 from msa.runtime.simulation import Profile, SimulatedEnvironment, SimulationConfig, digest
 from tests.support.driver import Driver
 from tests.support.factory import limits, run_started
+from tests.support.journals import BACKENDS, POSTGRES_URL, Opener, opener_for
 
 RUN = RunId("run-1")
 
 
-def simulate(journal: SqliteJournal, *, seed: int = 0, snapshot_every: int = 4) -> RunState:
+def simulate(journal: SqlJournal, *, seed: int = 0, snapshot_every: int = 4) -> RunState:
     config = SimulationConfig(seed=seed, profile=Profile.HAPPY)
     interpreter = Interpreter(
         journal, SimulatedEnvironment(config), clock=LogicalClock(), snapshot_every=snapshot_every
@@ -44,24 +49,41 @@ def simulate(journal: SqliteJournal, *, seed: int = 0, snapshot_every: int = 4) 
     )
 
 
+@pytest.fixture(params=BACKENDS)
+def store(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[Opener]:
+    yield from opener_for(request.param, tmp_path / "nested")
+
+
 @pytest.fixture
-def journal(tmp_path: Path) -> Iterator[SqliteJournal]:
+def journal(store: Opener) -> Iterator[SqlJournal]:
+    with store() as opened:
+        yield opened
+
+
+@pytest.fixture
+def sqlite_journal(tmp_path: Path) -> Iterator[SqliteJournal]:
     with SqliteJournal(tmp_path / "nested" / "runs.db") as opened:
         yield opened
 
 
-def test_a_journaled_run_loads_back_to_its_exact_state(journal: SqliteJournal) -> None:
+def test_a_journaled_run_loads_back_to_its_exact_state(journal: SqlJournal) -> None:
     final = simulate(journal)
     assert journal.load(RUN) == final
     assert journal.verify(RUN).ok
 
 
-def test_the_journal_is_durable_wal(journal: SqliteJournal) -> None:
-    assert journal._db.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
-    assert journal._db.execute("PRAGMA synchronous").fetchone()[0] == 2  # FULL
+def test_the_sqlite_journal_is_durable_wal(sqlite_journal: SqlJournal) -> None:
+    assert sqlite_journal._run("PRAGMA journal_mode").fetchone()[0] == "wal"
+    assert sqlite_journal._run("PRAGMA synchronous").fetchone()[0] == 2  # FULL
 
 
-def test_time_travel_loads_any_past_state(journal: SqliteJournal) -> None:
+def test_the_postgres_journal_commits_synchronously(tmp_path: Path) -> None:
+    for postgres in opener_for("postgres", tmp_path):
+        with postgres() as journal:
+            assert journal._run("SHOW synchronous_commit").fetchone()[0] == "on"
+
+
+def test_time_travel_loads_any_past_state(journal: SqlJournal) -> None:
     final = simulate(journal, snapshot_every=3)
     events = journal.events(RUN)
     for seq in range(1, final.seq + 1):
@@ -72,19 +94,19 @@ def test_time_travel_loads_any_past_state(journal: SqliteJournal) -> None:
         journal.load(RUN, upto=0)
 
 
-def test_snapshots_are_written_periodically_and_at_the_end(journal: SqliteJournal) -> None:
+def test_snapshots_are_written_periodically_and_at_the_end(journal: SqlJournal) -> None:
     final = simulate(journal, snapshot_every=4)
     expected = sorted({*range(4, final.seq + 1, 4), final.seq})
     assert [seq for seq, _ in journal.snapshots(RUN)] == expected
 
 
-def test_a_run_id_can_only_be_created_once(journal: SqliteJournal) -> None:
+def test_a_run_id_can_only_be_created_once(journal: SqlJournal) -> None:
     simulate(journal)
     with pytest.raises(DuplicateRun):
         simulate(journal)
 
 
-def test_a_second_writer_gets_a_conflict_not_an_interleaving(journal: SqliteJournal) -> None:
+def test_a_second_writer_gets_a_conflict_not_an_interleaving(journal: SqlJournal) -> None:
     d = Driver()
     journal.create({"kind": "test"}, run_started(), d.state)
     step = d.complete(AdmitRun, RunAdmitted)
@@ -96,54 +118,54 @@ def test_a_second_writer_gets_a_conflict_not_an_interleaving(journal: SqliteJour
         journal.append(rival.events[-1], rival_step.state, snapshot=False)
 
 
-def test_unknown_runs_are_reported(journal: SqliteJournal) -> None:
+def test_unknown_runs_are_reported(journal: SqlJournal) -> None:
     for read in (journal.load, journal.events, journal.environment):
         with pytest.raises(UnknownRun):
             read(RunId("nope"))
 
 
-def _drop_snapshots(journal: SqliteJournal) -> None:
+def _drop_snapshots(journal: SqlJournal) -> None:
     """``load`` trusts snapshots (they are a cache). Corruption *behind* a snapshot is found
     by ``verify``; dropping them makes ``load`` read the damaged history itself."""
-    journal._db.execute("DELETE FROM snapshots")
+    journal._run("DELETE FROM snapshots")
 
 
-def test_load_trusts_snapshots_and_verify_audits_behind_them(journal: SqliteJournal) -> None:
+def test_load_trusts_snapshots_and_verify_audits_behind_them(journal: SqlJournal) -> None:
     final = simulate(journal)
-    journal._db.execute("UPDATE events SET payload = '{}' WHERE run_id = ? AND seq = 2", (RUN,))
+    journal._run("UPDATE events SET payload = '{}' WHERE run_id = ? AND seq = 2", (RUN,))
     assert journal.load(RUN) == final  # served from the terminal snapshot
     with pytest.raises(JournalCorrupt):
         journal.verify(RUN)  # reads every event, so the damage surfaces
 
 
-def test_a_gap_in_the_history_is_corruption_not_truncation(journal: SqliteJournal) -> None:
+def test_a_gap_in_the_history_is_corruption_not_truncation(journal: SqlJournal) -> None:
     simulate(journal)
     _drop_snapshots(journal)
-    journal._db.execute("DELETE FROM events WHERE run_id = ? AND seq = 3", (RUN,))
+    journal._run("DELETE FROM events WHERE run_id = ? AND seq = 3", (RUN,))
     with pytest.raises(JournalCorrupt, match="not contiguous"):
         journal.load(RUN)
 
 
-def test_an_undecodable_payload_is_corruption(journal: SqliteJournal) -> None:
+def test_an_undecodable_payload_is_corruption(journal: SqlJournal) -> None:
     simulate(journal)
     _drop_snapshots(journal)
-    journal._db.execute("UPDATE events SET payload = '{}' WHERE run_id = ? AND seq = 2", (RUN,))
+    journal._run("UPDATE events SET payload = '{}' WHERE run_id = ? AND seq = 2", (RUN,))
     with pytest.raises(JournalCorrupt):
         journal.load(RUN)
 
 
-def test_an_event_from_a_newer_msa_is_corruption(journal: SqliteJournal) -> None:
+def test_an_event_from_a_newer_msa_is_corruption(journal: SqlJournal) -> None:
     simulate(journal)
     _drop_snapshots(journal)
-    journal._db.execute("UPDATE events SET v = 99 WHERE run_id = ? AND seq = 2", (RUN,))
+    journal._run("UPDATE events SET v = 99 WHERE run_id = ? AND seq = 2", (RUN,))
     with pytest.raises(JournalCorrupt, match="newer msa"):
         journal.load(RUN)
 
 
-def test_a_journal_that_cannot_be_replayed_is_corruption(journal: SqliteJournal) -> None:
+def test_a_journal_that_cannot_be_replayed_is_corruption(journal: SqlJournal) -> None:
     simulate(journal)
     stale = RunAdmitted(at=LogicalClock().epoch, effect_id=EffectId("run-1:1:0"))
-    journal._db.execute(
+    journal._run(
         "UPDATE events SET kind = ?, payload = ? WHERE run_id = ? AND seq = 3",
         (stale.kind, stale.model_dump_json(), RUN),
     )
@@ -155,11 +177,11 @@ def test_a_journal_that_cannot_be_replayed_is_corruption(journal: SqliteJournal)
         journal.load(RUN)
 
 
-def test_verify_detects_a_snapshot_that_disagrees_with_history(journal: SqliteJournal) -> None:
+def test_verify_detects_a_snapshot_that_disagrees_with_history(journal: SqlJournal) -> None:
     final = simulate(journal, snapshot_every=2)
     (seq, snap), *_ = journal.snapshots(RUN)
     tampered = snap.model_copy(update={"replans": 1})
-    journal._db.execute(
+    journal._run(
         "UPDATE snapshots SET state = ? WHERE run_id = ? AND seq = ?",
         (tampered.model_dump_json(), RUN, seq),
     )
@@ -168,14 +190,14 @@ def test_verify_detects_a_snapshot_that_disagrees_with_history(journal: SqliteJo
     assert result.events == final.seq
 
 
-def test_snapshots_of_another_state_version_are_ignored(journal: SqliteJournal) -> None:
+def test_snapshots_of_another_state_version_are_ignored(journal: SqlJournal) -> None:
     final = simulate(journal, snapshot_every=2)
-    journal._db.execute("UPDATE snapshots SET v = 0")
+    journal._run("UPDATE snapshots SET v = 0")
     assert list(journal.snapshots(RUN)) == []
     assert journal.load(RUN) == final  # rebuilt from events alone
 
 
-def test_an_unsupported_schema_version_refuses_to_open(tmp_path: Path) -> None:
+def test_an_unsupported_sqlite_schema_version_refuses_to_open(tmp_path: Path) -> None:
     db = tmp_path / "runs.db"
     SqliteJournal(db).close()
     raw = sqlite3.connect(db)
@@ -185,15 +207,55 @@ def test_an_unsupported_schema_version_refuses_to_open(tmp_path: Path) -> None:
         SqliteJournal(db)
 
 
-def test_reopening_an_existing_journal_keeps_its_runs(tmp_path: Path) -> None:
-    db = tmp_path / "runs.db"
-    with SqliteJournal(db) as first:
+def test_an_unsupported_postgres_schema_version_refuses_to_open(tmp_path: Path) -> None:
+    for postgres in opener_for("postgres", tmp_path):
+        with postgres() as journal:
+            journal._run("UPDATE msa_schema SET version = 99")
+        with pytest.raises(JournalCorrupt, match="schema v99"):
+            postgres()
+
+
+def test_reopening_an_existing_journal_keeps_its_runs(store: Opener) -> None:
+    with store() as first:
         final = simulate(first)
-    with SqliteJournal(db) as again:
+    with store() as again:
         assert again.load(RUN) == final
 
 
-def test_runs_are_listed_with_their_outcome_and_environment(journal: SqliteJournal) -> None:
+def test_two_connections_race_and_exactly_one_append_wins(store: Opener) -> None:
+    """Two writers on separate connections, as two processes would be: the second
+    compare-and-set fails whichever backend holds the journal."""
+    d = Driver()
+    with store() as first, store() as second:
+        first.create({"kind": "test"}, run_started(), d.state)
+        step = d.complete(AdmitRun, RunAdmitted)
+        first.append(d.events[-1], step.state, snapshot=False)
+        rival = Driver()
+        rival_step = rival.send(CancelRequested(at=rival.tick(), reason="rival"))
+        with pytest.raises(JournalConflict, match="expected head 1, found 2"):
+            second.append(rival.events[-1], rival_step.state, snapshot=False)
+        assert second.load(RUN) == step.state
+
+
+def test_a_journal_url_with_a_password_is_refused() -> None:
+    with pytest.raises(JournalError, match="holds a password"):
+        PostgresJournal("postgresql://msa:hunter2@localhost/msa")
+    with pytest.raises(JournalError, match="starts with postgresql://"):
+        PostgresJournal("mysql://localhost/msa")
+    assert postgres_url_problem("postgresql://msa@localhost:5432/msa") is None
+    assert postgres_url_problem("postgres://localhost/msa") is None
+
+
+def test_open_journal_picks_the_backend(tmp_path: Path) -> None:
+    with open_journal(tmp_path / "runs.db") as journal:
+        assert isinstance(journal, SqliteJournal)
+    for _ in opener_for("postgres", tmp_path):
+        with open_journal(tmp_path / "unused.db", POSTGRES_URL) as journal:
+            assert isinstance(journal, PostgresJournal)
+        assert not (tmp_path / "unused.db").exists()
+
+
+def test_runs_are_listed_with_their_outcome_and_environment(journal: SqlJournal) -> None:
     final = simulate(journal)
     (summary,) = journal.runs()
     assert summary.run_id == RUN
@@ -204,13 +266,13 @@ def test_runs_are_listed_with_their_outcome_and_environment(journal: SqliteJourn
     assert summary.environment["kind"] == "simulation"
 
 
-def test_an_in_memory_journal_works() -> None:
+def test_an_in_memory_sqlite_journal_works() -> None:
     with SqliteJournal(":memory:") as journal:
         final = simulate(journal)
         assert journal.load(RUN) == final
 
 
-def test_only_journaled_event_types_can_be_appended(journal: SqliteJournal) -> None:
+def test_only_journaled_event_types_can_be_appended(journal: SqlJournal) -> None:
     class Rogue(CancelRequested):
         pass
 
@@ -221,7 +283,7 @@ def test_only_journaled_event_types_can_be_appended(journal: SqliteJournal) -> N
         journal.append(Rogue(at=d.clock, reason="x"), step.state, snapshot=False)
 
 
-def test_cancel_events_round_trip_through_the_journal(journal: SqliteJournal) -> None:
+def test_cancel_events_round_trip_through_the_journal(journal: SqlJournal) -> None:
     d = Driver()
     journal.create({"kind": "test"}, run_started(), d.state)
     event = CancelRequested(at=d.tick(), reason="stop")
@@ -230,8 +292,8 @@ def test_cancel_events_round_trip_through_the_journal(journal: SqliteJournal) ->
     assert journal.load(RunId("run-1")) == step.state
 
 
-def test_a_snapshot_filed_under_the_wrong_seq_is_corruption(journal: SqliteJournal) -> None:
+def test_a_snapshot_filed_under_the_wrong_seq_is_corruption(journal: SqlJournal) -> None:
     final = simulate(journal, snapshot_every=1_000)
-    journal._db.execute("UPDATE snapshots SET seq = seq - 1 WHERE run_id = ?", (RUN,))
+    journal._run("UPDATE snapshots SET seq = seq - 1 WHERE run_id = ?", (RUN,))
     with pytest.raises(JournalCorrupt, match=f"holds the state for seq {final.seq}"):
         journal.load(RUN)

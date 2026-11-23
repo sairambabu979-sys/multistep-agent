@@ -22,6 +22,7 @@ import os
 import random
 import signal
 from collections import Counter
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -34,9 +35,10 @@ from msa.core.ids import EffectId, RunId
 from msa.core.table import Step
 from msa.runtime.clock import LogicalClock
 from msa.runtime.interpreter import Interpreter, Observer
-from msa.runtime.journal import SqliteJournal, UnknownRun
+from msa.runtime.journal import SqliteJournal, SqlJournal, UnknownRun
 from msa.runtime.simulation import SimulatedEnvironment, SimulationConfig, digest
 from tests.support.factory import limits
+from tests.support.journals import BACKENDS, Opener, opener_for
 
 pytestmark = [
     pytest.mark.slow,
@@ -81,10 +83,10 @@ def _record_execution(log: Path, effect: Effect) -> None:
         os.close(fd)
 
 
-def _drive(db: Path, log: Path, seed: int, probe: _Probe) -> RunState:
+def _drive(db: Path | Opener, log: Path, seed: int, probe: _Probe) -> RunState:
     config = SimulationConfig(seed=seed)
     environment = SimulatedEnvironment(config, on_execute=lambda e: _record_execution(log, e))
-    with SqliteJournal(db) as journal:
+    with _open(db) as journal:
         interpreter = Interpreter(
             journal, environment, clock=LogicalClock(), observer=probe, snapshot_every=3
         )
@@ -102,11 +104,15 @@ def _drive(db: Path, log: Path, seed: int, probe: _Probe) -> RunState:
         return asyncio.run(coroutine)
 
 
-def _child(db: Path, log: Path, seed: int, kill: tuple[str, int]) -> None:
+def _open(db: Path | Opener) -> SqlJournal:
+    return SqliteJournal(db) if isinstance(db, Path) else db()
+
+
+def _child(db: Opener, log: Path, seed: int, kill: tuple[str, int]) -> None:
     _drive(db, log, seed, _Probe(kill))
 
 
-def _crash(db: Path, log: Path, seed: int, kill: tuple[str, int]) -> int:
+def _crash(db: Opener, log: Path, seed: int, kill: tuple[str, int]) -> int:
     process = multiprocessing.get_context("fork").Process(target=_child, args=(db, log, seed, kill))
     process.start()
     process.join(timeout=60)
@@ -114,10 +120,8 @@ def _crash(db: Path, log: Path, seed: int, kill: tuple[str, int]) -> int:
     return process.exitcode
 
 
-def _completed(db: Path) -> set[EffectId]:
-    if not db.exists():
-        return set()
-    with SqliteJournal(db) as journal:
+def _completed(db: Opener) -> set[EffectId]:
+    with db() as journal:
         try:
             events = journal.events(RUN)
         except UnknownRun:
@@ -147,11 +151,18 @@ def _baseline(tmp: Path, start_seed: int) -> Baseline:
     raise AssertionError("no seed produced a long enough run")  # pragma: no cover
 
 
+@pytest.fixture(params=BACKENDS)
+def store(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[Opener]:
+    yield from opener_for(request.param, tmp_path / "crashed")
+
+
 @pytest.mark.parametrize("trial", range(TRIALS))
-def test_a_crashed_run_resumes_to_the_uninterrupted_outcome(trial: int, tmp_path: Path) -> None:
+def test_a_crashed_run_resumes_to_the_uninterrupted_outcome(
+    trial: int, tmp_path: Path, store: Opener
+) -> None:
     rng = random.Random(trial)
     base = _baseline(tmp_path, start_seed=trial * 1_000)
-    db, log = tmp_path / "crashed.db", tmp_path / "crashed.log"
+    db, log = store, tmp_path / "crashed.log"
 
     # First crash: within the uninterrupted run's own counts, so it is guaranteed to fire.
     point = rng.choice(POINTS)
@@ -176,7 +187,7 @@ def test_a_crashed_run_resumes_to_the_uninterrupted_outcome(trial: int, tmp_path
     assert not set(_executions(log)[executed:]) & completed
 
     assert final == base.state
-    with SqliteJournal(db) as journal:
+    with db() as journal:
         assert journal.load(RUN) == base.state
         verification = journal.verify(RUN)
     assert verification.ok, verification.divergences

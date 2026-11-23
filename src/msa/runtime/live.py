@@ -75,7 +75,7 @@ from msa.runtime.executors import Router
 from msa.runtime.intake import AdmissionExecutor, ContextExecutor, ValidationExecutor
 from msa.runtime.integration import IntegrationExecutor
 from msa.runtime.interpreter import Executor, Interpreter, Observer, Parked
-from msa.runtime.journal import SqliteJournal
+from msa.runtime.journal import SqlJournal
 from msa.runtime.release import PR_FILE, PublishExecutor, ReleaseExecutor
 from msa.runtime.roles import (
     CoderExecutor,
@@ -346,7 +346,7 @@ def interpreter(
     config: MsaConfig,
     *,
     run_id: RunId,
-    journal: SqliteJournal,
+    journal: SqlJournal,
     client: MessagesClient,
     store: ResponseStore,
     clock: Clock,
@@ -396,7 +396,7 @@ def interpreter(
     )
 
 
-def live_runs_of(journal: SqliteJournal, repo: str, *, besides: RunId) -> int:
+def live_runs_of(journal: SqlJournal, repo: str, *, besides: RunId) -> int:
     """Live runs of ``repo`` other than ``besides``, parked ones included."""
     return sum(
         1

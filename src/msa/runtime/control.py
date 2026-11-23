@@ -51,7 +51,7 @@ from msa.core.events import (
 from msa.core.ids import FindingId, RunId
 from msa.core.values import Resolution, Verdict
 from msa.runtime.clock import Clock
-from msa.runtime.journal import SqliteJournal
+from msa.runtime.journal import SqlJournal
 
 GATES: tuple[type[Command], ...] = (AwaitPlanApproval, AwaitReleaseApproval)
 QUESTIONS: tuple[type[Command], ...] = (
@@ -74,7 +74,7 @@ class Done:
     state: RunState
 
 
-def _commit(journal: SqliteJournal, state: RunState, event: EventBase) -> Done:
+def _commit(journal: SqlJournal, state: RunState, event: EventBase) -> Done:
     step = transition(state, event)  # raises TransitionRejected; the journal is untouched
     journal.append(event, step.state, snapshot=True)
     return Done(event, step.state)
@@ -93,7 +93,7 @@ def _pending(state: RunState, kinds: Sequence[type[Command]]) -> Effect:
 
 
 def answer(
-    journal: SqliteJournal,
+    journal: SqlJournal,
     run_id: RunId,
     clock: Clock,
     kinds: Sequence[type[Command]],
@@ -104,17 +104,17 @@ def answer(
     return _commit(journal, state, make(effect, clock.stamp(state)))
 
 
-def pause(journal: SqliteJournal, run_id: RunId, clock: Clock, *, by: str, reason: str) -> Done:
+def pause(journal: SqlJournal, run_id: RunId, clock: Clock, *, by: str, reason: str) -> Done:
     state = journal.load(run_id)
     return _commit(journal, state, PauseRequested(at=clock.stamp(state), by=by, reason=reason))
 
 
-def cancel(journal: SqliteJournal, run_id: RunId, clock: Clock, *, reason: str) -> Done:
+def cancel(journal: SqlJournal, run_id: RunId, clock: Clock, *, reason: str) -> Done:
     state = journal.load(run_id)
     return _commit(journal, state, CancelRequested(at=clock.stamp(state), reason=reason))
 
 
-def resume(journal: SqliteJournal, run_id: RunId, clock: Clock, *, by: str) -> Done | None:
+def resume(journal: SqlJournal, run_id: RunId, clock: Clock, *, by: str) -> Done | None:
     """Answer a pause. None when the run is not paused (there is nothing to answer, and
     driving it is all a resume needs)."""
     state = journal.load(run_id)
@@ -129,9 +129,7 @@ def resume(journal: SqliteJournal, run_id: RunId, clock: Clock, *, by: str) -> D
     )
 
 
-def unblock(
-    journal: SqliteJournal, run_id: RunId, clock: Clock, *, by: str, note: str = ""
-) -> Done:
+def unblock(journal: SqlJournal, run_id: RunId, clock: Clock, *, by: str, note: str = "") -> Done:
     return answer(
         journal,
         run_id,
@@ -142,7 +140,7 @@ def unblock(
 
 
 def decide(
-    journal: SqliteJournal,
+    journal: SqlJournal,
     run_id: RunId,
     clock: Clock,
     *,
@@ -163,7 +161,7 @@ def decide(
     return answer(journal, run_id, clock, GATES, make)
 
 
-def abort(journal: SqliteJournal, run_id: RunId, clock: Clock, *, by: str, reason: str) -> Done:
+def abort(journal: SqlJournal, run_id: RunId, clock: Clock, *, by: str, reason: str) -> Done:
     """Stop the run instead of answering whatever question it is waiting on."""
     return answer(
         journal,
@@ -175,7 +173,7 @@ def abort(journal: SqliteJournal, run_id: RunId, clock: Clock, *, by: str, reaso
 
 
 def rule(
-    journal: SqliteJournal,
+    journal: SqlJournal,
     run_id: RunId,
     clock: Clock,
     *,

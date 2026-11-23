@@ -35,8 +35,23 @@ jobs:
       fail-fast: false
       matrix:
         python: ["3.12", "3.13"]
+    services:
+      # The PostgreSQL journal runs the same contract, crash-recovery and API tests as
+      # SQLite. Trust auth on a throwaway container: there is no password anywhere.
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: msa
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s --health-timeout 5s --health-retries 30
     env:
       HYPOTHESIS_PROFILE: ci
+      MSA_TEST_POSTGRES_URL: postgresql://postgres@localhost:5432/msa
+      MSA_REQUIRE_POSTGRES: "1"  # a missing server fails those tests instead of skipping
+      MSA_TEST_TEMPORAL: "1"  # the Temporal driver, against the SDK's test server
     steps:
       - uses: actions/checkout@v4
 

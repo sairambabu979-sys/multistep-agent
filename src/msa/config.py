@@ -18,6 +18,7 @@ from decimal import ROUND_CEILING, Decimal
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Any, Literal, Self
+from urllib.parse import urlsplit
 
 from pydantic import (
     AfterValidator,
@@ -167,8 +168,38 @@ class LimitsConfig(Frozen):
         return Limits.model_validate({**values, **overrides})
 
 
+POSTGRES_SCHEMES = ("postgresql", "postgres")
+
+
+def postgres_url_problem(url: str) -> str | None:
+    """Why ``url`` may not name a PostgreSQL journal, or None. A password in it is refused:
+    it would end up in settings files, logs and shell history. libpq reads it from
+    ``PGPASSWORD`` or ``~/.pgpass`` instead."""
+    parts = urlsplit(url)
+    if parts.scheme not in POSTGRES_SCHEMES:
+        return f"a PostgreSQL journal URL starts with postgresql://, not {parts.scheme}://"
+    if parts.password is not None:
+        return (
+            "the journal URL holds a password; leave it out and set PGPASSWORD or use "
+            "~/.pgpass instead"
+        )
+    return None
+
+
+def _postgres_url(url: str | None) -> str | None:
+    if url is not None and (problem := postgres_url_problem(url)):
+        raise ValueError(problem)
+    return url
+
+
 class JournalConfig(Frozen):
+    # The SQLite journal. Its directory is the state directory either way: run artifacts,
+    # tokens and the audit log live there.
     path: Path = Path(".msa/runs.db")
+    # A postgresql:// URL, without a password: the journal is kept in PostgreSQL instead,
+    # in its own schema, so one database can hold several deployments' journals.
+    url: Annotated[str | None, AfterValidator(_postgres_url)] = None
+    schema_name: Annotated[str, StringConstraints(pattern=r"^[a-z_][a-z0-9_]{0,62}$")] = "msa"
     snapshot_every: PositiveInt = 50
 
 

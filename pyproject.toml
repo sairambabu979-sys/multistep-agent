@@ -16,6 +16,7 @@ dependencies = [
     "fastapi>=0.115",
     "opentelemetry-api>=1.28",
     "opentelemetry-sdk>=1.28",
+    "psycopg[binary]>=3.2",
     "pydantic>=2.11,<3",
     "ruamel-yaml>=0.18",
     "typer>=0.16",
@@ -24,6 +25,11 @@ dependencies = [
 
 [project.scripts]
 msa = "msa.cli:main"
+
+[project.optional-dependencies]
+temporal = [
+    "temporalio>=1.36",
+]
 
 [dependency-groups]
 dev = [
@@ -36,6 +42,7 @@ dev = [
     "pytest>=8.3",
     "pytest-cov>=6.0",
     "ruff>=0.11",
+    "temporalio>=1.36",
 ]
 
 [build-system]

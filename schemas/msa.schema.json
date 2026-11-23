@@ -256,11 +256,29 @@
           "title": "Path",
           "type": "string"
         },
+        "schema_name": {
+          "default": "msa",
+          "pattern": "^[a-z_][a-z0-9_]{0,62}$",
+          "title": "Schema Name",
+          "type": "string"
+        },
         "snapshot_every": {
           "default": 50,
           "exclusiveMinimum": 0,
           "title": "Snapshot Every",
           "type": "integer"
+        },
+        "url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Url"
         }
       },
       "title": "JournalConfig",
@@ -801,7 +819,9 @@
       "$ref": "#/$defs/JournalConfig",
       "default": {
         "path": ".msa/runs.db",
-        "snapshot_every": 50
+        "schema_name": "msa",
+        "snapshot_every": 50,
+        "url": null
       }
     },
     "limits": {

@@ -67,7 +67,7 @@ from msa.runtime.checks import CheckError, CheckFinding, run_checks
 from msa.runtime.clock import LogicalClock, SystemClock
 from msa.runtime.intake import secrets_in_task
 from msa.runtime.interpreter import Interpreter, Observer
-from msa.runtime.journal import JournalError, SqliteJournal
+from msa.runtime.journal import JournalError, SqlJournal, open_journal
 from msa.runtime.live import LiveEnvironment
 from msa.runtime.simulation import (
     Profile,
@@ -174,8 +174,19 @@ def _journal_settings(ctx: typer.Context) -> JournalConfig:
     return settings.journal if settings else JournalConfig()
 
 
-def _journal(ctx: typer.Context, db: Path | None) -> SqliteJournal:
-    return SqliteJournal(db or _journal_settings(ctx).path)
+def _journal_url(settings: JournalConfig, db: Path | None) -> str | None:
+    """The PostgreSQL journal, unless --db names a SQLite file: the command line wins."""
+    return None if db else settings.url
+
+
+def _journal(ctx: typer.Context, db: Path | None) -> SqlJournal:
+    settings = _journal_settings(ctx)
+    try:
+        return open_journal(
+            db or settings.path, _journal_url(settings, db), schema=settings.schema_name
+        )
+    except JournalError as exc:
+        raise _fail(str(exc)) from exc
 
 
 @config_app.command(name="check")
@@ -201,7 +212,8 @@ def config_check(ctx: typer.Context) -> None:
         f"{lim.max_negotiation_rounds} rounds, plan gate {lim.plan_gate}, "
         f"escalation {lim.escalation}"
     )
-    typer.echo(f"  journal  {journal.path} (snapshot every {journal.snapshot_every} events)")
+    where = f"{journal.url} (PostgreSQL)" if journal.url else str(journal.path)
+    typer.echo(f"  journal  {where} (snapshot every {journal.snapshot_every} events)")
 
 
 @config_app.command(name="schema")
@@ -786,6 +798,8 @@ def serve(
             state_dir=_state_dir(ctx, db),
             config=settings,
             cors_origins=service.cors_origins,
+            journal_url=_journal_url(_journal_settings(ctx), db),
+            journal_schema=_journal_settings(ctx).schema_name,
         )
     )
     uvicorn.run(app, host=host or service.host, port=port or service.port, log_level="info")
@@ -837,7 +851,7 @@ def _drive(rid: RunId, coroutine: Coroutine[Any, Any, RunState]) -> RunState:
 
 
 def _interpreter(
-    ctx: typer.Context, journal: SqliteJournal, environment: dict[str, Any], *, quiet: bool
+    ctx: typer.Context, journal: SqlJournal, environment: dict[str, Any], *, quiet: bool
 ) -> Interpreter:
     try:
         config = SimulationConfig.model_validate(environment)
@@ -864,7 +878,7 @@ def _client(settings: MsaConfig, environment: LiveEnvironment) -> MessagesClient
 
 async def _drive_live(
     settings: MsaConfig,
-    journal: SqliteJournal,
+    journal: SqlJournal,
     environment: LiveEnvironment,
     rid: RunId,
     *,
@@ -965,7 +979,8 @@ def run_task(
         cassette_mode="record" if record else "replay" if replay else None,
     )
     rid = RunId(run_id or f"run-{uuid.uuid4().hex[:8]}")
-    with SqliteJournal(journal_path) as journal:
+    url, schema = _journal_url(settings.journal, db), settings.journal.schema_name
+    with open_journal(journal_path, url, schema=schema) as journal:
         try:
             state = _drive(
                 rid,
@@ -1048,7 +1063,7 @@ def resume(
 
 def _resume_live(
     ctx: typer.Context,
-    journal: SqliteJournal,
+    journal: SqlJournal,
     environment: dict[str, Any],
     rid: RunId,
     *,
