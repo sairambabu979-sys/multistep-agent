@@ -418,6 +418,18 @@ def test_titles_come_from_the_first_line_of_the_task() -> None:
     assert long.endswith("…")
 
 
+def test_a_long_title_keeps_its_longest_leading_clause_or_whole_words() -> None:
+    clauses = "Add restock to the store: it adds stock. Then export it; " + "and more " * 9
+    assert title_of(clauses) == "Add restock to the store: it adds stock. Then export it"
+    words = "word " * 30
+    cut = title_of(words)
+    assert cut == "word " * 13 + "word…"  # 14 whole words, then the ellipsis
+    assert len(cut) <= release.TITLE_LIMIT
+    exact = "a" * release.TITLE_LIMIT
+    assert title_of(exact) == exact
+    assert title_of(exact + ": more") == exact  # a clause ending exactly at the limit fits
+
+
 def test_scope_allows_what_the_coder_or_tester_may_write() -> None:
     capabilities = base_config().capabilities
     assert out_of_scope(["src/a.py", "tests/acceptance/t.py"], capabilities) == []
@@ -504,6 +516,75 @@ def test_a_verified_release_writes_the_pr_and_publishes_once_approved(run: RunCo
     assert "Approved-by: grace" in message
     assert message.rstrip().endswith("AEGIS")
     assert git(repo, "remote") == ""  # nothing to push to, and nothing pushed
+
+
+def test_the_pr_lists_every_gate_failure_of_the_run_in_order(run: RunContext) -> None:
+    _with_context(run)
+    tree = change(run, {"src/farewell.py": "def farewell(n: str) -> str:\n    return n\n"})
+    report = "sha256:" + "1" * 64
+    earlier = "e" * 40
+    run.files.record(
+        security.RECORDS,
+        {
+            "effect": "run-1:9:0",
+            "tree": earlier,
+            "verdict": "failed",
+            "blocking": 2,
+            "report": report,
+        },
+    )
+    run.files.record(
+        "verifications.jsonl",
+        {
+            "effect": "run-1:4:0",
+            "tree": earlier,
+            "passed": False,
+            "failed": ["preferences", "ruff_check"],
+            "report": report,
+        },
+    )
+    run.files.record(
+        integration.RECORDS,
+        {
+            "effect": "run-1:12:0",
+            "tree": tree,
+            "verdict": "failed",
+            "kind": "environment",
+            "report": report,
+        },
+    )  # blocked, then unblocked
+    run.files.record(
+        "tests.jsonl",
+        {
+            "effect": "run-1:6:1",
+            "tree": earlier,
+            "verdict": "failed",
+            "kind": "impl_bug",
+            "report": report,
+        },
+    )
+    _passed_gates(run, tree)
+    answer = _verify(run, tree)
+    assert isinstance(answer, ReleaseVerified)
+    pr = (run.files.directory / release.PR_FILE).read_text(encoding="utf-8")
+    caught = pr.split("## Caught along the way\n\n", 1)[1].split("\n\n## ", 1)[0]
+    assert caught.splitlines()[2:] == [
+        "| gate | tree | what failed | report |",
+        "|---|---|---|---|",
+        f"| Static analysis | `eeeeeeeeeeee` | `preferences`, `ruff_check` | `{report}` |",
+        f"| Unit tests | `eeeeeeeeeeee` | impl_bug | `{report}` |",
+        f"| Security review | `eeeeeeeeeeee` | 2 blocking finding(s) | `{report}` |",
+        f"| Integration tests | `{tree[:12]}` | environment | `{report}` |",
+    ]
+
+
+def test_a_run_whose_gates_never_failed_has_no_history_section(run: RunContext) -> None:
+    _with_context(run)
+    tree = change(run, {"src/farewell.py": "X = 1\n"})
+    _passed_gates(run, tree)
+    assert isinstance(_verify(run, tree), ReleaseVerified)
+    pr = (run.files.directory / release.PR_FILE).read_text(encoding="utf-8")
+    assert "## Caught along the way" not in pr
 
 
 def test_publishing_never_moves_a_branch_that_holds_something_else(run: RunContext) -> None:

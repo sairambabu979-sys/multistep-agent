@@ -45,7 +45,7 @@ from msa.runtime import integration, security
 from msa.runtime.artifacts import PLAN_FILE, RunFiles
 from msa.runtime.context import RunContext
 from msa.runtime.intake import base_commit
-from msa.runtime.review import FINDINGS, RULINGS
+from msa.runtime.review import FINDINGS, ROUNDS, RULINGS
 from msa.runtime.worktree import GitError, git
 from msa.secrets import scan_lines
 from msa.tools.capabilities import WritePolicy
@@ -60,10 +60,23 @@ AUTHOR = {
 }
 
 
+CLAUSE_ENDS = (": ", ". ", "; ")
+
+
 def title_of(task: str) -> str:
+    """The PR title, in the task's own words: its first line, or the longest leading clause
+    of it that fits; cut at a word only when no clause fits."""
     first = next((line.strip() for line in task.splitlines() if line.strip()), "Change")
     first = first.lstrip("#").strip() or "Change"
-    return first if len(first) <= TITLE_LIMIT else first[: TITLE_LIMIT - 1].rstrip() + "…"
+    if len(first) <= TITLE_LIMIT:
+        return first
+    ends = [i for i in range(len(first)) if first.startswith(CLAUSE_ENDS, i)]
+    if fitting := [i for i in ends if i <= TITLE_LIMIT]:
+        return first[: max(fitting)]
+    cut = first[: TITLE_LIMIT - 1]
+    if " " in cut:
+        cut = cut.rsplit(" ", 1)[0]
+    return cut.rstrip(" ,") + "…"
 
 
 def out_of_scope(paths: Sequence[str], capabilities: CapabilitiesConfig) -> list[str]:
@@ -111,10 +124,43 @@ def _evidence_rows(evidence: Sequence[Mapping[str, Any]]) -> list[str]:
     return rows
 
 
+def _sequence(record: Mapping[str, Any]) -> int:
+    """The journal position of the effect that wrote ``record`` (ids are ``run:seq:index``)."""
+    _, seq, _ = str(record["effect"]).rsplit(":", 2)
+    return int(seq)
+
+
+def _failure(gate: str, record: Mapping[str, Any]) -> str:
+    if gate == "Static analysis":
+        return ", ".join(f"`{name}`" for name in record.get("failed", [])) or "failed"
+    if gate == "Security review":
+        return f"{record.get('blocking', 0)} blocking finding(s)"
+    return str(record.get("kind") or "failed")
+
+
+def history_rows(files: RunFiles) -> list[str]:
+    """Every gate failure in this run, in the order it happened, whichever tree it was on:
+    what the gates caught on the way to the tree delivered here."""
+    failed = [
+        (_sequence(r), name, r)
+        for name, records in GATE_RECORDS
+        for r in files.records(records)
+        if not _passed(r)
+    ]
+    if not failed:
+        return []
+    rows = ["| gate | tree | what failed | report |", "|---|---|---|---|"]
+    for _, name, record in sorted(failed, key=lambda item: item[0]):
+        tree_id = str(record.get("tree", ""))[:12]
+        rows.append(f"| {name} | `{tree_id}` | {_failure(name, record)} | `{record['report']}` |")
+    return rows
+
+
 def _review_lines(files: RunFiles) -> tuple[list[str], list[str]]:
     findings = files.records(FINDINGS)
     admitted = [f for f in findings if f.get("admitted")]
     rulings = {r["finding"]: r for r in files.records(RULINGS) if r.get("verdict")}
+    negotiated = {r["finding"]: r["verdict"] for r in files.records(ROUNDS) if r.get("verdict")}
     if not findings:
         return ["No findings were raised."], []
     lines = [f"{len(findings)} finding(s) raised, {len(admitted)} admitted.", ""]
@@ -122,8 +168,13 @@ def _review_lines(files: RunFiles) -> tuple[list[str], list[str]]:
     for record in admitted:
         finding = record["finding"]
         ruling = rulings.get(record["id"])
-        outcome = f"{ruling['verdict']} ({ruling['rung']})" if ruling else "settled in negotiation"
-        title = " ".join(str(finding.get("claim") or "finding").split())
+        if ruling:
+            outcome = f"{ruling['verdict']} ({ruling['rung']})"
+        elif verdict := negotiated.get(record["id"]):
+            outcome = f"{verdict} in negotiation"
+        else:
+            outcome = "settled in negotiation"
+        title = " ".join(str(finding.get("claim") or "finding").split()).rstrip(".")
         lines.append(f"- `{record['id']}` [{record['severity']}] {title}: {outcome}")
         if ruling and ruling["verdict"] == "deferred":
             deferred.append(f"- `{record['id']}` {title}")
@@ -212,6 +263,7 @@ class ReleaseExecutor:
         stored = ctx.files.read(PLAN_FILE)
         summary = Plan.model_validate_json(stored).summary.strip() if stored else "(no plan)"
         review, deferred = _review_lines(ctx.files)
+        history = history_rows(ctx.files)
         manifests = [p for p in changed if security.is_manifest(p)]
         lines = [
             "## Summary",
@@ -232,6 +284,18 @@ class ReleaseExecutor:
             "",
             *_evidence_rows(evidence),
             "",
+        ]
+        if history:
+            lines += [
+                "## Caught along the way",
+                "",
+                "These checks failed earlier in this run. Each gate passed again on the tree "
+                "delivered here (Evidence, above).",
+                "",
+                *history,
+                "",
+            ]
+        lines += [
             "## Review",
             "",
             *review,
