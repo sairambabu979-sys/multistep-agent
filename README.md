@@ -11,9 +11,10 @@ a local branch, all shaped by a layered preferences skill.
 **Status.** The core workflow, every stage's executor, the human gates (plan, ruling,
 release, unblock, pause), the skills registry and security policy, the CLI, and the HTTP
 API with roles, a live event stream, an audit log and traces, and the web workbench are
-built and tested end to end, with only the model scripted. Not yet built: the Temporal and
-Postgres backends ([ADR-015](docs/adr/015-aegis-architecture.md)). **No model
-has run any of it yet**: the first live run needs `ANTHROPIC_API_KEY`.
+built and tested end to end, with only the model scripted. The journal runs on SQLite or
+PostgreSQL, and runs can be driven in-process or by Temporal
+([ADR-017](docs/adr/017-postgres-and-temporal.md)). **No model has run any of it yet**: the
+first live run needs `ANTHROPIC_API_KEY`.
 
 The full design is in [`docs/PLAN.md`](docs/PLAN.md), decisions are in
 [`docs/adr/`](docs/adr/), and the generated state diagram is in [`docs/fsm.md`](docs/fsm.md).
@@ -190,8 +191,17 @@ It performs no I/O and reads no clock or randomness, which a test enforces. Ever
 
 - **The interpreter** launches pending effects, stamps each completion with the clock, and
   commits it to the journal before acting on it.
-- **The journal** (SQLite, WAL, `synchronous=FULL`) is append-only, with compare-and-set
-  appends, snapshots, schema-versioned events, and upcasters.
+- **The journal** is append-only, with compare-and-set appends, snapshots,
+  schema-versioned events, and upcasters.
+  - It runs on SQLite (WAL, `synchronous=FULL`) or on PostgreSQL (`[journal].url`, with
+    synchronous commits), and both pass the same contract and crash tests.
+  - A PostgreSQL URL may not hold a password; libpq reads `PGPASSWORD` or `~/.pgpass`.
+- **Temporal** (`msa.runtime.temporal`, optional) drives the same core as a durable
+  workflow: effects are activities, people's answers are signals, and the journal stays the
+  record. With `[temporal].address` set:
+  - `msa worker` drives runs;
+  - `--temporal` starts or hands runs over;
+  - answers from the CLI and the API reach the workflow.
 - **The simulator** answers every effect deterministically from `(seed, effect)`.
 
 Crash semantics are in [ADR-007](docs/adr/007-commit-point-and-crash-semantics.md).
@@ -337,6 +347,8 @@ uv run msa policy show
 | Conflict soundness | Scope overlap never misses a path both scopes apply to. The test fails when the overlap rule is weakened. |
 | End-to-end runs | I-01–I-10 and I-14–I-17 on a fixture repository: real admission, validation, worktrees, tool layer, ruff and pytest in the sandbox, every gate, repro tests, parking and `msa rule`, release approval and publishing to a branch, with only the model scripted. I-01's event sequence must match a golden file. |
 | Definition-of-done run | One multi-file task through every stage ([docs/demo](docs/demo/README.md)). The scripted Coder makes four deliberate mistakes, and each is caught by its own stage: a hard repository preference, a triaged acceptance test, `eval()` in security review, and a Reviewer finding accepted in negotiation. A real `SIGKILL` lands mid-revision; the resumed run re-executes nothing already journaled, replays the revision's paid turns, and ends on an approved branch whose PR lists every gate's evidence and what was caught. |
+| PostgreSQL journal | The journal contract tests, the crash-recovery suite and the API tests run on PostgreSQL too (CI's `backends` and `check` jobs, against `postgres:17`), plus a race between two connections in which exactly one append must win |
+| Temporal driver | Tested against Temporal's test server (CI's `backends` job). A Temporal-driven run must end in exactly the interpreter's state (three seeds, both journals), and its history must replay deterministically. It must park on signals and honor a cancel. A worker SIGKILLed mid-effect must hand the run to another without re-running anything journaled. The API and the CLI start, answer and complete runs on it. |
 | Stages without a model | Each on a real worktree: a suite the change broke goes to the Coder, one broken before the run blocks; an isolated suite cannot reach the network; secrets block without being repeated; publishing is idempotent and never moves someone else's branch. Hand mutants of each rule were shown to fail these tests. |
 | Negotiation rules | Silence never closes a finding, only the other side's assent closes a contested one, and admission never widens a finding's scope (Hypothesis) |
 | The workbench | Unit tests of progress, the diff and stream parsers, and the approval panel's role gating (Vitest). End to end, the real workbench drives a real `msa serve` (Playwright) to approve a release, rule on a dispute and follow the run to the end, from the keyboard, with axe finding no serious or critical WCAG 2.1 AA violation on any page in either theme. |
