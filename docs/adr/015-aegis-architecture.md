@@ -170,6 +170,14 @@ from the terminal and another from the browser.
   - the stream replays every event, in order, then ends;
   - path tricks and files outside the allowlist are refused;
   - a task holding a secret is refused, and is neither stored nor logged.
+- **The workbench** (`web/tests`):
+  - Unit tests (Vitest) cover the progress figure, the diff and stream parsers, and the
+    approval panel's role gating.
+  - End to end (Playwright), the production build runs against a real `msa serve` on
+    seeded runs. From the browser it approves a release, rules on a dispute, and follows
+    each run to its end; a viewer gets no approval buttons; the tabs work from the
+    keyboard; the theme choice survives a reload.
+  - axe finds no serious or critical WCAG 2.1 AA violation on any page, in either theme.
 - **Traces** (`tests/unit/observability/test_tracing.py`): a span per effect, invocation
   and tool call, nested as the work is (effect > invocation > tool), carrying no prompt,
   argument or file content.

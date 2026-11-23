@@ -10,8 +10,8 @@ a local branch, all shaped by a layered preferences skill.
 
 **Status.** The core workflow, every stage's executor, the human gates (plan, ruling,
 release, unblock, pause), the skills registry and security policy, the CLI, and the HTTP
-API with roles, a live event stream, an audit log and traces are built and tested end to
-end, with only the model scripted. Not yet built: the web workbench, and the Temporal and
+API with roles, a live event stream, an audit log and traces, and the web workbench are
+built and tested end to end, with only the model scripted. Not yet built: the Temporal and
 Postgres backends ([ADR-015](docs/adr/015-aegis-architecture.md)). **No model
 has run any of it yet**: the first live run needs `ANTHROPIC_API_KEY`.
 
@@ -133,6 +133,35 @@ uv run msa serve
 
 ```bash
 curl -H "Authorization: Bearer $TOKEN" localhost:8765/api/runs/<run>/stream
+```
+
+### The workbench
+
+[`web/`](web) is a Next.js, React, TypeScript and Tailwind app over that API, with
+shadcn-style components vendored in `web/components/ui` (Radix tabs underneath):
+
+- **Mission Control:** live runs, what waits on a person, run history, and starting a
+  simulated run.
+- **The run page** has the agent timeline (streamed live), the workflow graph drawn from the
+  transition table with the run's path, the code diff, the Review and Negotiation Center,
+  the test and gate dashboard, the pull request, and the actions the run is waiting for.
+  The progress bar shows the stage the run is actually in ("stage 14 of 15: Human approval"),
+  never an animation.
+- **The Approval Center** lists every question for a person in one place.
+- **Metrics** are computed by the API from every run's state.
+- **The Preferences Studio** shows preferences with their origin, the security policy and
+  the skills.
+
+Light and dark themes follow the system unless you pick one. Everything works from the
+keyboard, with a skip link and arrow-key tabs. Every page is checked with axe in both
+themes. The token stays in the browser tab, and is gone when the tab closes.
+
+```bash
+uv run msa serve
+```
+
+```bash
+cd web && npm ci && npm run dev
 ```
 
 `/stream` sends each journaled event as a server-sent event (reconnect with `?after=`),
@@ -309,6 +338,7 @@ uv run msa policy show
 | End-to-end runs | I-01–I-10 and I-14–I-17 on a fixture repository: real admission, validation, worktrees, tool layer, ruff and pytest in the sandbox, every gate, repro tests, parking and `msa rule`, release approval and publishing to a branch, with only the model scripted. I-01's event sequence must match a golden file. |
 | Stages without a model | Each on a real worktree: a suite the change broke goes to the Coder, one broken before the run blocks; an isolated suite cannot reach the network; secrets block without being repeated; publishing is idempotent and never moves someone else's branch. Hand mutants of each rule were shown to fail these tests. |
 | Negotiation rules | Silence never closes a finding, only the other side's assent closes a contested one, and admission never widens a finding's scope (Hypothesis) |
+| The workbench | Unit tests of progress, the diff and stream parsers, and the approval panel's role gating (Vitest). End to end, the real workbench drives a real `msa serve` (Playwright) to approve a release, rule on a dispute and follow the run to the end, from the keyboard, with axe finding no serious or critical WCAG 2.1 AA violation on any page in either theme. |
 | Contracts | Core purity (AST allowlist), schema completeness, `docs/fsm.md` freshness, layering (`import-linter`), only `msa.llm` imports the SDK, no credential in any cassette |
 
 ## Develop

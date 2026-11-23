@@ -1,0 +1,121 @@
+@import "tailwindcss";
+
+/* Light and dark themes: the system's preference unless the person picked one
+   (data-theme on <html>, set before first paint by the inline script in the layout). */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+:root {
+  --bg: #ffffff;
+  --surface: #f6f7f9;
+  --raised: #ffffff;
+  --border: #d5d9e0;
+  --text: #15181d;
+  --muted: #545b66;
+  --accent: #1d4ed8;
+  --accent-text: #ffffff;
+  --good: #116329;
+  --good-bg: #dafbe1;
+  --bad: #a40e26;
+  --bad-bg: #ffebe9;
+  --wait: #7a4a00;
+  --wait-bg: #fff3d6;
+  --work: #0b4f9c;
+  --work-bg: #ddf0ff;
+  --add-bg: #e6ffec;
+  --del-bg: #ffebe9;
+  --focus: #1d4ed8;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e1116;
+    --surface: #161b22;
+    --raised: #1c222b;
+    --border: #343c48;
+    --text: #e6e9ee;
+    --muted: #9aa4b2;
+    --accent: #6ea8ff;
+    --accent-text: #0b1220;
+    --good: #56d364;
+    --good-bg: #12301b;
+    --bad: #ff7b72;
+    --bad-bg: #3a1214;
+    --wait: #e3b341;
+    --wait-bg: #3a2a07;
+    --work: #79c0ff;
+    --work-bg: #0f2a45;
+    --add-bg: #12301b;
+    --del-bg: #3a1214;
+    --focus: #6ea8ff;
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg: #0e1116;
+  --surface: #161b22;
+  --raised: #1c222b;
+  --border: #343c48;
+  --text: #e6e9ee;
+  --muted: #9aa4b2;
+  --accent: #6ea8ff;
+  --accent-text: #0b1220;
+  --good: #56d364;
+  --good-bg: #12301b;
+  --bad: #ff7b72;
+  --bad-bg: #3a1214;
+  --wait: #e3b341;
+  --wait-bg: #3a2a07;
+  --work: #79c0ff;
+  --work-bg: #0f2a45;
+  --add-bg: #12301b;
+  --del-bg: #3a1214;
+  --focus: #6ea8ff;
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-raised: var(--raised);
+  --color-border: var(--border);
+  --color-text: var(--text);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-accent-text: var(--accent-text);
+  --color-good: var(--good);
+  --color-good-bg: var(--good-bg);
+  --color-bad: var(--bad);
+  --color-bad-bg: var(--bad-bg);
+  --color-wait: var(--wait);
+  --color-wait-bg: var(--wait-bg);
+  --color-work: var(--work);
+  --color-work-bg: var(--work-bg);
+  --color-add-bg: var(--add-bg);
+  --color-del-bg: var(--del-bg);
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+}
+
+html,
+body {
+  background: var(--bg);
+  color: var(--text);
+}
+
+/* One visible focus style everywhere, for keyboard users. */
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition: none !important;
+    animation: none !important;
+  }
+}

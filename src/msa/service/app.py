@@ -383,6 +383,36 @@ def preferences(_: Viewer, svc: Svc) -> list[dict[str, Any]]:
     ]
 
 
+@router.get("/metrics")
+def metrics(_: Viewer, svc: Svc) -> dict[str, Any]:
+    """Aggregates over every run in the journal, from the runs' own states."""
+    with svc.journal() as opened:
+        states = [opened.load(r.run_id) for r in opened.runs()]
+    phases: dict[str, int] = {}
+    outcomes: dict[str, int] = {}
+    for state in states:
+        phases[state.phase.value] = phases.get(state.phase.value, 0) + 1
+        if state.outcome is not None:
+            reason = state.outcome.reason.value
+            outcomes[reason] = outcomes.get(reason, 0) + 1
+    completed = [s for s in states if s.phase is Phase.COMPLETED]
+    working = [(s.updated_at - s.started_at - s.paused).total_seconds() for s in completed]
+    return {
+        "runs": len(states),
+        "live": sum(s.outcome is None for s in states),
+        "waiting_on_people": sum(s.waiting_since is not None for s in states),
+        "by_phase": dict(sorted(phases.items())),
+        "by_outcome": dict(sorted(outcomes.items())),
+        "spent_usd_micros": sum(s.ledger.spent.usd_micros for s in states),
+        "paused_seconds": sum(s.paused.total_seconds() for s in states),
+        "completed": len(completed),
+        "mean_revisions_completed": (
+            sum(s.revisions for s in completed) / len(completed) if completed else None
+        ),
+        "mean_working_seconds_completed": sum(working) / len(working) if working else None,
+    }
+
+
 @router.get("/audit")
 def audit_log(_: Admin, svc: Svc, limit: int = 500) -> list[dict[str, Any]]:
     return svc.audit.entries(limit=max(1, min(limit, 5_000)))

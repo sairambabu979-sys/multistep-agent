@@ -73,3 +73,45 @@ jobs:
 
       - name: Core coverage gate (95% branch)
         run: uv run coverage report --include='src/msa/core/*' --fail-under=95
+
+  web:
+    # The workbench: types, unit tests, a dependency audit, and end to end against a real
+    # `msa serve` on seeded runs, with an accessibility check (axe) of every page.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+          enable-cache: true
+
+      - name: Install (locked)
+        run: |
+          npm ci
+          uv sync --locked --project ..
+
+      - name: Types
+        run: npx tsc --noEmit
+
+      - name: Unit tests
+        run: npx vitest run
+
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Browser
+        run: npx playwright install --with-deps chromium
+
+      - name: End to end (real API, seeded runs, axe)
+        run: npx playwright test

@@ -441,3 +441,16 @@ def test_the_default_factory_drives_a_simulated_run_to_completion(
         assert preflight.headers["access-control-allow-origin"] == "http://localhost:3000"
         other = client.get("/api/health", headers={"Origin": "http://evil.example"})
         assert "access-control-allow-origin" not in other.headers
+
+
+def test_metrics_aggregate_every_run(api: TestClient, tokens: dict[str, str]) -> None:
+    start(api, tokens["operator"], "m1")
+    start(api, tokens["operator"], "m2")
+    api.post("/api/runs/m1/approve", headers=auth(tokens["approver"]))
+    wait_until_parked(api, tokens["viewer"], "m1")
+    api.post("/api/runs/m2/cancel", json={}, headers=auth(tokens["operator"]))
+    body = api.get("/api/metrics", headers=auth(tokens["viewer"])).json()
+    assert (body["runs"], body["live"], body["completed"]) == (2, 0, 1)
+    assert body["by_outcome"] == {"cancelled": 1, "completed": 1}
+    assert body["mean_revisions_completed"] == 0
+    assert body["mean_working_seconds_completed"] > 0
