@@ -71,6 +71,7 @@ def render(
     tests: Sequence[Mapping[str, Any]] = (),
     last_test_report: str | None = None,
     review: Review | None = None,
+    gates: Gates | None = None,
 ) -> str:
     outcome = state.outcome
     verdict = f"{state.phase.name}: {outcome.reason}" if outcome else f"{state.phase.name} (live)"
@@ -83,6 +84,11 @@ def render(
         f"({ledger.spent.input_tokens:,} input / {ledger.spent.output_tokens:,} output tokens)",
         f"**Revisions:** {state.revisions} of {state.limits.max_revisions}",
         f"**Base tree:** `{state.base_tree or '-'}` **Head tree:** `{state.head_tree or '-'}`",
+        f"**Waiting on people:** {state.paused} (not counted against the wall clock)",
+    ]
+    if state.approved_by:
+        out.append(f"**Release approved by:** {state.approved_by}")
+    out += [
         "",
         "## Task",
         "",
@@ -92,7 +98,7 @@ def render(
     issued = {e.command.kind for step in steps(events) for e in step.effects}
     used = [f"- `{kind}`: {why}" for kind, why in sorted(stand_ins.items()) if kind in issued]
     if used:
-        out += ["", "## Stand-ins", "", "These stages are not built yet and passed through:", ""]
+        out += ["", "## Stand-ins", "", "These stages passed through, doing nothing:", ""]
         out += used
 
     if plan:
@@ -103,6 +109,8 @@ def render(
     out += _invocations(invocations)
     out += _summaries(summaries)
     out += _checks(verifications, tests, last_test_report)
+    if gates is not None:
+        out += _gates(gates)
     if review is not None:
         out += _review(review)
     if patch is not None:
@@ -160,12 +168,12 @@ def _checks(
 ) -> list[str]:
     out: list[str] = []
     if verifications:
-        out += ["", "## Verifications", ""]
+        out += ["", "## Static analysis", ""]
         for v in verifications:
             status = "passed" if v.get("passed") else "failed: " + ", ".join(v.get("failed", []))
             out.append(f"- `{v.get('tree')}`: {status} (report `{v.get('report')}`)")
     if tests:
-        out += ["", "## Test runs", ""]
+        out += ["", "## Unit tests", ""]
         for t in tests:
             status = "passed" if t.get("verdict") == "passed" else f"failed: {t.get('kind')}"
             out.append(f"- `{t.get('tree')}`: {status} (report `{t.get('report')}`)")
@@ -173,6 +181,60 @@ def _checks(
         # The latest run's matrix (fail before / pass after) and problems, one level down.
         body = last_test_report.rstrip("\n").replace("\n## ", "\n#### ").replace("# ", "### ", 1)
         out += ["", body]
+    return out
+
+
+@dataclass(frozen=True, slots=True)
+class Gates:
+    """The later gates' records: integration, security, release (ADR-015)."""
+
+    integrations: Sequence[Mapping[str, Any]] = ()
+    security: Sequence[Mapping[str, Any]] = ()
+    releases: Sequence[Mapping[str, Any]] = ()
+
+
+def _integration(record: Mapping[str, Any]) -> str:
+    if record.get("verdict") == "passed":
+        if not record.get("ran", True):
+            return "nothing to run: no integration suite"
+        return "passed, " + ("without network" if record.get("isolated") else "with network")
+    return f"failed: {record.get('kind')}"
+
+
+def _gates(gates: Gates) -> list[str]:
+    out: list[str] = []
+    if gates.integrations:
+        out += ["", "## Integration tests", ""]
+        out += [
+            f"- `{r.get('tree')}`: {_integration(r)} (report `{r.get('report')}`)"
+            for r in gates.integrations
+        ]
+    if gates.security:
+        out += ["", "## Security review", ""]
+        for r in gates.security:
+            status = (
+                f"failed: {r.get('blocking')} blocking (to the {r.get('owner')})"
+                if r.get("verdict") == "failed"
+                else "passed"
+            )
+            extra = f", {r.get('advisory')} advisory" if r.get("advisory") else ""
+            deps = r.get("manifests") or []
+            listed = f"; manifests changed: {', '.join(deps)}" if deps else ""
+            out.append(f"- `{r.get('tree')}`: {status}{extra}{listed} (report `{r.get('report')}`)")
+    if gates.releases:
+        out += ["", "## Release", ""]
+        for r in gates.releases:
+            match r.get("verdict"):
+                case "passed":
+                    line = f"verified; bundle `{r.get('bundle')}` (pr.md)"
+                case "published":
+                    line = (
+                        f"published to branch `{r.get('branch')}` at `{r.get('commit')}`, "
+                        f"approved by {r.get('approved_by')}. Nothing was pushed."
+                    )
+                case _:
+                    line = f"verification failed (report `{r.get('report')}`)"
+            out.append(f"- `{r.get('tree')}`: {line}")
     return out
 
 

@@ -5,25 +5,31 @@ the same executors. ``executors`` wires one executor per effect kind:
 
 | effect | executor |
 |---|---|
-| prepare_workspace | intake (M5), then the run's worktree at the base tree |
+| admit_run | admission policy and the repository's live runs (``msa.runtime.intake``) |
+| validate_request | the task, the preferences, the repository |
+| load_context | the base commit and tree, the worktrees, the repository map |
 | request_plan | the Planner (``msa.runtime.roles``) |
 | implement_plan | the Coder, in the build worktree |
 | author_acceptance_tests | the Tester, in its own worktree at the base tree (blind) |
 | revise_changes | the Coder or the Tester, whichever owns the revision |
 | integrate_build | the Coder's tree with the Tester's directories overlaid: the head |
-| run_verification | ``msa.runtime.verify`` |
-| run_test_suite | ``msa.runtime.testing`` |
-| finalize | the patch from base to head, stored as an artifact |
+| run_static_analysis | ``msa.runtime.verify`` |
+| run_unit_tests | ``msa.runtime.testing`` |
+| run_integration_tests | ``msa.runtime.integration`` |
+| run_security_review | ``msa.runtime.security`` |
 | request_review | the Reviewer (``msa.runtime.review``), or the stand-in below |
 | run_negotiation_round | the Coder as author, then the Reviewer replying |
 | request_arbitration | the ladder: repro test, preference, style, then the Arbiter |
-| await_plan_approval, | a person: the question is written to the run directory and |
-| await_human_ruling | the run parks until ``msa approve`` / ``msa rule`` answers it |
+| verify_release | the Release Verifier and the PR bundle (``msa.runtime.release``) |
+| publish_release | a local branch holding the approved commit |
+| await_* (plan, ruling, release, unblock, resume) | a person, from outside (below) |
+
+A person's question is written to ``question.md`` in the run directory, and the run parks
+until ``msa approve``, ``msa rule``, ``msa unblock`` or ``msa resume`` answers it.
 
 With ``[review].enabled = false`` the Reviewer is replaced by a pass-through stand-in
-(arm B of the ablation, PLAN §11: Planner + Coder + Tester + VERIFYING). It answers at
-once with no findings, spends nothing, and the run report names it, so no reader mistakes
-it for a review.
+(arm B of the ablation, PLAN §11). It answers at once with no findings, spends nothing,
+and the run report names it, so no reader mistakes it for a review.
 """
 
 from __future__ import annotations
@@ -41,8 +47,10 @@ from msa.core._frozen import Frozen
 from msa.core.effects import (
     AwaitHumanRuling,
     AwaitPlanApproval,
+    AwaitReleaseApproval,
+    AwaitResume,
+    AwaitUnblock,
     Effect,
-    Finalize,
     IntegrateBuild,
     RequestReview,
 )
@@ -50,8 +58,6 @@ from msa.core.events import (
     AnyEvent,
     BuildIntegrated,
     EventBase,
-    Finalized,
-    IntakeCompleted,
     ReviewProduced,
 )
 from msa.core.ids import Digest, RunId
@@ -60,20 +66,23 @@ from msa.llm.client import MessagesClient
 from msa.llm.gateway import Gateway
 from msa.llm.store import ResponseStore
 from msa.observability import report
-from msa.runtime import review
+from msa.runtime import integration, review, security
 from msa.runtime.artifacts import PLAN_FILE, RunFiles, digest_of
 from msa.runtime.clock import Clock
 from msa.runtime.context import RunContext
 from msa.runtime.executors import Router
-from msa.runtime.intake import IntakeExecutor
+from msa.runtime.intake import AdmissionExecutor, ContextExecutor, ValidationExecutor
+from msa.runtime.integration import IntegrationExecutor
 from msa.runtime.interpreter import Executor, Interpreter, Observer, Parked
 from msa.runtime.journal import SqliteJournal
+from msa.runtime.release import PR_FILE, PublishExecutor, ReleaseExecutor
 from msa.runtime.roles import (
     CoderExecutor,
     PlannerExecutor,
     Revisions,
     TesterExecutor,
 )
+from msa.runtime.security import SecurityExecutor
 from msa.runtime.testing import TestSuiteExecutor
 from msa.runtime.verify import VerifyExecutor
 from msa.runtime.worktree import RunWorktree
@@ -106,25 +115,8 @@ class LiveEnvironment(Frozen):
 # ---------- the executors that are not agents
 
 
-class WorkspaceIntake:
-    """INTAKE, then the run's build and Tester worktrees at the base tree, before the event
-    is journaled: once intake has completed, every later executor (also after a resume)
-    finds them, and the two BUILDING regions never race to create theirs."""
-
-    def __init__(self, intake: IntakeExecutor, *worktrees: RunWorktree) -> None:
-        self.intake = intake
-        self.worktrees = worktrees
-
-    async def execute(self, effect: Effect, *, now: datetime) -> AnyEvent:
-        event = await self.intake.execute(effect, now=now)
-        if isinstance(event, IntakeCompleted):
-            for worktree in self.worktrees:
-                await worktree.ensure(event.base_tree)
-        return event
-
-
 class Integrate:
-    """Join the two BUILDING regions: the Tester's directories, as its worktree holds them,
+    """Join the two IMPLEMENTING regions: the Tester's directories, as its worktree holds them,
     overlaid on the Coder's tree. Each role could write only its own paths, so the overlay
     cannot conflict, and running it again after a crash changes nothing."""
 
@@ -144,24 +136,9 @@ class Integrate:
         return BuildIntegrated(at=now, effect_id=effect.id, head_tree=head)
 
 
-class FinalizeExecutor:
-    def __init__(self, context: RunContext) -> None:
-        self.context = context
-
-    async def execute(self, effect: Effect, *, now: datetime) -> AnyEvent:
-        command = effect.command
-        if not isinstance(command, Finalize):
-            raise TypeError(f"finalize cannot execute {command.kind}")
-        ctx = self.context
-        patch = await ctx.worktree.diff(await ctx.worktree.base_tree(), command.tree)
-        artifact = ctx.files.put(patch)
-        ctx.files.write("patch.diff", patch)
-        return Finalized(at=now, effect_id=effect.id, tree=command.tree, artifact=artifact)
-
-
 class HumanGate:
-    """A plan gate or a dispute for a person: the question goes to ``question.md`` in the
-    run directory, and the run parks. The clock is stopped until they answer."""
+    """A question for a person: it goes to ``question.md`` in the run directory, and the
+    run parks. The clock is stopped until they answer (ADR-014)."""
 
     def __init__(self, context: RunContext) -> None:
         self.context = context
@@ -190,6 +167,31 @@ class HumanGate:
                     "stays), or deferred (a follow-up):\n\n"
                     f"`msa rule {run} {example}`\n\n"
                     f'Stop the run instead: `msa rule {run} --abort "why"`\n'
+                )
+            case AwaitReleaseApproval(tree=tree):
+                pr = ctx.files.read(PR_FILE) or "(pr.md is missing)"
+                question = (
+                    f"# Run {run}: approve the release?\n\n"
+                    "Every gate passed on the tree below. Read the description and the patch "
+                    f"(`patch.diff` in this directory), then:\n\n"
+                    f"Approve and publish to a local branch: `msa approve {run}`\n\n"
+                    f'Send it back for changes: `msa approve {run} --reject "what to change"`'
+                    f'\n\nStop the run: `msa approve {run} --abort "why"`\n\n---\n\n{pr}'
+                )
+                patch = await ctx.worktree.diff(await ctx.worktree.base_tree(), tree)
+                ctx.files.write("patch.diff", patch)
+            case AwaitUnblock(reason=reason):
+                question = (
+                    f"# Run {run} is blocked\n\n{reason}\n\n"
+                    "No agent can fix this: it is the environment (a missing tool or service), "
+                    "or a test that was broken before the run. Fix it, then rerun the stage:"
+                    f'\n\n`msa unblock {run} --note "what you fixed"`\n\n'
+                    f'Stop the run instead: `msa unblock {run} --abort "why"`\n'
+                )
+            case AwaitResume():
+                question = (
+                    f"# Run {run} is paused\n\nContinue it where it stopped: "
+                    f"`msa resume {run}`\n\nStop it: `msa cancel {run}`\n"
                 )
             case other:
                 raise TypeError(f"no person answers {other.kind}")
@@ -220,27 +222,40 @@ class Unavailable:
 # ---------- wiring
 
 
-def executors(context: RunContext, intake: IntakeExecutor) -> Router:
+def executors(
+    context: RunContext,
+    admission: AdmissionExecutor,
+    validation: ValidationExecutor,
+    loading: ContextExecutor,
+) -> Router:
     coder, tester = CoderExecutor(context), TesterExecutor(context)
     person = HumanGate(context)
     reviewing: Executor = (
         review.ReviewExecutor(context) if context.config.review.enabled else StandIns()
     )
     routes: dict[str, Executor] = {
-        "prepare_workspace": WorkspaceIntake(intake, context.worktree, context.tester_worktree),
+        "admit_run": admission,
+        "validate_request": validation,
+        "load_context": loading,
         "request_plan": PlannerExecutor(context),
         "implement_plan": coder,
         "author_acceptance_tests": tester,
         "revise_changes": Revisions(coder, tester),
         "integrate_build": Integrate(context),
-        "run_verification": VerifyExecutor(context),
-        "run_test_suite": TestSuiteExecutor(context),
-        "finalize": FinalizeExecutor(context),
+        "run_static_analysis": VerifyExecutor(context),
+        "run_unit_tests": TestSuiteExecutor(context),
+        "run_integration_tests": IntegrationExecutor(context),
+        "run_security_review": SecurityExecutor(context),
         "request_review": reviewing,
         "run_negotiation_round": review.NegotiationExecutor(context),
         "request_arbitration": review.ArbitrationExecutor(context),
+        "verify_release": ReleaseExecutor(context),
+        "publish_release": PublishExecutor(context),
         "await_plan_approval": person,
         "await_human_ruling": person,
+        "await_release_approval": person,
+        "await_unblock": person,
+        "await_resume": person,
     }
     return Router(routes, fallback=Unavailable())
 
@@ -252,14 +267,14 @@ def context(
     *,
     run_id: RunId,
     on_violation: Callable[[Violation], None] = log_violation,
-    intake: IntakeExecutor,
+    validation: ValidationExecutor,
 ) -> RunContext:
     repo, state_dir = Path(environment.repo), Path(environment.state_dir)
 
     def preferences() -> Resolved:
-        # Resolved by INTAKE; after a resume that skipped INTAKE, resolved again from the
+        # Resolved by VALIDATING; after a resume that skipped it, resolved again from the
         # same layers (an edit to a layer file between crash and resume is picked up).
-        return intake.resolved or store.load(repo, environment.overrides)
+        return validation.resolved or store.load(repo, environment.overrides)
 
     return RunContext(
         run_id=run_id,
@@ -294,7 +309,7 @@ def write_report(
         verifications=files.records("verifications.jsonl"),
         summaries=files.records("summaries.jsonl"),
         stand_ins={} if reviewed else STAND_INS,
-        patch=files.read("patch.diff") if state.phase is Phase.DONE else None,
+        patch=files.read("patch.diff") if state.phase is Phase.COMPLETED else None,
         tests=tests,
         last_test_report=files.text(Digest(tests[-1]["report"])) if tests else None,
         review=report.Review(
@@ -302,6 +317,11 @@ def write_report(
             findings=files.records(review.FINDINGS),
             rounds=files.records(review.ROUNDS),
             rulings=files.records(review.RULINGS),
+        ),
+        gates=report.Gates(
+            integrations=files.records(integration.RECORDS),
+            security=files.records(security.RECORDS),
+            releases=files.records("releases.jsonl"),
         ),
     )
     return files.write("report.md", text)
@@ -322,10 +342,9 @@ def interpreter(
 ) -> Interpreter:
     """The interpreter that drives (or resumes) a live run, writing its report at the end."""
     repo = Path(environment.repo)
-    intake = IntakeExecutor(
-        repo,
-        LocalSandbox(Root.at(repo), config.sandbox, role="intake", on_violation=on_violation),
-        overrides=environment.overrides,
+    sandbox = LocalSandbox(Root.at(repo), config.sandbox, role="intake", on_violation=on_violation)
+    validation = ValidationExecutor(
+        repo, sandbox, task=environment.task, overrides=environment.overrides
     )
     run = context(
         environment,
@@ -333,7 +352,18 @@ def interpreter(
         Gateway(client, config, store=store),
         run_id=run_id,
         on_violation=on_violation,
-        intake=intake,
+        validation=validation,
+    )
+    admission = AdmissionExecutor(
+        config.admission,
+        limits=lambda: journal.load(run_id).limits,
+        live_runs=lambda: live_runs_of(journal, environment.repo, besides=run_id),
+    )
+    loading = ContextExecutor(
+        sandbox,
+        run.files,
+        run_id,
+        (run.worktree, run.tester_worktree),
     )
 
     def finished(state: RunState) -> None:
@@ -343,10 +373,22 @@ def interpreter(
 
     return Interpreter(
         journal,
-        executors(run, intake),
+        executors(run, admission, validation, loading),
         clock=clock,
         observer=observer,
         on_outcome=finished,
         on_park=finished,
         snapshot_every=config.journal.snapshot_every,
+    )
+
+
+def live_runs_of(journal: SqliteJournal, repo: str, *, besides: RunId) -> int:
+    """Live runs of ``repo`` other than ``besides``, parked ones included."""
+    return sum(
+        1
+        for run in journal.runs()
+        if run.run_id != besides
+        and run.outcome is None
+        and run.environment.get("kind") == "live"
+        and run.environment.get("repo") == repo
     )

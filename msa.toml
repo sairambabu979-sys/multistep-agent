@@ -96,10 +96,11 @@ cpu_seconds = 1800
 max_file_bytes = 1073741824
 env_passthrough = ["PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "TERM"]
 
-# VERIFYING: deterministic checks on the head tree, in order, over the whole worktree except
-# the Tester's directories, which TESTING checks. The preference checks always run too.
+# STATIC_ANALYSIS: deterministic checks on the head tree, in order, over the whole worktree
+# except the Tester's directories, which UNIT_TESTING checks. The preference checks always
+# run too. No tests here: UNIT_TESTING and INTEGRATION_TESTING run them.
 [verify]
-commands = ["ruff_check", "ruff_format_check", "mypy", "pytest"]
+commands = ["ruff_check", "ruff_format_check", "mypy"]
 
 # Bounds on one agent invocation, on top of its effect's budget reservation.
 [agents]
@@ -113,7 +114,7 @@ repro_max_turns = 30
 arbiter_max_turns = 4
 repo_map_max_paths = 400
 
-# TESTING: each failing test is rerun alone this many times; mixed results mean flaky.
+# UNIT_TESTING: each failing test is rerun alone this many times; mixed results mean flaky.
 # A flaky test is reported and sent back to the Tester, never skipped.
 [testing]
 flake_reruns = 3
@@ -123,3 +124,24 @@ repro_directory = "tests/repro"  # repro tests that settle disputes (ADR-004)
 # pass-through stand-in, named in the report: arm B of the ablation (PLAN §11).
 [review]
 enabled = true
+
+# CREATED: what a run may ask for before any work starts (ADR-015).
+[admission]
+max_budget_usd = 50.0
+max_wall_clock_minutes = 240
+max_live_runs = 4  # per repository, parked runs included
+
+# INTEGRATION_TESTING: the repository's integration suite, which UNIT_TESTING leaves out.
+# isolate_network: run it in a network namespace of its own (unshare -rn) where possible.
+[integration]
+paths = ["tests/integration"]
+isolate_network = "auto"
+
+# SECURITY_REVIEW: secrets and insecure code in what the change adds; dependency changes.
+[security]
+forbid_new_dependencies = false
+audit_command = []  # e.g. ["pip-audit", "--strict"], run when a dependency manifest changes
+
+# Publishing, after a person approves: a local branch, never a push.
+[release]
+branch_prefix = "aegis/"

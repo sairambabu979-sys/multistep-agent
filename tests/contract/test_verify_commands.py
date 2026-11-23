@@ -14,5 +14,6 @@ def test_verify_commands_are_exactly_the_sandbox_allowlist() -> None:
     assert set(get_args(VerifyCommand.__value__)) == set(COMMANDS)
 
 
-def test_the_committed_settings_verify_with_every_allowlisted_command() -> None:
-    assert set(load_config(ROOT / "msa.toml").verify.commands) == set(COMMANDS)
+def test_the_committed_settings_run_every_static_check() -> None:
+    """Every allowlisted command but pytest, which belongs to the test stages."""
+    assert set(load_config(ROOT / "msa.toml").verify.commands) == set(COMMANDS) - {"pytest"}

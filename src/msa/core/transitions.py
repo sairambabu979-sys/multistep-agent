@@ -373,7 +373,7 @@ def _security_review_passed(state: RunState, event: SecurityReviewPassed) -> Dec
 def _security_review_failed(state: RunState, event: SecurityReviewFailed) -> Decision:
     """A security defect is a gate, not a discussion: it goes straight to rework."""
     _require_current(state, event.tree, "security review")
-    return _rework(state, Owner.CODER, failure_report=event.report)
+    return _rework(state, event.owner, failure_report=event.report)
 
 
 # ---------- CODE_REVIEW / NEGOTIATION / BLOCKED on a ruling
@@ -470,7 +470,9 @@ def _release_verification_failed(state: RunState, event: ReleaseVerificationFail
 
 def _release_approved(state: RunState, event: ReleaseApproved) -> Decision:
     """Only now, with a person's approval on record, is the release published."""
-    publish = PublishRelease(tree=state.require_head(), bundle=state.require_release())
+    publish = PublishRelease(
+        tree=state.require_head(), bundle=state.require_release(), approved_by=event.by
+    )
     return _go(state, Phase.HUMAN_APPROVAL, publish, approved_by=event.by)
 
 

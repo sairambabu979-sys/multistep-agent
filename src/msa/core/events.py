@@ -24,7 +24,7 @@ from msa.core.ids import (
     ValidRunId,
     ValidTreeHash,
 )
-from msa.core.values import FindingRef, Limits, Person, PlanRef, Resolution, Triage
+from msa.core.values import FindingRef, Limits, Owner, Person, PlanRef, Resolution, Triage
 
 
 class EventBase(Frozen):
@@ -208,10 +208,14 @@ class SecurityReviewPassed(Completion):
 
 
 class SecurityReviewFailed(Completion):
+    """A blocking security problem. ``owner`` is whoever can fix every one reported: the
+    Tester when they are all in its files, which the Coder may not edit; else the Coder."""
+
     completes: ClassVar[frozenset[str]] = frozenset({"run_security_review"})
     kind: Literal["security_review_failed"] = "security_review_failed"
     tree: ValidTreeHash
     report: ValidDigest
+    owner: Owner = Owner.CODER
 
 
 # ---------- review and negotiation

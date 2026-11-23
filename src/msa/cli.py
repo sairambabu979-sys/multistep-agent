@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import getpass
 import uuid
 from collections.abc import Callable, Coroutine
 from pathlib import Path
@@ -24,15 +25,28 @@ from msa.config import (
     load_config,
 )
 from msa.core import RunState, Step, TransitionRejected, transition
-from msa.core.effects import AwaitHumanRuling, AwaitPlanApproval, Command, Effect
+from msa.core.effects import (
+    AwaitHumanRuling,
+    AwaitPlanApproval,
+    AwaitReleaseApproval,
+    AwaitResume,
+    AwaitUnblock,
+    Command,
+    Effect,
+)
 from msa.core.events import (
     AnyEvent,
     CancelRequested,
     Completion,
     HumanAborted,
     HumanRuled,
+    PauseRequested,
     PlanApproved,
     PlanRejected,
+    ReleaseApproved,
+    ReleaseRejected,
+    Resumed,
+    Unblocked,
 )
 from msa.core.graph import analyze, render_markdown
 from msa.core.ids import FindingId, RunId
@@ -48,6 +62,7 @@ from msa.runtime import live
 from msa.runtime.artifacts import RunFiles
 from msa.runtime.checks import CheckError, CheckFinding, run_checks
 from msa.runtime.clock import LogicalClock, SystemClock
+from msa.runtime.intake import secrets_in_task
 from msa.runtime.interpreter import Interpreter, Observer
 from msa.runtime.journal import JournalError, SqliteJournal
 from msa.runtime.live import LiveEnvironment
@@ -655,12 +670,11 @@ def run_task(
     quiet: Quiet = False,
     db: Db = None,
 ) -> None:
-    """Plan, implement, verify and test a change to a git repository.
+    """Turn a task into a reviewed, tested, verified change to a git repository.
 
-    The Planner, Coder and Tester are real; the Reviewer arrives in M8, and until then its
-    stage passes through and the run report says so. The repository's checkout is never
-    modified: the work happens in worktrees under the state directory, and the result is a
-    patch."""
+    Every stage of the workflow runs (`msa fsm diagram`), and a person approves the release
+    before it is published to a local branch. The repository's checkout is never modified:
+    the work happens in worktrees under the state directory."""
     if (task is None) == (task_file is None):
         raise _fail("give exactly one of --task and --task-file")
     if record is not None and replay is not None:
@@ -673,12 +687,12 @@ def run_task(
     text = task or ""
     if not text.strip():
         raise _fail("the task is empty")
+    if problem := secrets_in_task(text):
+        raise _fail(problem)  # before anything is journaled: the journal keeps the task
     overrides: dict[str, Any] = {}
     if budget_usd is not None:
         overrides["budget_usd_micros"] = round(budget_usd * 1_000_000)
     limits = settings.limits.to_limits(**overrides)
-    if limits.plan_gate is PlanGate.HUMAN:
-        raise _fail("plan_gate = human needs an approval command, which is not built yet")
     journal_path = (db or settings.journal.path).resolve()
     cassette = record or replay
     environment = LiveEnvironment(
@@ -745,17 +759,27 @@ def simulate(
 
 
 @app.command()
-def resume(ctx: typer.Context, run_id: Run, db: Db = None, quiet: Quiet = False) -> None:
-    """Continue a run from its journal. Completed effects are never re-executed."""
+def resume(
+    ctx: typer.Context, run_id: Run, db: Db = None, quiet: Quiet = False, by: By = None
+) -> None:
+    """Continue a run from its journal; a paused run continues where it paused. Completed
+    effects are never re-executed."""
     rid = RunId(run_id)
     with _journal(ctx, db) as journal:
         try:
+            state = journal.load(rid)
+            paused = next((e for e in state.pending if isinstance(e.command, AwaitResume)), None)
+            if paused is not None:
+                event = Resumed(at=SystemClock().stamp(state), effect_id=paused.id, by=_person(by))
+                journal.append(event, transition(state, event).state, snapshot=True)
             environment = journal.environment(rid)
             if environment.get("kind") == "live":
                 state = _resume_live(ctx, journal, environment, rid, quiet=quiet)
             else:
                 interpreter = _interpreter(ctx, journal, environment, quiet=quiet)
                 state = _drive(rid, interpreter.resume(rid))
+        except TransitionRejected as exc:
+            raise _fail(f"cannot resume: {exc.detail}") from exc
         except JournalError as exc:
             raise _fail(str(exc)) from exc
     typer.echo(_outcome_line(state))
@@ -808,19 +832,56 @@ def cancel(
     typer.echo(_outcome_line(step.state))
 
 
-# ---------- a person's answer: a plan gate or a ruling (ADR-014)
+@app.command()
+def pause(
+    ctx: typer.Context,
+    run_id: Run,
+    reason: Annotated[str, typer.Option()] = "paused by operator",
+    by: By = None,
+    db: Db = None,
+) -> None:
+    """Pause a run: work in flight is cancelled and its budget released, and the clock
+    stops. `msa resume` continues it. A process still driving it stops at its next
+    commit. A run already waiting on a person cannot be paused: answer it or cancel it."""
+    rid = RunId(run_id)
+    with _journal(ctx, db) as journal:
+        try:
+            state = journal.load(rid)
+            event = PauseRequested(at=SystemClock().stamp(state), by=_person(by), reason=reason)
+            step = transition(state, event)
+            journal.append(event, step.state, snapshot=True)
+        except TransitionRejected as exc:
+            raise _fail(f"cannot pause: {exc.detail}") from exc
+        except JournalError as exc:
+            raise _fail(str(exc)) from exc
+    typer.echo(_outcome_line(step.state))
+
+
+# ---------- a person's answer: a plan, a ruling, a release, a block (ADR-014, ADR-015)
 
 
 Resume = Annotated[
     bool, typer.Option("--resume/--no-resume", help="Carry on with the run once answered.")
 ]
+By = Annotated[
+    str | None,
+    typer.Option("--by", help="Who is answering, for the audit trail. [default: your login]"),
+]
+
+
+def _person(by: str | None) -> str:
+    """The person answering. Agents cannot answer: the core refuses any `agent:` name."""
+    name = (by if by is not None else getpass.getuser()).strip()
+    if not name or name.startswith("agent:"):
+        raise _fail(f"{name or 'nobody'!r} cannot answer: only a person can")
+    return name
 
 
 def _answer(
     ctx: typer.Context,
     rid: RunId,
     db: Path | None,
-    command_type: type[Command],
+    command_types: tuple[type[Command], ...],
     answer: Callable[[RunState, Effect], Completion],
     *,
     resume: bool,
@@ -830,11 +891,12 @@ def _answer(
     with _journal(ctx, db) as journal:
         try:
             state = journal.load(rid)
-            effect = next((e for e in state.pending if isinstance(e.command, command_type)), None)
+            effect = next((e for e in state.pending if isinstance(e.command, command_types)), None)
             if effect is None:
                 waiting = ", ".join(e.command.kind for e in state.pending) or "nothing"
+                wanted = " or ".join(t.model_fields["kind"].default for t in command_types)
                 raise _fail(
-                    f"run {rid} is not waiting for {command_type.model_fields['kind'].default}: "
+                    f"run {rid} is not waiting for {wanted}: "
                     f"it is {state.phase.name}, waiting for {waiting}"
                 )
             event = answer(state, effect)
@@ -872,27 +934,56 @@ def _answer(
 def approve(
     ctx: typer.Context,
     run_id: Run,
-    reject: Annotated[
-        str | None, typer.Option(help="Send the plan back with this feedback.")
-    ] = None,
+    reject: Annotated[str | None, typer.Option(help="Send it back with this feedback.")] = None,
     abort: Annotated[str | None, typer.Option(help="Stop the run, for this reason.")] = None,
+    by: By = None,
     db: Db = None,
     quiet: Quiet = False,
     resume: Resume = True,
 ) -> None:
-    """Answer a plan gate: approve the plan, send it back, or stop the run."""
+    """Answer a plan gate or a release: approve it, send it back, or stop the run. An
+    approved release is published to a local branch; nothing is pushed."""
     if reject is not None and abort is not None:
         raise _fail("--reject and --abort are alternatives")
+    person = _person(by)
+
+    def answer(state: RunState, effect: Effect) -> Completion:
+        at = SystemClock().stamp(state)
+        release = isinstance(effect.command, AwaitReleaseApproval)
+        if abort is not None:
+            return HumanAborted(at=at, effect_id=effect.id, by=person, reason=abort)
+        if reject is not None:
+            rejected = ReleaseRejected if release else PlanRejected
+            return rejected(at=at, effect_id=effect.id, by=person, feedback=reject)
+        approved = ReleaseApproved if release else PlanApproved
+        return approved(at=at, effect_id=effect.id, by=person)
+
+    gates = (AwaitPlanApproval, AwaitReleaseApproval)
+    _answer(ctx, RunId(run_id), db, gates, answer, resume=resume, quiet=quiet)
+
+
+@app.command()
+def unblock(
+    ctx: typer.Context,
+    run_id: Run,
+    note: Annotated[str, typer.Option(help="What you fixed, for the audit trail.")] = "",
+    abort: Annotated[str | None, typer.Option(help="Stop the run, for this reason.")] = None,
+    by: By = None,
+    db: Db = None,
+    quiet: Quiet = False,
+    resume: Resume = True,
+) -> None:
+    """Rerun a stage that blocked on the environment, once you have fixed it (see
+    question.md in the run directory), or stop the run."""
+    person = _person(by)
 
     def answer(state: RunState, effect: Effect) -> Completion:
         at = SystemClock().stamp(state)
         if abort is not None:
-            return HumanAborted(at=at, effect_id=effect.id, reason=abort)
-        if reject is not None:
-            return PlanRejected(at=at, effect_id=effect.id, feedback=reject)
-        return PlanApproved(at=at, effect_id=effect.id)
+            return HumanAborted(at=at, effect_id=effect.id, by=person, reason=abort)
+        return Unblocked(at=at, effect_id=effect.id, by=person, note=note)
 
-    _answer(ctx, RunId(run_id), db, AwaitPlanApproval, answer, resume=resume, quiet=quiet)
+    _answer(ctx, RunId(run_id), db, (AwaitUnblock,), answer, resume=resume, quiet=quiet)
 
 
 @app.command()
@@ -906,6 +997,7 @@ def rule(
         ),
     ] = None,
     abort: Annotated[str | None, typer.Option(help="Stop the run, for this reason.")] = None,
+    by: By = None,
     db: Db = None,
     quiet: Quiet = False,
     resume: Resume = True,
@@ -922,13 +1014,15 @@ def rule(
             raise _fail(f"{item!r}: expected FINDING=upheld|dismissed|deferred")
         resolutions.append(Resolution(finding_id=FindingId(finding_id), verdict=Verdict(verdict)))
 
+    person = _person(by)
+
     def answer(state: RunState, effect: Effect) -> Completion:
         at = SystemClock().stamp(state)
         if abort is not None:
-            return HumanAborted(at=at, effect_id=effect.id, reason=abort)
-        return HumanRuled(at=at, effect_id=effect.id, resolutions=tuple(resolutions))
+            return HumanAborted(at=at, effect_id=effect.id, by=person, reason=abort)
+        return HumanRuled(at=at, effect_id=effect.id, by=person, resolutions=tuple(resolutions))
 
-    _answer(ctx, RunId(run_id), db, AwaitHumanRuling, answer, resume=resume, quiet=quiet)
+    _answer(ctx, RunId(run_id), db, (AwaitHumanRuling,), answer, resume=resume, quiet=quiet)
 
 
 @app.command(name="runs")

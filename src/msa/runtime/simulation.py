@@ -252,7 +252,12 @@ def outcomes(effect: Effect, at: datetime, *, rich: bool = False) -> list[AnyEve
         case RunSecurityReview(tree=t):
             return [
                 SecurityReviewPassed(at=at, effect_id=eid, tree=t, report=digest("security")),
-                SecurityReviewFailed(at=at, effect_id=eid, tree=t, report=digest("secret")),
+                *(
+                    SecurityReviewFailed(
+                        at=at, effect_id=eid, tree=t, report=digest("secret"), owner=owner
+                    )
+                    for owner in Owner
+                ),
             ]
         case RequestReview(tree=t, cycle=cycle):
             return [

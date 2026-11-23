@@ -1,6 +1,6 @@
-"""VERIFYING (PLAN §2): deterministic checks on the head tree. No model is involved.
+"""STATIC_ANALYSIS (ADR-015): deterministic checks on the head tree. No model is involved.
 
-``run_verification(tree)`` first removes every file the tree leaves out (gitignored ones,
+``run_static_analysis(tree)`` first removes every file the tree leaves out (gitignored ones,
 chiefly: they would not be delivered, so they must not make a check pass), then proves the
 worktree holds ``tree`` (evidence is bound to the tree it was produced for). Then it runs,
 in order:
@@ -14,12 +14,12 @@ in order:
    which decide whether and how the Tester's tests run (ADR-013).
 
 Both leave out the Tester's directories (``tests/acceptance``, ``tests/repro``). A failure
-here is the Coder's to fix, and the Coder may not edit those paths: TESTING checks them
-instead, and sends their failures to the Tester. The acceptance tests themselves run in
-TESTING too, where fail-before/pass-after and flakes are judged.
+here is the Coder's to fix, and the Coder may not edit those paths: UNIT_TESTING checks
+them instead, and sends their failures to the Tester. No test runs here: UNIT_TESTING and
+INTEGRATION_TESTING run them, where fail-before/pass-after and flakes are judged.
 
 Every check runs even after one fails, so a single revision can fix them all. The report
-is stored as an artifact either way: ``VerificationFailed`` names it, and the Coder's
+is stored as an artifact either way: ``StaticAnalysisFailed`` names it, and the Coder's
 revision reads it.
 
 A check that cannot run at all (the program is missing, a checker crashes) is not the
@@ -36,8 +36,8 @@ from datetime import datetime
 from typing import assert_never
 
 from msa.config import Role, VerifyCommand
-from msa.core.effects import Effect, RunVerification
-from msa.core.events import AnyEvent, VerificationFailed, VerificationPassed
+from msa.core.effects import Effect, RunStaticAnalysis
+from msa.core.events import AnyEvent, StaticAnalysisFailed, StaticAnalysisPassed
 from msa.core.ids import TreeHash
 from msa.runtime.checks import CheckFinding, run_checks
 from msa.runtime.context import RunContext
@@ -135,17 +135,18 @@ class VerifyExecutor:
 
     async def execute(self, effect: Effect, *, now: datetime) -> AnyEvent:
         command = effect.command
-        if not isinstance(command, RunVerification):
-            raise TypeError(f"verification cannot execute {command.kind}")
+        if not isinstance(command, RunStaticAnalysis):
+            raise TypeError(f"static analysis cannot execute {command.kind}")
         ctx = self.context
         removed = await ctx.worktree.prune()
         current = await ctx.worktree.snapshot()
         if current != command.tree:
             raise RuntimeError(
-                f"the worktree holds tree {current}, but verification was asked for {command.tree}"
+                f"the worktree holds tree {current}, but static analysis was asked for "
+                f"{command.tree}"
             )
         sandbox = ctx.sandbox(Role.CODER)
-        # The Tester's directories are checked in TESTING, where a failure goes to the
+        # The Tester's directories are checked in UNIT_TESTING, where a failure goes to the
         # Tester: here it would go to the Coder, who may not edit them.
         tester = ctx.config.capabilities.owned_directories(Role.TESTER)
         results: list[CheckResult] = []
@@ -163,7 +164,7 @@ class VerifyExecutor:
 
         ok = all(r.passed for r in results)
         failed = [r.name for r in results if not r.passed]
-        heading = f"# Verification of tree {command.tree}: " + (
+        heading = f"# Static analysis of tree {command.tree}: " + (
             "passed" if ok else f"FAILED ({', '.join(failed)})"
         )
         notes = [removed_section(removed)] if removed else []
@@ -180,5 +181,5 @@ class VerifyExecutor:
             },
         )
         if ok:
-            return VerificationPassed(at=now, effect_id=effect.id, tree=command.tree)
-        return VerificationFailed(at=now, effect_id=effect.id, tree=command.tree, report=digest)
+            return StaticAnalysisPassed(at=now, effect_id=effect.id, tree=command.tree)
+        return StaticAnalysisFailed(at=now, effect_id=effect.id, tree=command.tree, report=digest)

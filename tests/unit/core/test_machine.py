@@ -186,7 +186,9 @@ def test_effects_carry_the_inputs_their_executors_need() -> None:
         tree=BUILD, bundle=bundle(BUILD)
     )
     d.approve_release()
-    assert d.effect(PublishRelease).command == PublishRelease(tree=BUILD, bundle=bundle(BUILD))
+    assert d.effect(PublishRelease).command == PublishRelease(
+        tree=BUILD, bundle=bundle(BUILD), approved_by=PERSON
+    )
 
 
 def test_effect_ids_are_deterministic_functions_of_the_journal() -> None:
@@ -1333,3 +1335,23 @@ def test_agent_work_never_stops_the_clock() -> None:
     d.to_review()
     assert d.state.waiting_since is None
     assert d.state.paused == timedelta(0)
+
+
+def test_a_security_failure_in_the_testers_files_goes_back_to_the_tester() -> None:
+    d = Driver()
+    d.intake()
+    d.plan()
+    d.build()
+    d.static()
+    d.unit()
+    d.integration()
+    d.complete(
+        RunSecurityReview,
+        SecurityReviewFailed,
+        tree=BUILD,
+        report=digest("secret"),
+        owner=Owner.TESTER,
+    )
+    assert d.effect(ReviseChanges).command == ReviseChanges(
+        owner=Owner.TESTER, tree=BUILD, failure_report=digest("secret")
+    )

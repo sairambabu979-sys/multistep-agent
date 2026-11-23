@@ -26,7 +26,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -61,26 +61,36 @@ class GitError(RuntimeError):
     """A harness git command failed. Not the model's doing, so the effect fails."""
 
 
-async def git(cwd: Path, *args: str, excludes: Path | None = None, identity: bool = False) -> str:
+async def git(
+    cwd: Path,
+    *args: str,
+    excludes: Path | None = None,
+    identity: bool = False,
+    env: Mapping[str, str] | None = None,
+) -> str:
+    """A harness git command. ``identity`` fixes author, committer and dates (reproducible
+    commits); ``env`` sets other variables, such as a real author for a release."""
     config = ["-c", "core.fsmonitor=false", "-c", f"core.hooksPath={os.devnull}"]
     config += ["-c", "core.quotePath=false"]
     if excludes is not None:
         config += ["-c", f"core.excludesFile={excludes}"]
-    env = {k: v for k, v in os.environ.items() if k not in _INHERITED_GIT}
-    env |= {
+    variables = {k: v for k, v in os.environ.items() if k not in _INHERITED_GIT}
+    variables |= {
         "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_CONFIG_GLOBAL": os.devnull,
         "GIT_TERMINAL_PROMPT": "0",
         "LC_ALL": "C",
     }
     if identity:
-        env |= IDENTITY
+        variables |= IDENTITY
+    if env:
+        variables |= env
     process = await asyncio.create_subprocess_exec(
         "git",
         *config,
         *args,
         cwd=cwd,
-        env=env,
+        env=variables,
         stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,

@@ -1,18 +1,19 @@
-"""TESTING (PLAN §6.1): is the change proven by tests that mean something?
+"""UNIT_TESTING (PLAN §6.1, ADR-015): is the change proven by tests that mean something?
 
-``run_test_suite(tree, base_tree)`` first removes every file the tree leaves out and proves
+``run_unit_tests(tree, base_tree)`` first removes every file the tree leaves out and proves
 the build worktree holds ``tree``. Then:
 
 1. **There are acceptance tests.** The Tester's new test modules (``test_*.py`` or
    ``*_test.py`` under its own directories) must exist, and each must define tests: a
    plan's acceptance criteria with no tests prove nothing.
 2. **They are clean.** ``ruff check`` and ``ruff format --check`` on the Tester's files, and
-   the preference checks: VERIFYING left these to TESTING, where a failure goes to their
-   owner.
+   the preference checks: STATIC_ANALYSIS left these to this stage, where a failure goes
+   to their owner.
 3. **Everything passes after the change (pass-after).** The repository's own tests run on
-   ``tree``; the acceptance tests run on it in a pytest process of their own, so nothing
-   else in the suite (another module, another directory's conftest.py) shares their
-   session. VERIFYING has already refused any change to the conftest.py files and pytest
+   ``tree``, except the integration suite (``[integration].paths``, the next stage's); the
+   acceptance tests run on it in a pytest process of their own, so nothing else in the
+   suite (another module, another directory's conftest.py) shares their session.
+   STATIC_ANALYSIS has already refused any change to the conftest.py files and pytest
    configuration above them.
 4. **Every acceptance test ran and passed.** Each test the Tester wrote (found in its
    source, as pytest finds tests) must appear in that run as *passed*: skipped, xfailed and
@@ -25,12 +26,13 @@ the build worktree holds ``tree``. Then:
    whatever the Coder did, so it is rejected (I-03); so is one that is skipped there or does
    not run. A collection error counts as failing, the usual way a test of new code fails.
 7. **Consistent failures are triaged** by the Tester role, read-only: ``impl_bug`` goes to
-   the Coder, ``test_bug`` to the Tester, ``environment`` fails the run (no agent can fix
-   it). Flaky, rejected and non-running tests are the Tester's without asking a model.
+   the Coder, ``test_bug`` to the Tester, ``environment`` blocks the stage for a person to
+   fix (no agent can). Flaky, rejected and non-running tests are the Tester's without
+   asking a model.
 
 Problems that need no model are reported first, so a model is paid only to diagnose what a
 rule cannot. The report (a test matrix of before/after per acceptance test, plus every
-problem) is stored as an artifact; ``TestsFailed`` names it and the revision reads it.
+problem) is stored as an artifact; ``UnitTestsFailed`` names it and the revision reads it.
 
 Test outcomes come from pytest's JUnit XML, written outside the worktree, so nothing the
 run produces lands in a tree. A suite that cannot run at all (pytest's internal and usage
@@ -51,8 +53,8 @@ from msa.agents import tester
 from msa.agents.schemas import Plan, TriageKind
 from msa.agents.toolset import toolset
 from msa.config import Role
-from msa.core.effects import Effect, RunTestSuite
-from msa.core.events import AnyEvent, TestsFailed, TestsPassed
+from msa.core.effects import Effect, RunUnitTests
+from msa.core.events import AnyEvent, UnitTestsFailed, UnitTestsPassed
 from msa.core.ids import Digest, TreeHash
 from msa.core.values import FailureKind, Owner, Triage
 from msa.llm.gateway import InvocationResult
@@ -174,15 +176,21 @@ def cases_of(run: Run, module: str, test: str) -> list[Case]:
 
 
 async def run_pytest(
-    sandbox: LocalSandbox, targets: Sequence[str], junit: Path, *, ignore: Sequence[str] = ()
+    sandbox: LocalSandbox,
+    targets: Sequence[str],
+    junit: Path,
+    *,
+    ignore: Sequence[str] = (),
+    wrapper: Sequence[str] = (),
 ) -> Run:
+    """``wrapper`` runs before the launcher: ``unshare -rn``, for a suite without network."""
     junit.parent.mkdir(parents=True, exist_ok=True)
     junit.unlink(missing_ok=True)
     argv = ["pytest", "-q", "-p", "no:cacheprovider", "-o", "junit_family=xunit1"]
     skipped = [f"--ignore={p}" for p in ignore]
     argv += [*skipped, f"--junitxml={junit}", "--", *targets]
-    shown = " ".join(["pytest", "-q", *skipped, *targets])
-    done = await sandbox.execute([*sandbox.config.launcher, *argv], shown=shown)
+    shown = " ".join([*wrapper, "pytest", "-q", *skipped, *targets])
+    done = await sandbox.execute([*wrapper, *sandbox.config.launcher, *argv], shown=shown)
     if done.timed_out:
         raise SuiteUnrunnable(f"the test suite timed out:\n{done.render()}")
     if done.exit_code not in {0, PYTEST_FAILED, PYTEST_COLLECTION_ERRORS, PYTEST_NO_TESTS}:
@@ -281,8 +289,8 @@ class TestSuiteExecutor:
 
     async def execute(self, effect: Effect, *, now: datetime) -> AnyEvent:
         command = effect.command
-        if not isinstance(command, RunTestSuite):
-            raise TypeError(f"the test suite cannot execute {command.kind}")
+        if not isinstance(command, RunUnitTests):
+            raise TypeError(f"the unit test stage cannot execute {command.kind}")
         ctx = self.context
         removed = await ctx.worktree.prune()
         current = await ctx.worktree.snapshot()
@@ -319,7 +327,7 @@ class TestSuiteExecutor:
         report = self._report(command.tree, found, "passed")
         digest = ctx.files.put(report)
         self._record(effect, tree=command.tree, verdict="passed", kind=None, report=digest)
-        return TestsPassed(at=now, effect_id=effect.id, tree=command.tree)
+        return UnitTestsPassed(at=now, effect_id=effect.id, tree=command.tree)
 
     # ---------- the checks
 
@@ -351,7 +359,9 @@ class TestSuiteExecutor:
         if written:
             await self._lint(sandbox, written, found)
 
-        suite = await run_pytest(sandbox, [], junit / "after.xml", ignore=modules)
+        # The integration suite is the next stage's: it runs there, isolated.
+        integration = [p for p in ctx.config.integration.paths if (ctx.worktree.path / p).exists()]
+        suite = await run_pytest(sandbox, [], junit / "after.xml", ignore=[*modules, *integration])
         found.sections.append(
             f"## The repository's tests on the head tree\n\n{suite.done.render()}\n"
         )
@@ -481,12 +491,12 @@ class TestSuiteExecutor:
         triage: Triage,
         report: str,
         rejected: Sequence[str] = (),
-    ) -> TestsFailed:
+    ) -> UnitTestsFailed:
         digest = self.context.files.put(report)
         self._record(
             effect, tree=tree, verdict="failed", kind=triage.kind, report=digest, rejected=rejected
         )
-        return TestsFailed(
+        return UnitTestsFailed(
             at=now,
             effect_id=effect.id,
             tree=tree,

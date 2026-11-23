@@ -261,15 +261,21 @@ type VerifyCommand = Literal["pytest", "ruff_check", "ruff_format_check", "mypy"
 
 
 class VerifyConfig(Frozen):
-    """VERIFYING (PLAN §2): deterministic checks on the head tree, in this order. Each runs
-    over the whole worktree. Hard preference checks always run as well."""
+    """STATIC_ANALYSIS (ADR-015): deterministic checks on the head tree, in this order. Each
+    runs over the whole worktree. Hard preference checks always run as well. Tests do not
+    run here: UNIT_TESTING and INTEGRATION_TESTING run them, and judge their failures."""
 
-    commands: tuple[VerifyCommand, ...] = ("ruff_check", "ruff_format_check", "mypy", "pytest")
+    commands: tuple[VerifyCommand, ...] = ("ruff_check", "ruff_format_check", "mypy")
 
     @model_validator(mode="after")
     def _unique(self) -> Self:
         if len(set(self.commands)) != len(self.commands):
             raise ValueError("[verify].commands lists a command twice")
+        if "pytest" in self.commands:
+            raise ValueError(
+                "[verify].commands may not run pytest: tests run in UNIT_TESTING and "
+                "INTEGRATION_TESTING, where their failures are triaged"
+            )
         return self
 
 
@@ -297,6 +303,44 @@ class TestingConfig(Frozen):
     repro_directory: str = "tests/repro"
 
 
+class AdmissionConfig(Frozen):
+    """CREATED (ADR-015): what a run may ask for before any work starts."""
+
+    max_budget_usd: PositiveFloat = 50.0
+    max_wall_clock_minutes: PositiveInt = 240
+    # Live runs of one repository at a time, parked ones included: each holds worktrees and
+    # may be waiting on a person.
+    max_live_runs: PositiveInt = 4
+
+
+class IntegrationConfig(Frozen):
+    """INTEGRATION_TESTING (ADR-015): the repository's integration suite."""
+
+    # Where it lives. UNIT_TESTING leaves these out; this stage runs only these.
+    paths: tuple[str, ...] = ("tests/integration",)
+    # In a network namespace of its own (`unshare -rn`), so a test cannot reach any host.
+    # auto: when the kernel allows it, and the report says whether it did; always: block
+    # the stage where it cannot; never: only the sandbox's dead proxy stands in the way.
+    isolate_network: Literal["auto", "always", "never"] = "auto"
+
+
+class SecurityConfig(Frozen):
+    """SECURITY_REVIEW (ADR-015): deterministic rules over what the change adds."""
+
+    # A change to a dependency manifest is always listed in the report and the PR. With
+    # this set, it also fails the gate: a person adds dependencies, not an agent.
+    forbid_new_dependencies: bool = False
+    # Run when a manifest changes, e.g. ["pip-audit", "--strict"]; it must exit 0. Empty:
+    # no audit, and the report says so.
+    audit_command: tuple[str, ...] = ()
+
+
+class ReleaseConfig(Frozen):
+    """FINAL_VERIFICATION and publishing (ADR-015)."""
+
+    branch_prefix: Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9/_-]*/$")] = "aegis/"
+
+
 class ReviewConfig(Frozen):
     """REVIEWING and NEGOTIATING (PLAN §4, ADR-014)."""
 
@@ -317,6 +361,10 @@ class MsaConfig(Frozen):
     testing: TestingConfig = TestingConfig()
     review: ReviewConfig = ReviewConfig()
     agents: AgentsConfig = AgentsConfig()
+    admission: AdmissionConfig = AdmissionConfig()
+    integration: IntegrationConfig = IntegrationConfig()
+    security: SecurityConfig = SecurityConfig()
+    release: ReleaseConfig = ReleaseConfig()
 
     @model_validator(mode="after")
     def _repro_tests_are_the_testers(self) -> Self:
