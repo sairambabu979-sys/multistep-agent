@@ -15,13 +15,20 @@ built and tested end to end, with only the model scripted. The journal runs on S
 PostgreSQL, and runs can be driven in-process or by Temporal
 ([ADR-017](docs/adr/017-postgres-and-temporal.md)).
 
-**With the real model** it has run once, from the manual `live run` workflow
-(`.github/workflows/live-run.yml`), on the definition-of-done task. It reached the release
-approval for $0.53 of a $5 cap, after unit tests caught a bug in the Tester's own acceptance
-test and the Tester fixed it. That run's integration suite had network: the runner refused
-the network namespace, and `isolate_network = "auto"` fell back. The workflow now requires
-isolation and SIGKILLs the run partway, then resumes it. It has not been run that way yet,
-and no person has reviewed a live patch.
+**With the real model** it has run twice, from the manual `live run` workflow
+(`.github/workflows/live-run.yml`), on the definition-of-done task, each time stopping at
+the release approval:
+
+- **live-1** cost $0.53 of a $5 cap. Unit tests caught a bug in the Tester's own acceptance
+  test, and the Tester fixed it. Its integration suite had network: the runner refused the
+  network namespace, and `isolate_network = "auto"` fell back.
+- **live-2** ran with isolation required and cost $0.40. It was SIGKILLed at seq 6 with the
+  Coder mid-invocation, then resumed. None of the five effects already journaled ran
+  again, and the Coder's resumed invocation replayed 4 of its 7 turns instead of paying for
+  them again. Its integration suite ran without network.
+
+Neither run raised a review finding, so negotiation has not yet run with the real model.
+No person has reviewed a live patch.
 
 The full design is in [`docs/PLAN.md`](docs/PLAN.md), decisions are in
 [`docs/adr/`](docs/adr/), and the generated state diagram is in [`docs/fsm.md`](docs/fsm.md).

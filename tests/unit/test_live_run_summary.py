@@ -114,6 +114,7 @@ def test_a_resume_that_kept_to_the_journal_is_reported_with_its_replayed_turns(
     )
     text, reached = script().summarize(db, RUN, tmp_path / "runs" / RUN, CRASH)
     assert reached
+    assert "(msa and 4 process(es) it had started) was SIGKILLed" in text
     assert "SIGKILLed once the journal held seq 6, after `ImplementationCompleted`" in text
     assert "to seq 14" in text
     assert "Pending at the crash: `run-1:5:1` (author_acceptance_tests)." in text
@@ -130,12 +131,13 @@ def test_a_resume_that_kept_to_the_journal_is_reported_with_its_replayed_turns(
 def test_an_answered_effect_invoked_again_after_the_crash_fails_the_run(tmp_path: Path) -> None:
     db = crashed(tmp_path, invocation("run-1:5:0", "coder"), invocation("run-1:5:1", "tester"))
     evidence = tmp_path / "crash.json"
-    evidence.write_text(json.dumps(CRASH), encoding="utf-8")
+    evidence.write_text(json.dumps(CRASH | {"processes": 1}), encoding="utf-8")
     summary = tmp_path / "summary.md"
     argv = ["--db", str(db), "--run", RUN, "--crash", str(evidence), "--summary", str(summary)]
 
     assert script().main(argv) == 1  # waiting at the gate, but the resume broke ADR-007
     text = summary.read_text(encoding="utf-8")
     assert "| phase | **human_approval** |" in text
+    assert "(msa alone: no sandboxed command was running at that instant)" in text
     assert "**Invoked again after the crash, though the journal held their answers: " in text
     assert "`run-1:5:0`.** ADR-007 says this never happens." in text

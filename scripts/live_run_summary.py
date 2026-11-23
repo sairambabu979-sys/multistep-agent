@@ -47,13 +47,18 @@ def crash_section(
     pending = {p["effect"] for p in crash["pending"]}
     rerun = [r for r in after if r["effect"] in pending]
     listed = ", ".join(f"`{p['effect']}` ({p['kind']})" for p in crash["pending"]) or "none"
+    others = int(crash["processes"]) - 1
+    tree = (
+        f"msa and {others} process(es) it had started"
+        if others
+        else "msa alone: no sandboxed command was running at that instant"
+    )
     out = [
         "## Crash and resume",
         "",
-        f"The run's process tree ({crash['processes']} processes, its sandboxed commands "
-        f"included) was SIGKILLed once the journal held seq {seq}, after "
-        f"`{crash['event']}`. Nothing was cleaned up. `msa resume` then continued it from "
-        f"the journal, to seq {head}.",
+        f"The run's whole process tree ({tree}) was SIGKILLed once the journal held seq "
+        f"{seq}, after `{crash['event']}`. Nothing was cleaned up. `msa resume` then "
+        f"continued it from the journal, to seq {head}.",
         "",
         f"- Pending at the crash: {listed}.",
     ]
