@@ -25,6 +25,7 @@ from msa.tools.sandbox import (
     _rg_match,
     network_namespace,
 )
+from tests.support import netns
 from tests.support.tools import Tree, build_tree, sandbox_config
 
 PY = sys.executable
@@ -175,8 +176,8 @@ NET_TEST = (
 )
 
 
-@pytest.mark.skipif(network_namespace() is None, reason="no unprivileged network namespaces here")
 def test_an_agent_command_has_no_network_at_all(tree: Tree) -> None:
+    netns.needs_isolation(network_namespace() is not None)
     (tree.repo / "test_net.py").write_text(NET_TEST)
     done = asyncio.run(sandbox(tree).run("pytest", ["test_net.py"]))
     assert done.exit_code == 1, done.render()

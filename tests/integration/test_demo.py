@@ -52,6 +52,7 @@ from msa.observability.report import timeline
 from msa.runtime.interpreter import Observer
 from msa.runtime.journal import SqliteJournal
 from msa.tools.sandbox import network_namespace
+from tests.support import netns
 from tests.support.runs import (
     APPROVER,
     RELEASE,
@@ -501,7 +502,8 @@ def test_the_definition_of_done_run(harness: Harness) -> None:
 
     integration = records(harness, "integrations.jsonl")
     assert {(i["verdict"], i["ran"]) for i in integration} == {("passed", True)}
-    assert {i["isolated"] for i in integration} == {network_namespace() is not None}
+    isolated = netns.isolation(network_namespace() is not None)
+    assert {i["isolated"] for i in integration} == {isolated}
 
     # The published branch: the approved tree, the person named, the checkout untouched.
     branch = "aegis/run-1"
@@ -524,8 +526,8 @@ def test_the_definition_of_done_run(harness: Harness) -> None:
     assert pr.startswith("# Add Store.restock(sku, quantity) to src/inventory/store.py\n")
     for gate in ("Static analysis", "Unit tests", "Security review"):
         assert f"| {gate} | passed | `sha256:" in pr, gate
-    isolated = "without network" if network_namespace() else "with network"
-    assert f"| Integration tests | passed, {isolated} |" in pr
+    network = "without network" if isolated else "with network"
+    assert f"| Integration tests | passed, {network} |" in pr
     caught = pr.split("## Caught along the way\n\n", 1)[1].split("\n\n## ", 1)[0]
     assert [row.split(" | ")[0::2] for row in caught.splitlines()[4:]] == [
         ["| Static analysis", "`preferences`"],

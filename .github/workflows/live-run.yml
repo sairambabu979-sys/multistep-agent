@@ -4,6 +4,14 @@ name: live run
 # task of the definition-of-done run (tests/integration/test_demo.py), on the same fixture,
 # with every stage real. It spends, so it is manual only, and the budget is a hard cap.
 #
+# Agent commands and the integration suite run without network, and must: the run's
+# settings say isolate_network = "always", so a runner that cannot take the network away
+# fails the run instead of quietly running it with network.
+#
+# Unless crash_after_seq is 0, the run is SIGKILLed partway through, its whole process tree
+# at once (scripts/live_run_crash.py), and `msa resume` continues it from the journal. The
+# summary then checks that no effect the journal had answered was invoked again.
+#
 # The run stops at HUMAN_APPROVAL. Nothing is published and no workflow approves it: its PR
 # description, report, patch, timeline and journal are uploaded for a person to read, and
 # the job summary shows the outcome and the spend. The job fails if the run never reached
@@ -15,6 +23,12 @@ on:
         description: Hard cap on model spend for the run, in US dollars (at most 20)
         required: true
         default: "5"
+      crash_after_seq:
+        description: >-
+          SIGKILL the run once its journal holds this many events, then resume it (0: no
+          crash). At 6 the implementation is journaled and the acceptance tests are mid-call.
+        required: true
+        default: "6"
 
 permissions:
   contents: read
@@ -30,6 +44,7 @@ jobs:
     env:
       RUN_ID: live-${{ github.run_number }}
       BUDGET_USD: ${{ inputs.budget_usd }}
+      CRASH_AFTER_SEQ: ${{ inputs.crash_after_seq }}
     steps:
       - uses: actions/checkout@v4
 
@@ -44,10 +59,17 @@ jobs:
       - name: ripgrep (the search tool runs it)
         run: command -v rg || { sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep; }
 
-      - name: Check the budget
+      - name: Check the inputs
         run: |
           python3 -c "import os, sys; b = float(os.environ['BUDGET_USD']); \
             sys.exit(0 if 0 < b <= 20 else f'budget_usd must be above 0 and at most 20, not {b}')"
+          python3 -c "import os, sys; c = os.environ['CRASH_AFTER_SEQ']; \
+            sys.exit(0 if c.isdigit() else f'crash_after_seq must be a whole number, not {c!r}')"
+          echo "DB=$RUNNER_TEMP/aegis/runs.db" >> "$GITHUB_ENV"
+          echo "CRASH=$RUNNER_TEMP/aegis/crash.json" >> "$GITHUB_ENV"
+
+      - name: Network namespaces (agent commands and integration suites get no network)
+        run: scripts/allow_network_namespaces.sh
 
       - name: The repository to change (the inventory fixture, committed)
         run: |
@@ -59,29 +81,40 @@ jobs:
 
       - name: Settings for this run
         # The fixture has no environment of its own, so the sandbox runs ruff, mypy and pytest
-        # with this checkout's Python, as the integration tests do. Everything else is msa.toml.
+        # with this checkout's Python, as the integration tests do. Isolation is required, not
+        # attempted. Everything else is msa.toml.
         run: |
-          sed "s|^launcher = .*|launcher = [\"$GITHUB_WORKSPACE/.venv/bin/python\", \"-m\"]|" \
+          sed -e "s|^launcher = .*|launcher = [\"$GITHUB_WORKSPACE/.venv/bin/python\", \"-m\"]|" \
+            -e 's|^isolate_network = .*|isolate_network = "always"|' \
             msa.toml > "$RUNNER_TEMP/msa.toml"
-          grep -n '^launcher' "$RUNNER_TEMP/msa.toml"
+          grep -n -e '^launcher' -e '^isolate_network' "$RUNNER_TEMP/msa.toml"
+          test "$(grep -c '^isolate_network = "always"$' "$RUNNER_TEMP/msa.toml")" -eq 2
           uv run msa --config "$RUNNER_TEMP/msa.toml" config check
 
-      - name: The run (real model, every stage)
+      - name: The run (real model, every stage), crashed and resumed
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        # The venv's msa directly, not `uv run`: the crash must reach msa's own process tree.
         run: |
-          uv run msa --config "$RUNNER_TEMP/msa.toml" run \
-            --repo "$RUNNER_TEMP/inventory" \
-            --task-file .github/live-run/task.md \
-            --run-id "$RUN_ID" \
-            --budget-usd "$BUDGET_USD" \
-            --db "$RUNNER_TEMP/aegis/runs.db"
+          msa=("$GITHUB_WORKSPACE/.venv/bin/msa" --config "$RUNNER_TEMP/msa.toml")
+          run=("${msa[@]}" run --repo "$RUNNER_TEMP/inventory" \
+            --task-file .github/live-run/task.md --run-id "$RUN_ID" \
+            --budget-usd "$BUDGET_USD" --db "$DB")
+          if [ "$CRASH_AFTER_SEQ" -eq 0 ]; then
+            "${run[@]}"
+            exit
+          fi
+          uv run python scripts/live_run_crash.py --db "$DB" --run "$RUN_ID" \
+            --after-seq "$CRASH_AFTER_SEQ" --evidence "$CRASH" -- "${run[@]}"
+          "${msa[@]}" resume "$RUN_ID" --db "$DB"
 
-      - name: Outcome, spend and the PR description
+      - name: Outcome, spend, the crash and the PR description
         if: always()
         run: |
+          crash=()
+          if [ -f "$CRASH" ]; then crash=(--crash "$CRASH"); fi
           uv run python scripts/live_run_summary.py \
-            --db "$RUNNER_TEMP/aegis/runs.db" --run "$RUN_ID" --summary "$GITHUB_STEP_SUMMARY"
+            --db "$DB" --run "$RUN_ID" --summary "$GITHUB_STEP_SUMMARY" "${crash[@]}"
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -89,5 +122,6 @@ jobs:
           name: live-run
           path: |
             ${{ runner.temp }}/aegis/runs.db
+            ${{ runner.temp }}/aegis/crash.json
             ${{ runner.temp }}/aegis/runs/
           if-no-files-found: warn

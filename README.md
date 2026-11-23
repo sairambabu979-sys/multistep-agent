@@ -13,8 +13,15 @@ release, unblock, pause), the skills registry and security policy, the CLI, and 
 API with roles, a live event stream, an audit log and traces, and the web workbench are
 built and tested end to end, with only the model scripted. The journal runs on SQLite or
 PostgreSQL, and runs can be driven in-process or by Temporal
-([ADR-017](docs/adr/017-postgres-and-temporal.md)). **No model has run any of it yet**: the
-first live run needs `ANTHROPIC_API_KEY`.
+([ADR-017](docs/adr/017-postgres-and-temporal.md)).
+
+**With the real model** it has run once, from the manual `live run` workflow
+(`.github/workflows/live-run.yml`), on the definition-of-done task. It reached the release
+approval for $0.53 of a $5 cap, after unit tests caught a bug in the Tester's own acceptance
+test and the Tester fixed it. That run's integration suite had network: the runner refused
+the network namespace, and `isolate_network = "auto"` fell back. The workflow now requires
+isolation and SIGKILLs the run partway, then resumes it. It has not been run that way yet,
+and no person has reviewed a live patch.
 
 The full design is in [`docs/PLAN.md`](docs/PLAN.md), decisions are in
 [`docs/adr/`](docs/adr/), and the generated state diagram is in [`docs/fsm.md`](docs/fsm.md).
@@ -353,6 +360,8 @@ uv run msa policy show
 | Negotiation rules | Silence never closes a finding, only the other side's assent closes a contested one, and admission never widens a finding's scope (Hypothesis) |
 | The workbench | Unit tests of progress, the diff and stream parsers, and the approval panel's role gating (Vitest). End to end, the real workbench drives a real `msa serve` (Playwright) to approve a release, rule on a dispute and follow the run to the end, from the keyboard, with axe finding no serious or critical WCAG 2.1 AA violation on any page in either theme. |
 | Dependency audit | Every locked Python dependency, dev tools and extras included, is checked against PyPI's advisory data (`make audit`, CI's `audit` job), and the workbench's production npm dependencies with `npm audit` |
+| Network isolation | CI lets unprivileged users create network namespaces, which Ubuntu 24.04 refuses by default, and then requires them (`MSA_REQUIRE_NETNS=1`): an agent command and an integration suite must each fail to reach the network, and a runner that cannot isolate fails those tests instead of skipping them. Before this, CI skipped both. |
+| Live crash | The `live run` workflow SIGKILLs the real-model run's whole process tree once its journal reaches a given seq, then resumes it with `msa resume`. Its summary fails the job if any effect the journal had answered before the kill was invoked again. It lists the turns the resumed invocations replayed instead of buying them again. |
 | Contracts | Core purity (AST allowlist), schema completeness, `docs/fsm.md` freshness, layering (`import-linter`), only `msa.llm` imports the SDK, no credential in any cassette |
 
 ## Develop

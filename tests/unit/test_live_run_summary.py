@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import importlib.util
+import json
 from datetime import timedelta
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 from msa.core.events import CancelRequested
 from msa.core.ids import RunId
@@ -13,20 +14,13 @@ from msa.runtime.journal import SqliteJournal
 from msa.runtime.simulation import Profile, SimulationConfig
 from tests.support.driver import Driver
 from tests.support.factory import limits
+from tests.support.scripts import load
 
-ROOT = Path(__file__).resolve().parents[2]
 RUN = RunId("run-1")
 
 
 def script() -> ModuleType:
-    spec = importlib.util.spec_from_file_location(
-        "live_run_summary", ROOT / "scripts" / "live_run_summary.py"
-    )
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return load("live_run_summary")
 
 
 def journaled(db: Path, d: Driver) -> None:
@@ -67,3 +61,81 @@ def test_a_run_that_never_reached_the_gate_is_a_failure(tmp_path: Path) -> None:
     assert not reached
     assert "| phase | **cancelled** |" in text
     assert "## The PR description" not in text  # none was written
+
+
+# ---------- a run crashed at seq 6 (implementation answered, acceptance tests pending)
+
+CRASH = {
+    "run": RUN,
+    "after_seq": 6,
+    "seq": 6,
+    "event": "ImplementationCompleted",
+    "phase": "implementing",
+    "pending": [{"effect": "run-1:5:1", "kind": "author_acceptance_tests"}],
+    "processes": 5,
+    "invocations": 2,  # the planner's and the coder's, before the crash
+}
+
+
+def invocation(effect: str, role: str, turns: int = 1, replayed: int = 0) -> dict[str, Any]:
+    return {
+        "effect": effect,
+        "kind": "-",
+        "role": role,
+        "status": "ok",
+        "turns": turns,
+        "replayed": replayed,
+        "usd_micros": 1000,
+    }
+
+
+def crashed(tmp_path: Path, *after: dict[str, Any]) -> Path:
+    d = Driver(limits(wall_clock=timedelta(days=3650)))
+    d.to_review()
+    d.review()
+    d.verify_release()
+    db = tmp_path / "runs.db"
+    journaled(db, d)
+    before = [invocation("run-1:4:0", "planner"), invocation("run-1:5:0", "coder")]
+    lines = [json.dumps(r) for r in [*before, *after]]
+    run_dir = tmp_path / "runs" / RUN
+    run_dir.mkdir(parents=True)
+    (run_dir / "invocations.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return db
+
+
+def test_a_resume_that_kept_to_the_journal_is_reported_with_its_replayed_turns(
+    tmp_path: Path,
+) -> None:
+    db = crashed(
+        tmp_path,
+        invocation("run-1:5:1", "tester", turns=4, replayed=3),  # the pending one, again
+        invocation("run-1:12:0", "reviewer"),
+    )
+    text, reached = script().summarize(db, RUN, tmp_path / "runs" / RUN, CRASH)
+    assert reached
+    assert "SIGKILLed once the journal held seq 6, after `ImplementationCompleted`" in text
+    assert "to seq 14" in text
+    assert "Pending at the crash: `run-1:5:1` (author_acceptance_tests)." in text
+    assert "answered before the crash (5): none was invoked again." in text  # seq 2 to 6
+    assert "4 turn(s), 3 of them replayed from the response store" in text
+    assert "| `run-1:5:1` | tester | ok | 4 | 3 | $0.0010 |" in text
+    assert "run-1:5:0" not in text.split("| effect |", 1)[1]  # before the crash: not listed
+    timeline = text.split("## Timeline", 1)[1].splitlines()
+    marker = next(i for i, line in enumerate(timeline) if "SIGKILL" in line)
+    assert timeline[marker - 1].startswith("  6  ")
+    assert timeline[marker + 1].startswith("  7  ")
+
+
+def test_an_answered_effect_invoked_again_after_the_crash_fails_the_run(tmp_path: Path) -> None:
+    db = crashed(tmp_path, invocation("run-1:5:0", "coder"), invocation("run-1:5:1", "tester"))
+    evidence = tmp_path / "crash.json"
+    evidence.write_text(json.dumps(CRASH), encoding="utf-8")
+    summary = tmp_path / "summary.md"
+    argv = ["--db", str(db), "--run", RUN, "--crash", str(evidence), "--summary", str(summary)]
+
+    assert script().main(argv) == 1  # waiting at the gate, but the resume broke ADR-007
+    text = summary.read_text(encoding="utf-8")
+    assert "| phase | **human_approval** |" in text
+    assert "**Invoked again after the crash, though the journal held their answers: " in text
+    assert "`run-1:5:0`.** ADR-007 says this never happens." in text

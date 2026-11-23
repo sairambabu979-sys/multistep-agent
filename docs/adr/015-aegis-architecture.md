@@ -98,7 +98,11 @@ or a person only for what neither can decide.
   built on Radix primitives and vendored into the repository.
 - **Sandbox:** commands run in a fresh network namespace (`unshare -rn`) where available,
   so tests have no network at all, on top of ADR-009's confinement. Untrusted repositories
-  still need a container (M10).
+  still need a container (M10). "Where available" is narrower than it sounds: Ubuntu
+  24.04's AppArmor refuses unprivileged user namespaces by default, and `auto` then runs
+  commands with network. GitHub's runners are Ubuntu 24.04, and CI skipped both isolation
+  tests there until CI lifted the restriction and required them (`MSA_REQUIRE_NETNS=1`).
+  On a host you keep, set `isolate_network = "always"` to refuse to run without isolation.
 
 ### 4. Permissions
 

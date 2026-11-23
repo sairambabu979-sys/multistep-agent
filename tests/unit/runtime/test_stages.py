@@ -65,6 +65,7 @@ from msa.runtime.security import (
 )
 from msa.tools.paths import Root
 from msa.tools.sandbox import LocalSandbox
+from tests.support import netns
 from tests.support.factory import T0, limits, run_started
 from tests.support.llm import config as base_config
 from tests.support.repos import git, make_repo
@@ -341,14 +342,13 @@ def test_a_passing_suite_runs_without_network_where_the_kernel_allows(run: RunCo
     assert isinstance(answer, IntegrationTestsPassed)
     (record,) = run.files.records(integration.RECORDS)
     sandbox = run.sandbox(Role.CODER)
-    expected = asyncio.run(integration.isolation(sandbox)) is not None
+    expected = netns.isolation(asyncio.run(integration.isolation(sandbox)) is not None)
     assert (record["ran"], record["isolated"]) == (True, expected)
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="network namespaces are Linux's")
 def test_an_isolated_suite_cannot_reach_the_network(run: RunContext) -> None:
-    if asyncio.run(integration.isolation(run.sandbox(Role.CODER))) is None:
-        pytest.skip("this kernel does not let an unprivileged user create a network namespace")
+    netns.needs_isolation(asyncio.run(integration.isolation(run.sandbox(Role.CODER))) is not None)
     probe = (
         "import socket\n\n\ndef test_reaches_out() -> None:\n"
         "    socket.create_connection(('1.1.1.1', 80), timeout=2).close()\n"
