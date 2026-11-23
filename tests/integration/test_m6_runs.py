@@ -1,14 +1,15 @@
 """The first slice end to end (PLAN §6.2): whole journaled runs on a fixture repository.
 
 Every executor is real: intake, the run's git worktrees, the Planner, the Coder and (since
-M7) the Tester through the gateway and the tool layer, VERIFYING and TESTING with real
+M7) the Tester through the gateway and the tool layer, STATIC_ANALYSIS and UNIT_TESTING with real
 ruff and pytest in the sandbox, and finalize. Only the model is scripted. The Reviewer
 stage is still a pass-through stand-in.
 
-- I-01: the happy path reaches DONE, writes the report, and its event sequence matches
-  ``golden/i01_happy_path.txt`` (regenerate with ``MSA_UPDATE_GOLDEN=1``).
-- I-02: a lint failure goes VERIFYING -> REVISING -> VERIFYING -> TESTING, and the Coder's
-  revision request carries the linter's report.
+- I-01: the happy path reaches COMPLETED (a person approves, it publishes), writes the
+  report, and its event sequence matches ``golden/i01_happy_path.txt`` (regenerate with
+  ``MSA_UPDATE_GOLDEN=1``).
+- I-02: a lint failure goes STATIC_ANALYSIS -> REWORK -> STATIC_ANALYSIS -> UNIT_TESTING,
+  and the Coder's revision request carries the linter's report.
 - I-14: a refusal ends the run FAILED, with the category in the outcome and the report.
 """
 
@@ -27,6 +28,7 @@ from msa.llm.client import Request
 from msa.observability.report import timeline
 from tests.support.repos import git
 from tests.support.runs import (
+    APPROVER,
     GOOD_GREETER,
     LINTY_GREETER,
     RUN,
@@ -70,7 +72,7 @@ def test_i01_happy_path_completes_reports_and_matches_the_golden_sequence(
     )
     final, journal = harness.run(client)
     with journal:
-        assert final.phase is Phase.DONE, final.outcome
+        assert final.phase is Phase.COMPLETED, final.outcome
         assert final.outcome is not None
         assert final.outcome.reason is OutcomeReason.COMPLETED
         assert client.exhausted
@@ -91,8 +93,28 @@ def test_i01_happy_path_completes_reports_and_matches_the_golden_sequence(
     assert git(harness.repo, "status", "--porcelain") == ""
     git(harness.repo, "apply", "--check", str(harness.run_dir / "patch.diff"))
 
+    # Published, after a person approved: a local branch holding exactly the head tree on
+    # the base commit, in the approver's name. Nothing was pushed (the fixture has no remote).
+    branch = f"aegis/{RUN}"
+    commit = git(harness.repo, "rev-parse", f"refs/heads/{branch}")
+    assert final.outcome.detail == f"{branch} at {commit}"
+    tree, parent = git(harness.repo, "show", "-s", "--format=%T %P", commit).split()
+    assert tree == final.head_tree
+    assert parent == git(harness.repo, "rev-parse", "HEAD")  # the checkout did not move
+    message = git(harness.repo, "show", "-s", "--format=%B", commit)
+    assert message.startswith("Add farewell(name) to src/greeter.py")
+    assert f"Approved-by: {APPROVER}" in message
+    assert f"AEGIS-Run: {RUN}" in message
+    assert git(harness.repo, "remote") == ""
+    pr = (harness.run_dir / "pr.md").read_text(encoding="utf-8")
+    for section in ("## Summary", "## Task", "## Changes (3 file(s))", "## Evidence", "## Audit"):
+        assert section in pr, section
+    assert f"Every gate passed on exactly the tree delivered here, `{final.head_tree}`." in pr
+    assert "| Integration tests | nothing to run (no integration suite) |" in pr
+
     report = harness.report()
-    assert report.startswith("# Run run-1\n\n**Outcome:** DONE: completed\n")
+    assert report.startswith("# Run run-1\n\n**Outcome:** COMPLETED: completed\n")
+    assert f"**Release approved by:** {APPROVER}" in report
     for heading in (
         "## Task",
         "## Stand-ins",
@@ -100,8 +122,11 @@ def test_i01_happy_path_completes_reports_and_matches_the_golden_sequence(
         "## Timeline",
         "## Agent invocations",
         "## Agent summaries",
-        "## Verifications",
-        "## Test runs",
+        "## Static analysis",
+        "## Unit tests",
+        "## Integration tests",
+        "## Security review",
+        "## Release",
         "## Patch",
     ):
         assert heading in report, heading
@@ -150,15 +175,15 @@ def test_i02_lint_failure_is_revised_then_verified(harness: Harness) -> None:
     )
     final, journal = harness.run(client)
     with journal:
-        assert final.phase is Phase.DONE, final.outcome
+        assert final.phase is Phase.COMPLETED, final.outcome
         lines = timeline(journal.events(RUN))
     seen = phases(lines)
-    i = seen.index("VERIFYING -> REVISING")
+    i = seen.index("STATIC_ANALYSIS -> REWORK")
     assert seen[i - 1 : i + 3] == [
-        "BUILDING -> VERIFYING",
-        "VERIFYING -> REVISING",
-        "REVISING -> VERIFYING",
-        "VERIFYING -> TESTING",
+        "IMPLEMENTING -> STATIC_ANALYSIS",
+        "STATIC_ANALYSIS -> REWORK",
+        "REWORK -> STATIC_ANALYSIS",
+        "STATIC_ANALYSIS -> UNIT_TESTING",
     ]
     assert final.revisions == 1
 
@@ -212,7 +237,7 @@ def test_the_coder_cannot_write_tester_paths_or_the_worktree_git_file(harness: H
     )
     final, journal = harness.run(client)
     journal.close()
-    assert final.phase is Phase.DONE, final.outcome
+    assert final.phase is Phase.COMPLETED, final.outcome
     errors = [r for q in client.requests("coder") for r in tool_results(q) if r.get("is_error")]
     assert [e["content"].split(":")[0] for e in errors] == ["CapabilityDenied", "CapabilityDenied"]
     assert "belongs to tester" in errors[0]["content"]

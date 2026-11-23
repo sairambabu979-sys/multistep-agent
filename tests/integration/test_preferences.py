@@ -1,7 +1,8 @@
-"""I-16 (PLAN §6.2): conflicting hard preferences fail the run in INTAKE, precisely.
+"""I-16 (PLAN §6.2): conflicting hard preferences fail the run in VALIDATING, precisely.
 
-A whole journaled run: the real intake executor resolves the real preference layers of a
-real git repository, and the simulator answers every effect after it.
+A whole journaled run: the real validation executor resolves the real preference layers of
+a real git repository, the real context executor snapshots its base tree, and the
+simulator answers every other effect.
 """
 
 from __future__ import annotations
@@ -20,10 +21,11 @@ from msa.core.effects import Effect, RequestPlan
 from msa.core.events import AnyEvent
 from msa.core.ids import EffectId, RunId
 from msa.core.values import OutcomeReason, Phase
+from msa.runtime.artifacts import RunFiles
 from msa.runtime.clock import LogicalClock
 from msa.runtime.executors import Router
-from msa.runtime.intake import IntakeExecutor
-from msa.runtime.interpreter import Interpreter
+from msa.runtime.intake import ContextExecutor, ValidationExecutor, base_commit
+from msa.runtime.interpreter import Executor, Interpreter
 from msa.runtime.journal import SqliteJournal
 from msa.runtime.simulation import Profile, SimulatedEnvironment, SimulationConfig, digest
 from msa.skills.preferences import store
@@ -102,13 +104,15 @@ def journal(tmp_path: Path) -> Iterator[SqliteJournal]:
 
 def run(
     journal: SqliteJournal, repo: Path, *, overrides: tuple[str, ...] = ()
-) -> tuple[RunState, IntakeExecutor, Recording]:
+) -> tuple[RunState, ValidationExecutor, Recording]:
     sandbox = LocalSandbox(Root.at(repo), sandbox_config())
-    intake = IntakeExecutor(repo, sandbox, overrides=overrides)
-    rest = Recording()
-    interpreter = Interpreter(
-        journal, Router({"prepare_workspace": intake}, rest), clock=LogicalClock()
+    intake = ValidationExecutor(repo, sandbox, task="t", overrides=overrides)
+    context = ContextExecutor(
+        sandbox, RunFiles(Path(journal.path).parent / "files"), RunId("run-1"), ()
     )
+    rest = Recording()
+    routes: dict[str, Executor] = {"validate_request": intake, "load_context": context}
+    interpreter = Interpreter(journal, Router(routes, rest), clock=LogicalClock())
     final = asyncio.run(
         interpreter.start(
             run_id=RunId("run-1"),
@@ -120,14 +124,14 @@ def run(
     return final, intake, rest
 
 
-def test_i16_conflicting_hard_preferences_fail_the_run_in_intake(
+def test_i16_conflicting_hard_preferences_fail_the_run_in_validation(
     journal: SqliteJournal, repo: Path
 ) -> None:
     write_layers(repo)
     final, intake, rest = run(journal, repo)
     assert final.phase is Phase.FAILED
     assert final.outcome is not None
-    assert final.outcome.reason is OutcomeReason.INTAKE_REJECTED
+    assert final.outcome.reason is OutcomeReason.REQUEST_REJECTED
     user_file = os.environ["MSA_USER_PREFERENCES"]
     assert final.outcome.detail == (
         "preferences: conflicting hard preferences: style.quotes.double "
@@ -135,7 +139,7 @@ def test_i16_conflicting_hard_preferences_fail_the_run_in_intake(
         "both are hard and both apply to python, src/** / python, all paths. make one soft, "
         "narrow a scope, or switch one off with --pref <id>=off"
     )
-    assert rest.kinds == []  # nothing after intake ran: no planner was paid for
+    assert rest.kinds == ["admit_run"]  # nothing after validation ran: no planner was paid for
     assert intake.resolved is None
     assert journal.load(RunId("run-1")) == final
 
@@ -143,27 +147,31 @@ def test_i16_conflicting_hard_preferences_fail_the_run_in_intake(
 def test_a_run_override_lets_the_same_repo_through(journal: SqliteJournal, repo: Path) -> None:
     write_layers(repo)
     final, intake, rest = run(journal, repo, overrides=("style.quotes.single=off",))
-    assert final.phase is Phase.DONE
-    assert rest.kinds[0] == "request_plan"
+    assert final.phase is Phase.COMPLETED
+    assert rest.kinds[:2] == ["admit_run", "request_plan"]
     assert intake.resolved is not None
     assert {p.id for p in intake.resolved.select(["src/app.py"])} >= {"style.quotes.double"}
 
 
-def test_intake_snapshots_the_committed_base_tree(journal: SqliteJournal, repo: Path) -> None:
+def test_context_snapshots_the_committed_base_tree_and_commit(
+    journal: SqliteJournal, repo: Path
+) -> None:
     final, _, _ = run(journal, repo)
     assert final.base_tree == git(repo, "rev-parse", "HEAD^{tree}")
+    files = RunFiles(Path(journal.path).parent / "files")
+    assert base_commit(files) == git(repo, "rev-parse", "HEAD")
 
 
 @pytest.mark.parametrize(
     "broken", ["version: 1\nversion: 2\n", "version: 1\npreferences:\n  - id: x.y\n"]
 )
-def test_broken_preference_files_fail_intake_with_the_file_named(
+def test_broken_preference_files_fail_validation_with_the_file_named(
     journal: SqliteJournal, repo: Path, broken: str
 ) -> None:
     write_layers(repo, repo_layer=broken)
     final, _, _ = run(journal, repo)
     assert final.outcome is not None
-    assert final.outcome.reason is OutcomeReason.INTAKE_REJECTED
+    assert final.outcome.reason is OutcomeReason.REQUEST_REJECTED
     assert final.outcome.detail is not None
     assert final.outcome.detail.startswith("preferences: ")
     assert (
@@ -171,7 +179,7 @@ def test_broken_preference_files_fail_intake_with_the_file_named(
     )
 
 
-def test_a_root_without_a_commit_fails_intake(journal: SqliteJournal, tmp_path: Path) -> None:
+def test_a_root_without_a_commit_fails_validation(journal: SqliteJournal, tmp_path: Path) -> None:
     bare = tmp_path / "not-a-repo"
     bare.mkdir()
     final, _, _ = run(journal, bare)
@@ -179,8 +187,8 @@ def test_a_root_without_a_commit_fails_intake(journal: SqliteJournal, tmp_path: 
     assert final.outcome.detail == "the root is not a git repository with a commit to start from"
 
 
-def test_intake_executes_only_its_own_effect(repo: Path) -> None:
-    intake = IntakeExecutor(repo, LocalSandbox(Root.at(repo), sandbox_config()))
+def test_validation_executes_only_its_own_effect(repo: Path) -> None:
+    intake = ValidationExecutor(repo, LocalSandbox(Root.at(repo), sandbox_config()), task="t")
     effect = Effect(id=EffectId("run-1:1:0"), budget_usd_micros=1, command=RequestPlan(attempt=1))
-    with pytest.raises(TypeError, match="intake cannot execute request_plan"):
+    with pytest.raises(TypeError, match="validation cannot execute request_plan"):
         asyncio.run(intake.execute(effect, now=datetime.now().astimezone()))

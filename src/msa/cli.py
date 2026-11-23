@@ -560,7 +560,7 @@ def check() -> None:
         typer.echo(f"error: {problem}", err=True)
     if problems:
         raise typer.Exit(code=1)
-    typer.echo(f"ok: {len(Phase)} phases, {len(TABLE)} rules, every live phase can reach DONE")
+    typer.echo(f"ok: {len(Phase)} phases, {len(TABLE)} rules, every live phase can reach COMPLETED")
 
 
 # ---------- runs

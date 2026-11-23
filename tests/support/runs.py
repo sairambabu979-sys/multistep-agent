@@ -13,11 +13,14 @@ import re
 import sys
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
 from msa.config import MsaConfig
-from msa.core import RunState
+from msa.core import RunState, transition
+from msa.core.effects import AwaitReleaseApproval
+from msa.core.events import Completion, ReleaseApproved
 from msa.core.ids import RunId
 from msa.llm import fake
 from msa.llm.accounting import estimate_input_tokens
@@ -34,6 +37,7 @@ from tests.support.repos import make_repo
 
 GOLDEN = Path(__file__).resolve().parents[1] / "integration" / "golden"
 RUN = RunId("run-1")
+APPROVER = "ada"  # the person who approves releases in these runs
 TASK = 'Add farewell(name) to src/greeter.py, returning "goodbye <name>", with a test.'
 
 BASE_GREETER = '"""Greetings."""\n\n\ndef greet(name: str) -> str:\n    return f"hello {name}"\n'
@@ -190,7 +194,11 @@ class Harness:
             on_violation=self.violations.append,
         )
 
-    def run(self, client: RoleScripts) -> tuple[RunState, SqliteJournal]:
+    def run(
+        self, client: RoleScripts, *, approve_release: bool = True
+    ) -> tuple[RunState, SqliteJournal]:
+        """Run the task. A verified release parks for a person; with ``approve_release``,
+        ``APPROVER`` approves it the way ``msa approve`` would, and the run publishes."""
         journal = SqliteJournal(self.state_dir / "runs.db")
         final = asyncio.run(
             self._interpreter(client, journal).start(
@@ -200,12 +208,34 @@ class Harness:
                 environment=self.environment.model_dump(mode="json"),
             )
         )
+        if approve_release:
+            final = self._approve(final, client, journal)
         return final, journal
 
-    def resume(self, client: RoleScripts) -> tuple[RunState, SqliteJournal]:
+    def resume(
+        self, client: RoleScripts, *, approve_release: bool = True
+    ) -> tuple[RunState, SqliteJournal]:
         """Carry on with a parked (or crashed) run, as ``msa resume`` would."""
         journal = SqliteJournal(self.state_dir / "runs.db")
-        return asyncio.run(self._interpreter(client, journal).resume(RUN)), journal
+        final = asyncio.run(self._interpreter(client, journal).resume(RUN))
+        if approve_release:
+            final = self._approve(final, client, journal)
+        return final, journal
+
+    def answer(self, journal: SqliteJournal, event: Completion) -> RunState:
+        """Journal a person's answer through the core, as the CLI does."""
+        state = journal.load(RUN)
+        step = transition(state, event)
+        journal.append(event, step.state, snapshot=True)
+        return step.state
+
+    def _approve(self, state: RunState, client: RoleScripts, journal: SqliteJournal) -> RunState:
+        gate = next((e for e in state.pending if isinstance(e.command, AwaitReleaseApproval)), None)
+        if gate is None:
+            return state
+        at = state.updated_at + timedelta(minutes=5)
+        self.answer(journal, ReleaseApproved(at=at, effect_id=gate.id, by=APPROVER))
+        return asyncio.run(self._interpreter(client, journal).resume(RUN))
 
     @property
     def run_dir(self) -> Path:
@@ -231,7 +261,7 @@ def make_harness(base: Path, *, review: bool = False) -> Harness:
         update={
             "sandbox": config.sandbox.model_copy(update={"launcher": (sys.executable, "-m")}),
             "verify": config.verify.model_copy(
-                update={"commands": ("ruff_check", "ruff_format_check", "pytest")}
+                update={"commands": ("ruff_check", "ruff_format_check")}
             ),
             "review": config.review.model_copy(update={"enabled": review}),
         }
@@ -243,11 +273,15 @@ def make_harness(base: Path, *, review: bool = False) -> Harness:
 
 # The Coder and the Tester build concurrently, so which one finishes first varies. Whichever
 # is second issues integrate_build; the golden file records the regions, not their order.
-_REGION = re.compile(r"BUILDING -> BUILDING  (ImplementationCompleted|AcceptanceTestsAuthored)")
+_REGION = re.compile(
+    r"IMPLEMENTING -> IMPLEMENTING  (ImplementationCompleted|AcceptanceTestsAuthored)"
+)
 
 
 def normalized(lines: list[str]) -> str:
-    return "\n".join(_REGION.sub("BUILDING -> BUILDING  <region done>", line) for line in lines)
+    return "\n".join(
+        _REGION.sub("IMPLEMENTING -> IMPLEMENTING  <region done>", line) for line in lines
+    )
 
 
 def check_golden(name: str, lines: list[str]) -> None:
@@ -256,6 +290,14 @@ def check_golden(name: str, lines: list[str]) -> None:
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     expected = path.read_text(encoding="utf-8").splitlines()
     assert normalized(lines) == normalized(expected)
+
+
+# How every run that passes final verification ends: a person approves, then it publishes.
+RELEASE = [
+    "FINAL_VERIFICATION -> HUMAN_APPROVAL",
+    "HUMAN_APPROVAL -> HUMAN_APPROVAL",
+    "HUMAN_APPROVAL -> COMPLETED",
+]
 
 
 def phases(lines: list[str]) -> list[str]:

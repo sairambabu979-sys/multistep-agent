@@ -7,7 +7,7 @@
 - Triage: a consistent failure is diagnosed by the Tester role; an ``impl_bug`` goes to the
   Coder, whose revision makes the acceptance test pass.
 - The weakened-test guard: a Tester revision that drops a check fails the run.
-- Blindness: while BUILDING, the Tester's worktree holds the base tree, not the Coder's work.
+- Blindness: while IMPLEMENTING, the Tester's worktree holds the base tree, not the Coder's work.
 """
 
 from __future__ import annotations
@@ -87,14 +87,16 @@ def test_i03_a_test_that_passes_before_the_change_is_rejected_and_revised(
     )
     final, journal = harness.run(client)
     with journal:
-        assert final.phase is Phase.DONE, final.outcome
+        assert final.phase is Phase.COMPLETED, final.outcome
         seen = phases(timeline(journal.events(RUN)))
-    i = seen.index("TESTING -> REVISING")
-    assert seen[i : i + 4] == [
-        "TESTING -> REVISING",
-        "REVISING -> VERIFYING",
-        "VERIFYING -> TESTING",
-        "TESTING -> REVIEWING",
+    i = seen.index("UNIT_TESTING -> REWORK")
+    assert seen[i : i + 6] == [
+        "UNIT_TESTING -> REWORK",
+        "REWORK -> STATIC_ANALYSIS",
+        "STATIC_ANALYSIS -> UNIT_TESTING",
+        "UNIT_TESTING -> INTEGRATION_TESTING",
+        "INTEGRATION_TESTING -> SECURITY_REVIEW",
+        "SECURITY_REVIEW -> CODE_REVIEW",
     ]
     assert client.exhausted
 
@@ -143,7 +145,7 @@ def test_i04_a_flaky_test_is_classified_reported_and_never_skipped(harness: Harn
     )
     final, journal = harness.run(client)
     journal.close()
-    assert final.phase is Phase.DONE, final.outcome
+    assert final.phase is Phase.COMPLETED, final.outcome
 
     first, last = suite_runs(harness)
     assert (first["verdict"], first["kind"]) == ("failed", "flaky")
@@ -185,7 +187,7 @@ def test_a_consistent_failure_is_triaged_and_an_impl_bug_goes_to_the_coder(
     )
     final, journal = harness.run(client)
     journal.close()
-    assert final.phase is Phase.DONE, final.outcome
+    assert final.phase is Phase.COMPLETED, final.outcome
     assert client.exhausted
 
     first, _ = suite_runs(harness)
@@ -226,7 +228,7 @@ def test_a_tester_revision_that_drops_a_check_fails_the_run(harness: Harness) ->
 
 
 def test_the_tester_writes_blind_at_the_base_tree(harness: Harness) -> None:
-    """The Tester reads src/greeter.py during BUILDING and sees the base, whatever the
+    """The Tester reads src/greeter.py during IMPLEMENTING and sees the base, whatever the
     Coder has done by then: its worktree never holds the implementation."""
     tester = [
         tool_turn(read("b1", "src/greeter.py")),
@@ -236,7 +238,7 @@ def test_the_tester_writes_blind_at_the_base_tree(harness: Harness) -> None:
     client = RoleScripts(planner=planner_script(), coder=coder_script(GOOD_GREETER), tester=tester)
     final, journal = harness.run(client)
     journal.close()
-    assert final.phase is Phase.DONE, final.outcome
+    assert final.phase is Phase.COMPLETED, final.outcome
     shown = tool_results(client.requests("tester")[1])[0]["content"]
     assert "def greet" in shown
     assert "farewell" not in shown

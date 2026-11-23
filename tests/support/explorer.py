@@ -21,8 +21,8 @@ from functools import cache
 
 from msa.core import Edge, RunState, TransitionRejected, start, transition
 from msa.core.effects import RunNegotiationRound
-from msa.core.state import GATES
 from msa.core.events import AnyEvent, NegotiationRoundCompleted, PauseRequested, Resumed
+from msa.core.state import GATES
 from msa.core.values import Escalation, Limits, OutcomeReason, Phase, PlanGate
 from msa.runtime.simulation import PERSON, outcomes
 from tests.support.factory import run_started

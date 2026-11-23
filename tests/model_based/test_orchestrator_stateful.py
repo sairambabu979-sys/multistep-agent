@@ -30,7 +30,7 @@ from msa.core.events import (
     DeadlineExceeded,
     ImplementationCompleted,
     NegotiationRoundCompleted,
-    VerificationPassed,
+    StaticAnalysisPassed,
 )
 from msa.core.ids import EffectId
 from msa.core.invariants import violations
@@ -121,7 +121,7 @@ class OrchestratorMachine(RuleBasedStateMachine):
         effect_id = target or EffectId(f"{state.run_id}:999:0")
         forgeries: list[AnyEvent] = [
             ImplementationCompleted(at=at, effect_id=effect_id),
-            VerificationPassed(at=at, effect_id=effect_id, tree=BUILD),
+            StaticAnalysisPassed(at=at, effect_id=effect_id, tree=BUILD),
         ]
         self._deliver(data.draw(st.sampled_from(forgeries)))
 

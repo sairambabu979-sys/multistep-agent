@@ -8,7 +8,8 @@ from pathlib import Path
 import pytest
 
 from msa.core import RunState
-from msa.core.events import CancelRequested, IntakeCompleted
+from msa.core.effects import AdmitRun
+from msa.core.events import CancelRequested, RunAdmitted
 from msa.core.ids import EffectId, RunId
 from msa.runtime.clock import LogicalClock
 from msa.runtime.codec import CodecError
@@ -21,7 +22,7 @@ from msa.runtime.journal import (
     SqliteJournal,
     UnknownRun,
 )
-from msa.runtime.simulation import BASE, Profile, SimulatedEnvironment, SimulationConfig, digest
+from msa.runtime.simulation import Profile, SimulatedEnvironment, SimulationConfig, digest
 from tests.support.driver import Driver
 from tests.support.factory import limits, run_started
 
@@ -86,7 +87,7 @@ def test_a_run_id_can_only_be_created_once(journal: SqliteJournal) -> None:
 def test_a_second_writer_gets_a_conflict_not_an_interleaving(journal: SqliteJournal) -> None:
     d = Driver()
     journal.create({"kind": "test"}, run_started(), d.state)
-    step = d.intake()
+    step = d.complete(AdmitRun, RunAdmitted)
     journal.append(d.events[-1], step.state, snapshot=False)
     # A second writer that loaded seq 1 and computed its own seq 2 loses the race.
     rival = Driver()
@@ -141,9 +142,7 @@ def test_an_event_from_a_newer_msa_is_corruption(journal: SqliteJournal) -> None
 
 def test_a_journal_that_cannot_be_replayed_is_corruption(journal: SqliteJournal) -> None:
     simulate(journal)
-    stale = IntakeCompleted(
-        at=LogicalClock().epoch, effect_id=EffectId("run-1:1:0"), base_tree=BASE
-    )
+    stale = RunAdmitted(at=LogicalClock().epoch, effect_id=EffectId("run-1:1:0"))
     journal._db.execute(
         "UPDATE events SET kind = ?, payload = ? WHERE run_id = ? AND seq = 3",
         (stale.kind, stale.model_dump_json(), RUN),
@@ -199,7 +198,7 @@ def test_runs_are_listed_with_their_outcome_and_environment(journal: SqliteJourn
     (summary,) = journal.runs()
     assert summary.run_id == RUN
     assert summary.head_seq == final.seq
-    assert summary.phase == "done"
+    assert summary.phase == "completed"
     assert summary.outcome is not None
     assert summary.outcome["reason"] == "completed"
     assert summary.environment["kind"] == "simulation"

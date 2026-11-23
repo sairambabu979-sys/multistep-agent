@@ -13,13 +13,13 @@ from typer.testing import CliRunner
 
 from msa.cli import app
 from msa.core import RunState, TransitionRejected, transition
-from msa.core.effects import AwaitPlanApproval, Effect, RunTestSuite
+from msa.core.effects import AwaitPlanApproval, Effect, RunUnitTests
 from msa.core.events import (
     AnyEvent,
     CancelRequested,
     PlanApproved,
-    TestsPassed,
-    VerificationPassed,
+    StaticAnalysisPassed,
+    UnitTestsPassed,
 )
 from msa.core.ids import EffectId, RunId
 from msa.core.values import OutcomeReason, Phase, PlanGate
@@ -60,7 +60,7 @@ class Scripted:
                 event = self._happy.answer(effect, now)
                 return event.model_copy(update={"effect_id": EffectId("run-1:999:0")})
             case "stale-tree":
-                return VerificationPassed(at=now, effect_id=effect.id, tree=BASE)
+                return StaticAnalysisPassed(at=now, effect_id=effect.id, tree=BASE)
             case "hang":
                 try:
                     await asyncio.Event().wait()
@@ -93,7 +93,7 @@ def test_the_happy_path_completes_and_publishes_once(journal: SqliteJournal) -> 
         journal, SimulatedEnvironment(HAPPY), clock=LogicalClock(), on_outcome=published.append
     )
     final = run(interpreter)
-    assert final.phase is Phase.DONE
+    assert final.phase is Phase.COMPLETED
     assert published == [final]
     assert journal.load(RUN) == final
 
@@ -115,11 +115,11 @@ def test_an_executor_exception_fails_the_run_with_its_message(
 
 def test_an_answer_for_the_wrong_effect_fails_the_run(journal: SqliteJournal) -> None:
     final = run(
-        Interpreter(journal, Scripted("run_verification", "wrong-id"), clock=LogicalClock())
+        Interpreter(journal, Scripted("run_static_analysis", "wrong-id"), clock=LogicalClock())
     )
     assert final.outcome is not None
     assert final.outcome.reason is OutcomeReason.EFFECT_FAILED
-    assert "executor returned VerificationPassed" in final.outcome.detail
+    assert "executor returned StaticAnalysisPassed" in final.outcome.detail
 
 
 def test_an_answer_the_core_rejects_fails_the_run_instead_of_stalling(
@@ -132,7 +132,10 @@ def test_an_answer_the_core_rejects_fails_the_run_instead_of_stalling(
             rejected.append(str(error))
 
     interpreter = Interpreter(
-        journal, Scripted("run_verification", "stale-tree"), clock=LogicalClock(), observer=Watch()
+        journal,
+        Scripted("run_static_analysis", "stale-tree"),
+        clock=LogicalClock(),
+        observer=Watch(),
     )
     final = run(interpreter)
     assert final.outcome is not None
@@ -205,15 +208,15 @@ def test_a_rival_writer_wins_and_the_interpreter_adopts_its_history(
 
         async def execute(self, effect: Effect, *, now: datetime) -> AnyEvent:
             command = effect.command
-            if isinstance(command, RunTestSuite):
+            if isinstance(command, RunUnitTests):
                 # The real command, through its own connection, as another process would.
                 result = CliRunner().invoke(app, ["cancel", RUN, "--db", str(journal.path)])
                 assert result.exit_code == 0, result.output
-                return TestsPassed(at=now, effect_id=effect.id, tree=command.tree)
+                return UnitTestsPassed(at=now, effect_id=effect.id, tree=command.tree)
             return await self._happy.execute(effect, now=now)
 
     final = run(Interpreter(journal, CancelsFromOutside(), clock=LogicalClock()))
-    assert final.phase is Phase.ABORTED
+    assert final.phase is Phase.CANCELLED
     assert journal.load(RUN) == final
 
 
@@ -264,7 +267,7 @@ def test_defensive_a_stale_answer_is_dropped_without_touching_the_journal(
     interpreter = Interpreter(
         journal, SimulatedEnvironment(HAPPY), clock=LogicalClock(), observer=Watch()
     )
-    stale = VerificationPassed(at=state.updated_at, effect_id=EffectId("run-1:1:0"), tree=BASE)
+    stale = StaticAnalysisPassed(at=state.updated_at, effect_id=EffectId("run-1:1:0"), tree=BASE)
     assert interpreter._commit(state, EffectId("run-1:1:0"), stale, {}) is state
     assert seen == ["unknown_effect"]
     assert journal.load(RUN) == state
@@ -277,7 +280,7 @@ def test_defensive_cancelling_effects_without_running_tasks_is_harmless(
     interpreter = Interpreter(journal, SimulatedEnvironment(HAPPY), clock=LogicalClock())
     cancel = CancelRequested(at=state.updated_at, reason="x")
     after = interpreter._commit(state, None, cancel, {})
-    assert after.phase is Phase.ABORTED
+    assert after.phase is Phase.CANCELLED
     assert journal.load(RUN) == after
 
 
@@ -309,18 +312,19 @@ def test_an_effect_waiting_on_a_person_parks_the_run_until_it_is_answered(
         on_outcome=finished.append,
     )
     state = run(interpreter, plan_gate=PlanGate.HUMAN)
-    assert state.phase is Phase.PLAN_GATE
+    assert state.phase is Phase.PLAN_APPROVAL
     assert (parked, finished) == ([state], [])  # live and resumable, nothing published
     assert journal.load(RUN) == state
-    assert asyncio.run(interpreter.resume(RUN)).phase is Phase.PLAN_GATE  # still parked
+    assert asyncio.run(interpreter.resume(RUN)).phase is Phase.PLAN_APPROVAL  # still parked
 
     (gate,) = state.pending
-    answer = PlanApproved(at=state.updated_at + timedelta(hours=2), effect_id=gate.id)
+    answer = PlanApproved(at=state.updated_at + timedelta(hours=2), effect_id=gate.id, by="ada")
     journal.append(answer, transition(state, answer).state, snapshot=True)
     final = asyncio.run(interpreter.resume(RUN))
-    assert final.phase is Phase.DONE
+    assert final.phase is Phase.COMPLETED
     assert finished == [final]
-    assert final.paused == timedelta(hours=2)
+    # Two hours at the plan gate, plus the simulated release approval's one logical second.
+    assert final.paused == timedelta(hours=2, seconds=1)
 
 
 def test_the_wall_clock_does_not_run_while_a_person_is_asked() -> None:

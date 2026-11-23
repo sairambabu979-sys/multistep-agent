@@ -13,13 +13,13 @@ from msa.config import MsaConfig
 from msa.core.effects import (
     AwaitPlanApproval,
     Effect,
-    Finalize,
     RequestReview,
     ReviseChanges,
-    RunTestSuite,
-    RunVerification,
+    RunStaticAnalysis,
+    RunUnitTests,
+    VerifyRelease,
 )
-from msa.core.events import ReviewProduced, TestsFailed
+from msa.core.events import ReviewProduced, UnitTestsFailed
 from msa.core.ids import EffectId, FindingId, RunId, TreeHash
 from msa.core.values import FailureKind, Owner
 from msa.llm import fake
@@ -27,7 +27,7 @@ from msa.llm.gateway import Gateway
 from msa.llm.store import MemoryResponseStore
 from msa.runtime import live
 from msa.runtime.context import RunContext, reservation
-from msa.runtime.intake import IntakeExecutor
+from msa.runtime.intake import ValidationExecutor
 from msa.runtime.roles import CoderExecutor, Revisions, TesterExecutor
 from msa.runtime.testing import TestSuiteExecutor, parse_junit
 from msa.runtime.verify import VerifyExecutor, check_argv, outside, pytest_configuration
@@ -52,8 +52,8 @@ def test_the_review_stand_in_passes_through_and_names_itself() -> None:
     assert isinstance(answer, ReviewProduced)
     assert (answer.effect_id, answer.findings) == (EffectId("run-1:5:0"), ())
     assert set(live.STAND_INS) == {"request_review"}
-    with pytest.raises(TypeError, match="no stand-in for finalize"):
-        asyncio.run(stand_ins.execute(effect(Finalize(tree=tree)), now=T0))
+    with pytest.raises(TypeError, match="no stand-in for verify_release"):
+        asyncio.run(stand_ins.execute(effect(VerifyRelease(tree=tree)), now=T0))
 
 
 def test_an_effect_without_an_executor_fails_with_a_reason() -> None:
@@ -134,13 +134,13 @@ def run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> RunContext:
         update={"sandbox": base.sandbox.model_copy(update={"launcher": (sys.executable, "-m")})}
     )
     environment = live.LiveEnvironment(repo=str(repo), state_dir=str(tmp_path / "s"), task="t")
-    intake = IntakeExecutor(repo, LocalSandbox(Root.at(repo), config.sandbox))
+    validation = ValidationExecutor(repo, LocalSandbox(Root.at(repo), config.sandbox), task="t")
     context = live.context(
         environment,
         config,
         Gateway(fake.ScriptedClient(), config, store=MemoryResponseStore()),
         run_id=RunId("run-1"),
-        intake=intake,
+        validation=validation,
     )
     asyncio.run(context.worktree.ensure(TreeHash(git(repo, "rev-parse", "HEAD^{tree}"))))
     return context
@@ -148,13 +148,13 @@ def run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> RunContext:
 
 def test_verification_refuses_a_tree_the_worktree_does_not_hold(run: RunContext) -> None:
     other = TreeHash("b" * 40)
-    with pytest.raises(RuntimeError, match=f"verification was asked for {other}"):
-        asyncio.run(VerifyExecutor(run).execute(effect(RunVerification(tree=other)), now=T0))
+    with pytest.raises(RuntimeError, match="static analysis was asked for "):
+        asyncio.run(VerifyExecutor(run).execute(effect(RunStaticAnalysis(tree=other)), now=T0))
 
 
 def test_testing_refuses_a_tree_the_worktree_does_not_hold(run: RunContext) -> None:
     other = TreeHash("b" * 40)
-    command = RunTestSuite(tree=other, base_tree=BASE)
+    command = RunUnitTests(tree=other, base_tree=BASE)
     with pytest.raises(RuntimeError, match=f"tests were asked for {other}"):
         asyncio.run(TestSuiteExecutor(run).execute(effect(command, 1_000), now=T0))
 
@@ -165,14 +165,14 @@ def test_a_check_that_cannot_run_fails_the_effect_not_the_code(run: RunContext) 
     )
     tree = asyncio.run(run.worktree.snapshot())
     with pytest.raises(CommandUnavailable, match="no-such-tool is not installed"):
-        asyncio.run(VerifyExecutor(run).execute(effect(RunVerification(tree=tree)), now=T0))
+        asyncio.run(VerifyExecutor(run).execute(effect(RunStaticAnalysis(tree=tree)), now=T0))
 
 
 def test_no_acceptance_tests_is_the_testers_problem_and_needs_no_model(run: RunContext) -> None:
     tree = asyncio.run(run.worktree.snapshot())
-    command = RunTestSuite(tree=tree, base_tree=tree)
+    command = RunUnitTests(tree=tree, base_tree=tree)
     answer = asyncio.run(TestSuiteExecutor(run).execute(effect(command, 1_000), now=T0))
-    assert isinstance(answer, TestsFailed)
+    assert isinstance(answer, UnitTestsFailed)
     assert (answer.triage.kind, answer.triage.owner) == (FailureKind.TEST_BUG, Owner.TESTER)
     report = run.files.text(answer.report)
     assert "No acceptance tests were written" in report
@@ -183,9 +183,9 @@ def test_testing_runs_on_exactly_the_tree_and_says_what_it_removed(run: RunConte
     (run.worktree.path / ".gitignore").write_text("local.txt\n")
     tree = asyncio.run(run.worktree.snapshot())
     (run.worktree.path / "local.txt").write_text("in no tree\n")
-    command = RunTestSuite(tree=tree, base_tree=tree)
+    command = RunUnitTests(tree=tree, base_tree=tree)
     answer = asyncio.run(TestSuiteExecutor(run).execute(effect(command, 1_000), now=T0))
-    assert isinstance(answer, TestsFailed)
+    assert isinstance(answer, UnitTestsFailed)
     report = run.files.text(answer.report)
     assert "## Files outside the tree" in report
     assert "- `local.txt`" in report

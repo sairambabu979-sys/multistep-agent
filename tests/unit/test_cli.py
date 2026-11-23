@@ -16,8 +16,8 @@ from msa.core.table import TransitionTable
 from msa.core.transitions import TABLE
 from msa.runtime.journal import SqliteJournal
 from msa.runtime.live import LiveEnvironment
-from msa.runtime.simulation import Profile, SimulationConfig, digest
-from tests.support.factory import run_started
+from msa.runtime.simulation import Profile, SimulationConfig
+from tests.support.factory import BUILD, run_started
 
 runner = CliRunner()
 
@@ -38,7 +38,7 @@ def test_fsm_check_fails_with_reasons_for_a_broken_table(monkeypatch: pytest.Mon
     monkeypatch.setattr(cli, "TABLE", TransitionTable(()))
     result = runner.invoke(cli.app, ["fsm", "check"])
     assert result.exit_code == 1
-    assert "error: PLANNING is unreachable from INTAKE" in result.output
+    assert "error: PLANNING is unreachable from CREATED" in result.output
 
 
 def test_fsm_diagram_prints_the_generated_page() -> None:
@@ -79,9 +79,9 @@ def msa(*args: str) -> Result:
 def test_simulate_prints_a_timeline_and_the_outcome(db: str) -> None:
     result = msa("simulate", "--profile", "happy", "--run-id", "r1", "--db", db)
     assert result.exit_code == 0, result.output
-    assert "START -> INTAKE" in result.output
-    assert "FINALIZING -> DONE" in result.output
-    assert result.output.rstrip().endswith("r1: DONE: completed (artifact " + digest("patch") + ")")
+    assert "START -> CREATED" in result.output
+    assert "HUMAN_APPROVAL -> COMPLETED" in result.output
+    assert result.output.rstrip().endswith(f"r1: COMPLETED: completed (aegis/{BUILD[:12]})")
 
 
 def test_simulate_quietly_with_a_generated_run_id(db: str) -> None:
@@ -103,17 +103,17 @@ def test_runs_lists_every_run(db: str) -> None:
     msa("simulate", "--profile", "happy", "--run-id", "r1", "-q", "--db", db)
     listing = msa("runs", "--db", db).output.splitlines()
     assert listing[0].split()[:4] == ["run", "phase", "seq", "outcome"]
-    assert listing[1].split()[:2] == ["r1", "DONE"]
+    assert listing[1].split()[:2] == ["r1", "COMPLETED"]
 
 
 def test_inspect_shows_the_state_at_any_point_in_time(db: str) -> None:
     msa("simulate", "--profile", "happy", "--run-id", "r1", "-q", "--db", db)
-    early = msa("inspect", "r1", "--at", "2", "--db", db)
+    early = msa("inspect", "r1", "--at", "4", "--db", db)
     assert early.exit_code == 0, early.output
-    assert "r1: PLANNING (live, seq 2)" in early.output
-    assert "r1:2:0 request_plan" in early.output
+    assert "r1: PLANNING (live, seq 4)" in early.output
+    assert "r1:4:0 request_plan" in early.output
     final = msa("inspect", "r1", "--json", "--db", db)
-    assert '"phase": "done"' in final.output
+    assert '"phase": "completed"' in final.output
     assert msa("inspect", "nope", "--db", db).exit_code == 1
 
 
@@ -144,7 +144,7 @@ def test_resume_drives_a_live_run_to_completion(db: str) -> None:
     _live_run(db)
     result = msa("resume", "live", "-q", "--db", db)
     assert result.exit_code == 0, result.output
-    assert result.output.startswith("live: DONE: completed")
+    assert result.output.startswith("live: COMPLETED: completed")
     assert msa("resume", "nope", "--db", db).exit_code == 1
 
 
@@ -195,23 +195,23 @@ def test_run_refuses_unusable_arguments(db: str, arguments: list[str], message: 
     assert message in result.output
 
 
-def test_run_refuses_a_human_plan_gate_it_has_no_approver_for(db: str, tmp_path: Path) -> None:
-    text = (Path("msa.toml")).read_text(encoding="utf-8")
-    custom = tmp_path / "msa.toml"
-    custom.write_text(text.replace('plan_gate = "auto"', 'plan_gate = "human"'), encoding="utf-8")
-    result = runner.invoke(cli.app, ["--config", str(custom), "run", "--task", "x", "--db", db])
+def test_run_refuses_a_task_holding_a_secret_before_journaling_it(db: str) -> None:
+    key = "AKIA" + "Q3EGX7PLMR2TBN5W"  # built here so this file holds no key
+    result = msa("run", "--task", f"deploy with key {key}", "--db", db)
     assert result.exit_code == 1
-    assert "plan_gate = human needs an approval command" in result.output
+    assert "the task contains what looks like a secret" in result.output
+    assert key not in result.output
+    assert not Path(db).exists()  # nothing was journaled
 
 
 def test_cancel_journals_an_aborted_outcome_once(db: str) -> None:
     _live_run(db)
     cancelled = msa("cancel", "live", "--reason", "wrong repo", "--db", db)
     assert cancelled.exit_code == 0, cancelled.output
-    assert cancelled.output.strip() == "live: ABORTED: cancelled (wrong repo)"
+    assert cancelled.output.strip() == "live: CANCELLED: cancelled (wrong repo)"
     again = msa("cancel", "live", "--db", db)
     assert again.exit_code == 1
-    assert "cannot cancel: run is aborted" in again.output
+    assert "cannot cancel: run is cancelled" in again.output
     assert msa("cancel", "nope", "--db", db).exit_code == 1
 
 
@@ -280,7 +280,7 @@ def test_simulate_takes_limits_and_journal_path_from_the_config(tmp_path: Path) 
     )
     result = msa("--config", custom, "simulate", "--profile", "happy", "--run-id", "cfg")
     assert result.exit_code == 0, result.output
-    assert "PLANNING -> PLAN_GATE" in result.output
+    assert "PLANNING -> PLAN_APPROVAL" in result.output
     assert journal.exists()
 
 
@@ -290,7 +290,7 @@ def test_simulate_flags_override_the_config(tmp_path: Path, db: str) -> None:
         "--config", custom, "simulate", "--profile", "happy", "--plan-gate", "auto", "--db", db
     )
     assert result.exit_code == 0, result.output
-    assert "PLAN_GATE" not in result.output
+    assert "PLAN_APPROVAL" not in result.output
 
 
 def test_without_a_config_file_built_in_defaults_apply(
@@ -304,7 +304,7 @@ def test_without_a_config_file_built_in_defaults_apply(
 
 def test_simulate_budget_flag_overrides_the_config(db: str) -> None:
     """One micro-dollar can fund the planner's call but can never be split across the two
-    parallel BUILDING calls, whatever the simulated spend: the run must fail on budget."""
+    parallel IMPLEMENTING calls, whatever the simulated spend: the run must fail on budget."""
     result = msa(
         "simulate",
         "--profile",

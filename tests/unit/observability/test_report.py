@@ -14,21 +14,27 @@ from msa.core.events import (
     BuildIntegrated,
     CancelRequested,
     Completion,
+    ContextLoaded,
     EventBase,
-    Finalized,
     ImplementationCompleted,
-    IntakeCompleted,
+    IntegrationTestsPassed,
     PlanProduced,
+    ReleaseApproved,
+    ReleasePublished,
+    ReleaseVerified,
+    RequestValidated,
     ReviewProduced,
-    TestsPassed,
-    VerificationPassed,
+    RunAdmitted,
+    SecurityReviewPassed,
+    StaticAnalysisPassed,
+    UnitTestsPassed,
 )
-from msa.observability.report import Review, render, timeline
-from tests.support.factory import BASE, BUILD, T0, digest, plan_ref, run_started
+from msa.observability.report import Gates, Review, render, timeline
+from tests.support.factory import BASE, BUILD, PERSON, T0, bundle, digest, plan_ref, run_started
 
 
 def happy_events() -> list[EventBase]:
-    """A whole M6-shaped run, completions in the order a live run produces them."""
+    """A whole run, completions in the order a live run produces them."""
     first = run_started()
     events: list[EventBase] = [first]
     state = start(first).state
@@ -42,33 +48,44 @@ def happy_events() -> list[EventBase]:
         events.append(event)
         state = transition(state, event).state
 
-    answer(IntakeCompleted, base_tree=BASE)
+    answer(RunAdmitted)
+    answer(RequestValidated)
+    answer(ContextLoaded, base_tree=BASE, context=digest("ctx"))
     answer(PlanProduced, plan=plan_ref())
     answer(AcceptanceTestsAuthored)
     answer(ImplementationCompleted)
     answer(BuildIntegrated, head_tree=BUILD)
-    answer(VerificationPassed, tree=BUILD)
-    answer(TestsPassed, tree=BUILD)
+    answer(StaticAnalysisPassed, tree=BUILD)
+    answer(UnitTestsPassed, tree=BUILD)
+    answer(IntegrationTestsPassed, tree=BUILD)
+    answer(SecurityReviewPassed, tree=BUILD, report=digest("sec"))
     answer(ReviewProduced, tree=BUILD, findings=())
-    answer(Finalized, tree=BUILD, artifact=digest("patch"))
+    answer(ReleaseVerified, tree=BUILD, bundle=bundle(BUILD))
+    answer(ReleaseApproved, by=PERSON)
+    answer(ReleasePublished, tree=BUILD, reference="aegis/run-1 at abc")
     return events
 
 
 def test_the_timeline_lists_every_transition_and_what_it_issued() -> None:
     lines = timeline(happy_events())
-    assert lines[0] == "  1  START -> INTAKE  RunStarted  [prepare_workspace]"
-    assert lines[2] == (
-        "  3  PLANNING -> BUILDING  PlanProduced  [implement_plan, author_acceptance_tests]"
+    assert lines[0] == "  1  START -> CREATED  RunStarted  [admit_run]"
+    assert lines[4] == (
+        "  5  PLANNING -> IMPLEMENTING  PlanProduced  [implement_plan, author_acceptance_tests]"
     )
-    assert lines[-1] == " 10  FINALIZING -> DONE  Finalized  [publish_outcome]"
-    assert len(lines) == 10
+    assert lines[-3] == (
+        " 14  FINAL_VERIFICATION -> HUMAN_APPROVAL  ReleaseVerified  [await_release_approval]"
+    )
+    assert lines[-2] == " 15  HUMAN_APPROVAL -> HUMAN_APPROVAL  ReleaseApproved  [publish_release]"
+    assert lines[-1] == " 16  HUMAN_APPROVAL -> COMPLETED  ReleasePublished  [publish_outcome]"
+    assert len(lines) == 16
 
 
 def test_the_timeline_marks_escapes() -> None:
-    events = happy_events()[:3]
+    events = happy_events()[:5]
     events.append(CancelRequested(at=T0 + timedelta(minutes=1), reason="stop"))
     assert timeline(events)[-1] == (
-        "  4  BUILDING -> ABORTED  CancelRequested (escape)  [cancel_effects, publish_outcome]"
+        "  6  IMPLEMENTING -> CANCELLED  CancelRequested (escape)  "
+        "[cancel_effects, publish_outcome]"
     )
 
 
@@ -117,7 +134,9 @@ def test_the_report_names_stand_ins_and_holds_the_patch() -> None:
         },
         patch="diff --git a/x b/x\n+```\n",
     )
-    assert text.startswith("# Run run-1\n\n**Outcome:** DONE: completed\n")
+    assert text.startswith("# Run run-1\n\n**Outcome:** COMPLETED: completed\n")
+    assert f"**Release approved by:** {PERSON}" in text
+    assert "**Waiting on people:** 0:00:01 (not counted against the wall clock)" in text
     assert "- `author_acceptance_tests`: Tester (M7): none" in text
     assert "request_arbitration" not in text  # only stand-ins the run used are listed
     assert "## Plan\n\nDo it." in text
@@ -230,3 +249,62 @@ def test_a_degenerate_negotiation_is_flagged_once_there_are_enough_moves(
         assert "**Flag:**" not in text
     else:
         assert f"**Flag:** degenerate negotiation: {flag}." in text
+
+
+def test_the_later_gates_and_the_release_are_reported() -> None:
+    events = happy_events()
+    state = start(run_started()).state
+    for event in events[1:]:
+        state = transition(state, event).state
+    text = render(
+        state,
+        events,
+        task="t",
+        plan=None,
+        invocations=[],
+        verifications=[],
+        summaries=[],
+        stand_ins={},
+        patch=None,
+        gates=Gates(
+            integrations=[
+                {"tree": BASE, "verdict": "passed", "ran": False, "report": "sha256:a"},
+                {"tree": BUILD, "verdict": "passed", "ran": True, "isolated": True, "report": "r"},
+                {"tree": BASE, "verdict": "failed", "kind": "environment", "report": "e"},
+            ],
+            security=[
+                {"tree": BASE, "verdict": "failed", "blocking": 2, "owner": "coder", "report": "s"},
+                {
+                    "tree": BUILD,
+                    "verdict": "passed",
+                    "advisory": 1,
+                    "manifests": ["pyproject.toml"],
+                    "report": "t",
+                },
+            ],
+            releases=[
+                {"tree": BASE, "verdict": "failed", "report": "f"},
+                {"tree": BUILD, "verdict": "passed", "bundle": "b"},
+                {
+                    "tree": BUILD,
+                    "verdict": "published",
+                    "branch": "aegis/run-1",
+                    "commit": "abc",
+                    "approved_by": PERSON,
+                },
+            ],
+        ),
+    )
+    assert f"- `{BASE}`: nothing to run: no integration suite (report `sha256:a`)" in text
+    assert f"- `{BUILD}`: passed, without network (report `r`)" in text
+    assert f"- `{BASE}`: failed: environment (report `e`)" in text
+    assert f"- `{BASE}`: failed: 2 blocking (to the coder) (report `s`)" in text
+    assert (
+        f"- `{BUILD}`: passed, 1 advisory; manifests changed: pyproject.toml (report `t`)" in text
+    )
+    assert f"- `{BASE}`: verification failed (report `f`)" in text
+    assert f"- `{BUILD}`: verified; bundle `b` (pr.md)" in text
+    assert (
+        f"- `{BUILD}`: published to branch `aegis/run-1` at `abc`, approved by {PERSON}. "
+        "Nothing was pushed." in text
+    )

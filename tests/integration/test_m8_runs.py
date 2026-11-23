@@ -7,7 +7,7 @@ scripted per role, the sandbox and git real.
 - I-06: a rebuttal with evidence that the reviewer withdraws: no revision.
 - I-07: a disputed correctness finding settled by a repro test, both ways.
 - I-08: a design deadlock: a person is asked, the run parks, ``msa rule`` answers, and the
-  run resumes to DONE. The clock stopped while it waited.
+  run resumes to COMPLETED. The clock stopped while it waited.
 - I-09: on the review after a revision, a new finding on lines the revision did not touch
   is not admitted, and neither is one outside the change.
 - I-10: the budget runs out mid-negotiation: FAILED, a report, and the ledger never spent
@@ -32,6 +32,7 @@ from msa.observability.report import timeline
 from tests.support.runs import (
     ACCEPTANCE,
     GOOD_GREETER,
+    RELEASE,
     RUN,
     SUMMARY,
     Harness,
@@ -142,7 +143,7 @@ def records(harness: Harness, name: str) -> list[dict[str, Any]]:
 def run_to_end(harness: Harness, client: RoleScripts) -> list[str]:
     final, journal = harness.run(client)
     with journal:
-        assert final.phase is Phase.DONE, final.outcome
+        assert final.phase is Phase.COMPLETED, final.outcome
         seen = phases(timeline(journal.events(RUN)))
     assert client.exhausted
     return seen
@@ -160,14 +161,16 @@ def test_i05_a_blocker_the_author_accepts_is_fixed_in_one_revision(harness: Harn
         reviewer=[review(padded), review()],
     )
     seen = run_to_end(harness, client)
-    i = seen.index("REVIEWING -> NEGOTIATING")
-    assert seen[i : i + 6] == [
-        "REVIEWING -> NEGOTIATING",
-        "NEGOTIATING -> REVISING",
-        "REVISING -> VERIFYING",
-        "VERIFYING -> TESTING",
-        "TESTING -> REVIEWING",
-        "REVIEWING -> FINALIZING",
+    i = seen.index("CODE_REVIEW -> NEGOTIATION")
+    assert seen[i : i + 8] == [
+        "CODE_REVIEW -> NEGOTIATION",
+        "NEGOTIATION -> REWORK",
+        "REWORK -> STATIC_ANALYSIS",
+        "STATIC_ANALYSIS -> UNIT_TESTING",
+        "UNIT_TESTING -> INTEGRATION_TESTING",
+        "INTEGRATION_TESTING -> SECURITY_REVIEW",
+        "SECURITY_REVIEW -> CODE_REVIEW",
+        "CODE_REVIEW -> FINAL_VERIFICATION",
     ]
     (row,) = records(harness, "negotiation.jsonl")
     assert (row["finding"], row["author"], row["verdict"]) == ("c0-1", "accept", "accepted")
@@ -198,8 +201,8 @@ def test_i06_a_rebuttal_with_evidence_that_the_reviewer_withdraws_needs_no_revis
         reviewer=[review(none), replies(("c0-1", "withdraw"))],
     )
     seen = run_to_end(harness, client)
-    assert "REVISING -> VERIFYING" not in seen[seen.index("REVIEWING -> NEGOTIATING") :]
-    assert seen[-2:] == ["NEGOTIATING -> FINALIZING", "FINALIZING -> DONE"]
+    assert "REWORK -> STATIC_ANALYSIS" not in seen[seen.index("CODE_REVIEW -> NEGOTIATION") :]
+    assert seen[-4:] == ["NEGOTIATION -> FINAL_VERIFICATION", *RELEASE]
     (row,) = records(harness, "negotiation.jsonl")
     assert (row["author"], row["reviewer"], row["verdict"]) == ("rebut", "withdraw", "withdrawn")
     reply = prompt_of(client.requests("reviewer")[1])
@@ -234,7 +237,7 @@ def test_i07_a_repro_test_that_fails_upholds_the_finding_and_joins_the_tree(
         reviewer=[review(claim), replies(("c0-1", "maintain")), review()],
     )
     seen = run_to_end(harness, client)
-    assert "NEGOTIATING -> AWAITING_HUMAN" not in seen  # the test decided it, not a person
+    assert "NEGOTIATION -> BLOCKED" not in seen  # the test decided it, not a person
     (ruling,) = records(harness, "arbitration.jsonl")
     assert (ruling["rung"], ruling["verdict"], ruling["path"]) == ("repro", "upheld", REPRO)
     assert "fails on the head tree" in ruling["detail"]
@@ -261,7 +264,7 @@ def test_i07_a_repro_test_that_passes_dismisses_the_finding(harness: Harness) ->
         reviewer=[review(claim), replies(("c0-1", "maintain"))],
     )
     seen = run_to_end(harness, client)
-    assert seen[-2:] == ["NEGOTIATING -> FINALIZING", "FINALIZING -> DONE"]
+    assert seen[-4:] == ["NEGOTIATION -> FINAL_VERIFICATION", *RELEASE]
     (ruling,) = records(harness, "arbitration.jsonl")
     assert (ruling["rung"], ruling["verdict"]) == ("repro", "dismissed")
     assert REPRO not in (harness.run_dir / "patch.diff").read_text()
@@ -291,14 +294,14 @@ def test_i08_a_design_deadlock_parks_for_a_person_and_resumes_with_the_ruling(
     )
     parked, journal = harness.run(client)
     journal.close()
-    assert parked.phase is Phase.AWAITING_HUMAN
+    assert parked.phase is Phase.BLOCKED
     assert parked.waiting_since is not None
     assert client.exhausted
     question = (harness.run_dir / "question.md").read_text(encoding="utf-8")
     assert "c0-1: major design at src/greeter.py:8-9" in question
     assert "Round 1: author rebut" in question
     assert f"`msa rule {RUN} c0-1=upheld`" in question
-    assert "AWAITING_HUMAN (live" in harness.report()
+    assert "BLOCKED (live" in harness.report()
 
     db = str(harness.state_dir / "runs.db")
     wrong = CliRunner().invoke(app, ["rule", RUN, "c0-1=accepted", "--db", db, "--no-resume"])
@@ -306,13 +309,13 @@ def test_i08_a_design_deadlock_parks_for_a_person_and_resumes_with_the_ruling(
     assert "expected FINDING=upheld|dismissed|deferred" in wrong.output
     ruled = CliRunner().invoke(app, ["rule", RUN, "c0-1=dismissed", "--db", db, "--no-resume"])
     assert ruled.exit_code == 0, ruled.output
-    assert f"{RUN}: FINALIZING (live" in ruled.output
+    assert f"{RUN}: FINAL_VERIFICATION (live" in ruled.output
     again = CliRunner().invoke(app, ["rule", RUN, "c0-1=upheld", "--db", db, "--no-resume"])
     assert "is not waiting for await_human_ruling" in again.output
 
     final, journal = harness.resume(RoleScripts())
     journal.close()
-    assert final.phase is Phase.DONE, final.outcome
+    assert final.phase is Phase.COMPLETED, final.outcome
     assert final.paused > parked.paused  # the wait moved the deadline, not the work
     assert final.deadline == final.started_at + final.limits.wall_clock + final.paused
     (human,) = (r for r in records(harness, "arbitration.jsonl") if r["rung"] == "human")
@@ -336,7 +339,7 @@ def test_i09_later_findings_must_be_on_lines_the_revision_changed(harness: Harne
         reviewer=[review(padded, elsewhere), review(late)],
     )
     seen = run_to_end(harness, client)
-    assert seen[-2:] == ["REVIEWING -> FINALIZING", "FINALIZING -> DONE"]
+    assert seen[-4:] == ["CODE_REVIEW -> FINAL_VERIFICATION", *RELEASE]
     found = {r["id"]: r for r in records(harness, "findings.jsonl")}
     assert (found["c0-1"]["admitted"], found["c0-2"]["admitted"], found["c1-1"]["admitted"]) == (
         True,
@@ -439,7 +442,7 @@ def test_a_human_plan_gate_parks_until_msa_approve_answers(harness: Harness) -> 
 
     first, journal = harness.run(RoleScripts(planner=planner_script()))
     journal.close()
-    assert first.phase is Phase.PLAN_GATE
+    assert first.phase is Phase.PLAN_APPROVAL
     question = (harness.run_dir / "question.md").read_text(encoding="utf-8")
     assert "# Run run-1: approve the plan?" in question
     assert "Add farewell next to greet" in question
@@ -456,17 +459,17 @@ def test_a_human_plan_gate_parks_until_msa_approve_answers(harness: Harness) -> 
     replanner = RoleScripts(planner=planner_script())
     second, journal = harness.resume(replanner)
     journal.close()
-    assert second.phase is Phase.PLAN_GATE
+    assert second.phase is Phase.PLAN_APPROVAL
     assert "test the empty name too" in prompt_of(replanner.requests("planner")[0])
 
     approved = CliRunner().invoke(app, ["approve", RUN, "--db", db, "--no-resume"])
-    assert f"{RUN}: BUILDING (live" in approved.output, approved.output
+    assert f"{RUN}: IMPLEMENTING (live" in approved.output, approved.output
     rest = RoleScripts(
         coder=coder_script(GOOD_GREETER), tester=author_script(), reviewer=[review()]
     )
     final, journal = harness.resume(rest)
     journal.close()
-    assert final.phase is Phase.DONE, final.outcome
+    assert final.phase is Phase.COMPLETED, final.outcome
     assert final.paused > first.paused
     assert rest.exhausted
 
@@ -477,11 +480,13 @@ def test_a_person_can_stop_the_run_instead_of_answering(harness: Harness) -> Non
     db = str(harness.state_dir / "runs.db")
     parked, journal = harness.run(RoleScripts(planner=planner_script()))
     journal.close()
-    assert parked.phase is Phase.PLAN_GATE
+    assert parked.phase is Phase.PLAN_APPROVAL
     wrong = CliRunner().invoke(app, ["rule", RUN, "--abort", "no", "--db", db])
-    assert "is not waiting for await_human_ruling: it is PLAN_GATE" in wrong.output
-    stopped = CliRunner().invoke(app, ["approve", RUN, "--abort", "not now", "--db", db])
-    assert f"{RUN}: ABORTED: human_aborted (not now)" in stopped.output, stopped.output
+    assert "is not waiting for await_human_ruling: it is PLAN_APPROVAL" in wrong.output
+    stopped = CliRunner().invoke(
+        app, ["approve", RUN, "--abort", "not now", "--by", "grace", "--db", db]
+    )
+    assert f"{RUN}: CANCELLED: human_aborted (grace: not now)" in stopped.output, stopped.output
     none = CliRunner().invoke(app, ["rule", RUN, "--db", db])
     assert "give FINDING=VERDICT for every disputed finding, or --abort" in none.output
 
@@ -523,7 +528,7 @@ def test_a_repro_test_that_cannot_decide_leaves_the_dispute_to_a_person(
     )
     parked, journal = harness.run(client)
     journal.close()
-    assert parked.phase is Phase.AWAITING_HUMAN, parked.outcome
+    assert parked.phase is Phase.BLOCKED, parked.outcome
     (ruling,) = records(harness, "arbitration.jsonl")
     assert (ruling["rung"], ruling["verdict"]) == ("repro", None)
     assert detail in ruling["detail"]

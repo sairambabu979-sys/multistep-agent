@@ -1,10 +1,10 @@
-"""Evidence integrity (ADR-013): a wrong change cannot finish DONE by making the Tester's
+"""Evidence integrity (ADR-013): a wrong change cannot finish COMPLETED by making the Tester's
 tests not run, not count, or pass on files that are not delivered.
 
 Each test closes a hole that a review of M7 found. In all of them the plan's criterion is
 ``farewell("ada") == "goodbye ada"``, and the Coder ships a ``farewell`` that returns
 "bye ada", with a unit test of its own that agrees with it. Before ADR-013, each of these
-runs finished DONE.
+runs finished COMPLETED.
 
 Most runs stop at the first failure (``max_revisions = 0``): what matters is which rule
 caught the change, and whose it is to fix. The first test follows a run to the end.
@@ -117,7 +117,7 @@ def test_a_skipped_acceptance_test_goes_back_and_the_wrong_change_is_then_caught
     client = RoleScripts(planner=planner_script(), coder=coder, tester=tester)
     final, journal = harness.run(client)
     journal.close()
-    assert final.phase is Phase.DONE, final.outcome
+    assert final.phase is Phase.COMPLETED, final.outcome
     assert client.exhausted
 
     skipped, caught, passed = records(harness, "tests.jsonl")
@@ -243,7 +243,10 @@ def test_a_conftest_beside_the_acceptance_tests_cannot_reach_them(harness: Harne
 # ---------- checks see exactly the delivered tree
 
 
-def test_code_that_needs_a_gitignored_file_fails_verification(harness: Harness) -> None:
+def test_code_that_needs_a_gitignored_file_fails_the_unit_tests(harness: Harness) -> None:
+    """The ignored file is in no tree, so it would not be delivered: the first stage on the
+    tree removes it, and the code that imports it fails in the unit tests, as it would once
+    delivered. (Static analysis passes: nothing it checks needs the file.)"""
     (harness.repo / ".gitignore").write_text("local_settings.py\n", encoding="utf-8")
     git(harness.repo, "add", ".")
     git(harness.repo, "commit", "-qm", "ignore local settings")
@@ -252,6 +255,7 @@ def test_code_that_needs_a_gitignored_file_fails_verification(harness: Harness) 
         'def greet(name: str) -> str:\n    return f"hello {name}"\n\n\n'
         'def farewell(name: str) -> str:\n    return f"{FAREWELL} {name}"\n'
     )
+    triage = {"kind": "impl_bug", "test_id": "tests", "diagnosis": "local_settings is missing."}
     client = RoleScripts(
         planner=planner_script(),
         coder=[
@@ -263,15 +267,17 @@ def test_code_that_needs_a_gitignored_file_fails_verification(harness: Harness) 
             ),
             fake.answer(SUMMARY),
         ],
-        tester=author_script(),
+        tester=[*author_script(), fake.answer(triage)],
     )
     stopped(stop_at_first_failure(harness), client)
-    (only,) = records(harness, "verifications.jsonl")
-    assert only["failed"] == ["pytest"]
-    report = harness.artifact(only["report"])
-    assert "## Files outside the tree" in report
-    assert "- `src/local_settings.py`" in report
-    assert "No module named 'local_settings'" in report
+    (static,) = records(harness, "verifications.jsonl")
+    assert static["passed"]
+    removed = harness.artifact(static["report"])  # the first stage on the tree removes it
+    assert "## Files outside the tree" in removed
+    assert "- `src/local_settings.py`" in removed
+    (only,) = records(harness, "tests.jsonl")
+    assert (only["verdict"], only["kind"]) == ("failed", "impl_bug")
+    assert "No module named 'local_settings'" in harness.artifact(only["report"])
 
 
 # ---------- a test module that does not import is a failure to triage
