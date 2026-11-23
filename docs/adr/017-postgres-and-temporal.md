@@ -85,7 +85,9 @@ The Temporal driver is tested against Temporal's own test server, in CI
   for an effect the run is not waiting on is dropped; a cancel ends the run.
 - **Worker loss:** a worker process is SIGKILLed mid-effect, and a second one finishes
   the run. Nothing journaled runs again, the effect in flight runs once more, and the
-  final state equals the uninterrupted run's.
+  final state equals the uninterrupted run's. This test runs on Temporal's real dev
+  server: the time-skipping test server never timed out the dead worker's heartbeats,
+  so the run waited forever (found in CI).
 - **Through the API and the CLI:** a run is started, approved and completed.
 
 The activities are also tested in-process, with no server

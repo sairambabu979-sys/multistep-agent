@@ -17,7 +17,9 @@ What they show:
    dropped by the core, and a cancel ends the run.
 4. **A worker that dies.** A worker process is SIGKILLed in the middle of an effect. A
    second worker takes the run over: the effect in flight runs again, nothing already
-   journaled runs again, and the run ends exactly as the uninterrupted one does.
+   journaled runs again, and the run ends exactly as the uninterrupted one does. This one
+   runs on Temporal's real dev server (also downloaded by the SDK), which times out the
+   dead worker's heartbeats as a production server does.
 """
 
 from __future__ import annotations
@@ -327,7 +329,9 @@ def test_a_killed_worker_hands_the_run_to_another(tmp_path: Path) -> None:
     executions: Counter[EffectId] = Counter()
 
     async def scenario() -> tuple[RunState, set[EffectId]]:
-        async with await WorkflowEnvironment.start_time_skipping(port=port) as env:
+        # The real dev server, not the time-skipping test server: a dead worker is noticed
+        # only by its missing heartbeats, which the test server does not time out.
+        async with await WorkflowEnvironment.start_local(port=port) as env:
             client = env.client
             child = multiprocessing.get_context("spawn").Process(
                 target=_dying_worker, args=(port, str(db), str(log))
