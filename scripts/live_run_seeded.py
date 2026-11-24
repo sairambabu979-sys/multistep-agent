@@ -19,8 +19,9 @@ it, and lets the real roles find it.
   task names.
 - **restock-scale:** the task also states that receive must never scan or sort the whole
   store per line. The seed's receive is right in every other way, but checks each SKU
-  through ``items()``, which sorts the whole store, once per line. Tests on small stores
-  cannot see that; a reviewer holding the code to the task can, as a blocking finding.
+  through ``items()``, which sorts the whole store, once per line. No timing on a small
+  store shows it; only a test or a reviewer that holds the code to the stated rule can.
+  In live-8 the real Tester's tests did.
 - **What is real:** every request of every other role (Planner, Tester, Reviewer, Arbiter,
   triage), and every later Coder request (revisions, answers to findings), go to the model
   through the client msa.toml configures. Whether anything catches the bug, and how, is
