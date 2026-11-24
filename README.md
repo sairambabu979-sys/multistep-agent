@@ -154,7 +154,8 @@ passes it (`tests/integration/test_live_run_seeded.py`).
   The real Coder's revision passed every gate again, and the repro test now ships with it
   as a regression test (`tests/repro/test_live_11_c0_1.py`). The real Reviewer's second
   review raised one advisory nit, that `receive` restates `restock`'s checks. The run
-  reached HUMAN_APPROVAL with 1 revision.
+  reached HUMAN_APPROVAL with 1 revision. Its release was then approved by a person
+  (`Approved-by: github:sairambabu979-sys`) and published.
 
   It also showed the PR overclaiming again. Its summary was the plan's, written before the
   upheld finding: "calls `restock` for each" line, the opposite of the delivered code. A
