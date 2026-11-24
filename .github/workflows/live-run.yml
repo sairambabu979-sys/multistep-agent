@@ -39,6 +39,11 @@ name: live run
 #   decide: the real Tester's repro test settles the correctness claim, and the real Arbiter
 #   rules on the design one (the run escalates to the Arbiter, not a person). In live-9 the
 #   real Reviewer withdrew in round one, so neither rung had run live. restock-atomic only.
+# - code-dispute: both plants, on restock. The line-by-line receive of code reaches review
+#   (restock never asks for all or nothing, live-6), and the Reviewer's side of dispute
+#   claims it is not all or nothing, which is true this time. Whether the repro test
+#   confirms it, the claim is upheld, and the real Coder's revision fixes it and passes a
+#   real review is the result. In live-10 both claims were false.
 #
 # Unless crash_after_seq is 0, the run is SIGKILLed partway through, its whole process tree
 # at once (scripts/live_run_crash.py), and `msa resume` continues it from the journal. The
@@ -79,10 +84,11 @@ on:
           Plant one thing; every other model call is real. code: a bug in the Coder's first
           implementation (a restock task). finding: a blocking finding as the Reviewer's
           first review (restock-atomic). dispute: the Reviewer's whole side, never yielding,
-          so the repro test and the Arbiter decide (restock-atomic). All take crash_after_seq 0.
+          so the repro test and the Arbiter decide (restock-atomic). code-dispute: both, so
+          the planted claim is true (restock). All take crash_after_seq 0.
         required: true
         type: choice
-        options: [none, code, finding, dispute]
+        options: [none, code, finding, dispute, code-dispute]
         default: none
 
 permissions:
@@ -139,7 +145,14 @@ jobs:
                 echo "::error::a seeded $SEEDED takes restock-atomic and crash_after_seq 0"
                 exit 1
               fi ;;
-            *) echo "::error::seeded must be none, code, finding or dispute, not $SEEDED" && exit 1 ;;
+            code-dispute)
+              if [ "$TASK" != restock ] || [ "$CRASH_AFTER_SEQ" != 0 ]; then
+                echo "::error::a seeded code-dispute takes restock and crash_after_seq 0"
+                exit 1
+              fi ;;
+            *)
+              echo "::error::seeded must be none, code, finding, dispute or code-dispute, not $SEEDED"
+              exit 1 ;;
           esac
           echo "DB=$RUNNER_TEMP/aegis/runs.db" >> "$GITHUB_ENV"
           echo "CRASH=$RUNNER_TEMP/aegis/crash.json" >> "$GITHUB_ENV"
@@ -159,7 +172,7 @@ jobs:
         run: |
           scripts/live_run_settings.sh "$RUNNER_TEMP/msa.toml"
           # A planted Reviewer never yields: the Arbiter, not a person, rules on what is left.
-          if [ "$SEEDED" = dispute ]; then
+          if [ "$SEEDED" = dispute ] || [ "$SEEDED" = code-dispute ]; then
             sed -i 's|^escalation = .*|escalation = "arbiter"|' "$RUNNER_TEMP/msa.toml"
             test "$(grep -c '^escalation = "arbiter"$' "$RUNNER_TEMP/msa.toml")" -eq 1
             uv run msa --config "$RUNNER_TEMP/msa.toml" config check
@@ -192,7 +205,19 @@ jobs:
         id: summary
         if: always()
         run: |
-          if [ "$SEEDED" = dispute ]; then
+          if [ "$SEEDED" = code-dispute ]; then
+            {
+              echo "## Seeded run: the Coder's first implementation and the Reviewer's side were planted"
+              echo
+              echo "Both were scripted, not the model's (scripts/live_run_seeded.py). The first"
+              echo "implementation's receive() applies a note line by line. The first review"
+              echo "claims that, which is true, plus a design claim the task contradicts, and every"
+              echo "reply maintains both. Every other model call was real: the Planner, the Coder's"
+              echo "answers and revisions, the Tester and its repro test, the Arbiter (this run"
+              echo "escalates to it), and every review after the first."
+              echo
+            } | tee -a "$GITHUB_STEP_SUMMARY"
+          elif [ "$SEEDED" = dispute ]; then
             {
               echo "## Seeded run: the Reviewer's side was planted"
               echo

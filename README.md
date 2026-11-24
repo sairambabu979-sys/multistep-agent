@@ -137,6 +137,14 @@ So every rung of negotiation has now run with the real model:
 
 What stays planted is a Reviewer's side: the findings and, in live-10, its refusals.
 
+In live-10 both planted claims were false, and both were dismissed. `seeded: code-dispute`
+is for the other case, a true finding. It plants both on `restock`. The Coder's first
+implementation is the line-by-line `receive()` of `code`, which that task's tests do not
+catch (live-6), so it reaches review. The Reviewer's side is that of `dispute`, so this
+time its correctness claim is true. Offline, the repro test fails on the head tree, the
+claim is upheld, the Coder's revision makes `receive` all or nothing, and a second review
+passes it (`tests/integration/test_live_run_seeded.py`).
+
 The workflow's `release` job is a live run's human gate. It waits in the `live-release`
 environment until that environment's required reviewer approves it in GitHub. It then
 approves the run in that person's name (`github:<login>`, read from GitHub's record of the

@@ -19,8 +19,8 @@ import pytest
 from msa.core.values import Escalation, Phase
 from msa.llm import fake
 from msa.llm.client import Request, Response
-from tests.integration.test_demo import PLANNER, TASK, TESTER
-from tests.support.runs import Harness, RoleScripts, create, make_harness
+from tests.integration.test_demo import PLANNER, TASK, TESTER, summary
+from tests.support.runs import Harness, RoleScripts, create, edit, make_harness, tool_turn
 from tests.support.scripts import load
 
 pytestmark = pytest.mark.slow
@@ -200,6 +200,82 @@ def test_a_planted_dispute_is_decided_by_the_repro_test_and_the_arbiter(
     assert seeded.CLAIM not in seeded.prompt_text(ruling)  # the repro test settled that one
 
 
+ALL_OR_NOTHING = '''"""Deliveries: a note of "sku,quantity" lines, applied to a store."""
+
+from inventory.store import Store
+
+
+def receive(store: Store, note: str) -> int:
+    """Restock ``store`` from ``note``, all or nothing; returns the number of lines applied."""
+    deliveries: list[tuple[str, int]] = []
+    for line in note.splitlines():
+        if not line.strip():
+            continue
+        sku, quantity = line.split(",")
+        deliveries.append((sku.strip(), int(quantity)))
+    for sku, quantity in deliveries:
+        if quantity <= 0:
+            raise ValueError(f"{sku}: a restock must add a positive quantity")
+        store.quantity(sku)  # KeyError for an unknown SKU, before anything is applied
+    for sku, quantity in deliveries:
+        store.restock(sku, quantity)
+    return len(deliveries)
+'''
+
+
+def test_a_planted_true_finding_is_upheld_by_the_repro_test_and_fixed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--plant code-dispute: the line-by-line receive reaches review (the task never asks
+    for all or nothing), the planted claim is true, the repro test fails on the head tree,
+    and the Coder's revision must fix it and pass a review of its own."""
+    monkeypatch.setenv("MSA_USER_PREFERENCES", str(tmp_path / "no-user-layer.yaml"))
+    harness = make_harness(tmp_path, review=True, fixture="inventory", task=TASK)
+    limits = harness.config.limits.model_copy(update={"escalation": Escalation.ARBITER})
+    harness.config = harness.config.model_copy(update={"limits": limits})
+    fixed = [
+        tool_turn(
+            edit(
+                "v1",
+                seeded.RECEIVING,
+                seeded.RECEIVING_SEEDED,
+                ALL_OR_NOTHING,
+                seeded.RECEIVING_SEEDED,
+            )
+        ),
+        summary("receive checks every line before it restocks any."),
+    ]
+    inner = RoleScripts(
+        planner=PLANNER,
+        tester=[
+            *TESTER[:2],
+            _write_repro,
+            fake.answer({"written": True, "explanation": "a bad second line"}),
+        ],
+        coder=[_rebut_all, *fixed],  # the first implementation is the seed
+        arbiter=[_dismiss_all],  # only the design claim reaches it
+        reviewer=[fake.answer({"summary": "receive is all or nothing now.", "findings": []})],
+    )
+    client = seeded.Disputing(seeded.Seeded(inner, seeded.seed("restock")))
+
+    final, journal = harness.run(client, approve_release=False)
+    journal.close()
+    assert final.phase is Phase.HUMAN_APPROVAL, final.outcome
+    assert final.revisions == 1  # the upheld finding's fix
+    assert client.planted == ["disputed_review", "maintained"]
+    assert client.inner.seed.exhausted  # the Coder's first implementation was the seed
+    assert inner.exhausted  # and the second review was the stand-in's, not the plant
+    correctness, design = (f["id"] for f in records(harness, "findings.jsonl"))
+    rulings = {
+        r["finding"]: (r["rung"], r["verdict"]) for r in records(harness, "arbitration.jsonl")
+    }
+    assert rulings[correctness] == ("repro", "upheld")  # the repro test failed on the head
+    assert rulings[design] == ("arbiter", "dismissed")
+    patch = (harness.run_dir / "patch.diff").read_text(encoding="utf-8")
+    assert "+        store.quantity(sku)  # KeyError for an unknown SKU" in patch
+    assert "+        store.restock(sku.strip(), int(quantity))" not in patch  # the bug is gone
+
+
 def test_a_planted_review_with_nothing_to_point_at_plants_nothing() -> None:
     request = {
         "model": "m",
@@ -285,3 +361,18 @@ def test_plant_dispute_plants_the_reviewers_whole_side(monkeypatch: pytest.Monke
     client = seeded.cli._client(None, None)
     assert isinstance(client, seeded.Disputing)
     assert client.inner == "the real client"
+
+
+def test_plant_code_dispute_seeds_the_coder_inside_the_disputing_reviewer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(seeded.cli, "main", lambda: None)
+    monkeypatch.setattr(seeded.cli, "_client", lambda settings, environment: "the real client")
+    seeded.main(
+        ["--plant", "code-dispute", "--", "run", "--task-file", ".github/live-run/restock.md"]
+    )
+    client = seeded.cli._client(None, None)
+    assert isinstance(client, seeded.Disputing)
+    assert isinstance(client.inner, seeded.Seeded)
+    assert client.inner.role == "coder"
+    assert client.inner.inner == "the real client"

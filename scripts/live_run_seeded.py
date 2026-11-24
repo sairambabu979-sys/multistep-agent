@@ -45,6 +45,12 @@ it directly.
   design one. What is real: the Planner, the Coder (its implementation and its moves), the
   Tester (acceptance tests and the repro test) and the Arbiter. In live-9 the real Reviewer
   withdrew the finding in round one, so neither rung had run live.
+- **--plant code-dispute** (restock, with escalation to the Arbiter): both plants at once.
+  The Coder's first implementation is the line-by-line receive of --plant code, which the
+  restock task's tests do not catch (live-6). The Reviewer's side is that of --plant
+  dispute, so its correctness claim is true this time. What is real is the rest: whether
+  the repro test confirms the claim, whether it is upheld, and whether the real Coder's
+  revision fixes it and passes a real review. In live-10 both claims were false.
 
 The seeded turns carry placeholder thinking signatures, so a seeded conversation is never
 sent to the API. Their token counts are estimated locally.
@@ -378,7 +384,7 @@ def task_of(args: list[str]) -> str:
     return "restock"
 
 
-PLANTS = ("code", "finding", "dispute")
+PLANTS = ("code", "finding", "dispute", "code-dispute")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -398,6 +404,8 @@ def main(argv: list[str] | None = None) -> None:
             return Seeded(real(settings, environment), [planted_review], role="reviewer")
         if plant == "dispute":
             return Disputing(real(settings, environment))
+        if plant == "code-dispute":
+            return Disputing(Seeded(real(settings, environment), seed(task)))
         return Seeded(real(settings, environment), seed(task))
 
     cli._client = seeded
