@@ -15,7 +15,7 @@ built and tested end to end, with only the model scripted. The journal runs on S
 PostgreSQL, and runs can be driven in-process or by Temporal
 ([ADR-017](docs/adr/017-postgres-and-temporal.md)).
 
-**With the real model** it has run three times, from the manual `live run` workflow
+**With the real model** it has run four times, from the manual `live run` workflow
 (`.github/workflows/live-run.yml`), each run stopping at the release approval:
 
 - **live-1** cost $0.53 of a $5 cap. Unit tests caught a bug in the Tester's own acceptance
@@ -33,10 +33,17 @@ PostgreSQL, and runs can be driven in-process or by Temporal
 For both crashes, "nothing answered ran again" covers the agent invocations only, 2 of the
 5 effects answered before the kill. The stages that call no model left no record a check
 could read. Every effect start is now logged (`effects.jsonl`), and the check reads that
-log, but no live run has been crashed since.
+log.
 
-No live run has raised a review finding, so negotiation has not yet run with the real
-model: the scripted demo is still its only evidence. No person has reviewed a live patch.
+- **live-4** ran the thread-safe task for $1.03 and was the first crash checked against every
+  effect start. It was SIGKILLed at seq 6 with the Tester mid-invocation. After the resume,
+  none of the 5 effects answered before the kill started again, model call or not, and the
+  Tester's in-flight effect started again. The Coder put a private lock around every read
+  and write and took `items()`'s snapshot under it. The Reviewer raised nothing.
+
+No live run has raised a review finding: four runs, the last two on tasks chosen to give
+review something real to find. So negotiation has not yet run with the real model, and the
+scripted demo is still its only evidence.
 
 The workflow's `release` job is a live run's human gate. It waits in the `live-release`
 environment until that environment's required reviewer approves it in GitHub. It then
