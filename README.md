@@ -63,6 +63,17 @@ and the security rules, so only review is left to find it
   choice the task allows, not a defect. That run also showed the PR overclaiming: it said
   both advisory findings were "settled in negotiation". It now says what happened: advisory
   findings are not negotiated, and a blocking finding with no recorded verdict says so.
+- **live-7** reran the seed on `restock-atomic`, which states the rule: a bad delivery note
+  raises and leaves the store exactly as it was. It cost $0.55. **The planted bug was
+  caught and fixed by the real model.** The real Tester's acceptance tests failed on the
+  planted tree. The real triage called it an implementation bug and sent it back to the
+  Coder (UNIT_TESTING to REWORK). The real Coder's revision checks every line before it
+  applies any. Every gate then passed on the delivered tree. The Reviewer raised one nit
+  (the tests went into a new file), reported as advisory and not negotiated.
+
+So a planted defect has now been caught live by the real roles, through tests and rework.
+Negotiation still has only the scripted demo as evidence: across seven live runs, no
+reviewer finding was severe enough to be negotiated (only blocker and major ones are).
 
 The workflow's `release` job is a live run's human gate. It waits in the `live-release`
 environment until that environment's required reviewer approves it in GitHub. It then
