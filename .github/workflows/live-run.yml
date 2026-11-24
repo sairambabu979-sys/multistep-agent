@@ -77,7 +77,7 @@ jobs:
     # One spending run at a time. Only this job: a release waiting days for its reviewer
     # must not hold up the next run (live-5 waited behind live-4's release).
     concurrency:
-      group: live-run
+      group: live-run-spend  # not "live-run": runs from before this held that name whole
       cancel-in-progress: false
     outputs:
       phase: ${{ steps.summary.outputs.phase }}

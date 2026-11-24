@@ -83,7 +83,7 @@ def test_only_the_spending_job_waits_its_turn_a_waiting_release_holds_nobody() -
     loaded = workflow()
     assert "concurrency" not in loaded  # not the whole workflow
     assert loaded["jobs"]["run"]["concurrency"] == {
-        "group": "live-run",
+        "group": "live-run-spend",
         "cancel-in-progress": False,
     }
     assert "concurrency" not in loaded["jobs"]["release"]
