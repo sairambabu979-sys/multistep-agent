@@ -1,0 +1,18 @@
+# The decision rule (PLAN §11), registered before the first paid eval run.
+#
+# A component stays enabled by default only if its arm beats the arm without it by these
+# margins, at an acceptable cost per resolved task. Otherwise it ships disabled. Changing
+# these after seeing results defeats the rule: msa eval report prints the commit that last
+# changed this file, so a reader can check it predates the results.
+#
+# The values are a proposal, to be confirmed before the first run [Guessing on the margins]:
+# with 20 tasks, one task is 5 points of resolve rate, and two runs of the same arm can
+# differ by a task or two by chance alone. The report adds an exact paired test, so a gain
+# that clears the margin can still be read as noise.
+
+[review]  # the Reviewer, negotiation and arbitration: arm D against arm B
+with = "D"
+without = "B"
+min_resolve_gain = 0.10  # absolute: 10 points of resolve rate, 2 of 18 tasks to resolve
+max_cost_ratio = 2.0  # D's cost per resolved task at most twice B's
+min_runs = 18  # results per arm on tasks to resolve, before the rule decides anything

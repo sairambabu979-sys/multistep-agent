@@ -25,6 +25,9 @@ Kind = Literal["bugfix", "feature", "refactor", "trap"]
 Expect = Literal["resolve", "flag"]
 KINDS: tuple[Kind, ...] = ("bugfix", "feature", "refactor", "trap")
 HIDDEN_DIR = "tests/hidden"  # where hidden tests land in a tree being scored
+# Tool caches a checkout grows (ruff writes one beside every config it reads): never part of
+# a base repository, and never copied into one a run will see.
+CACHES = ("__pycache__", ".ruff_cache", ".mypy_cache", ".pytest_cache")
 
 
 class CorpusError(ValueError):
@@ -60,7 +63,7 @@ def load(root: Path, only: frozenset[str] = frozenset()) -> list[Task]:
     tasks = [
         _task(home, repos_dir)
         for home in sorted(tasks_dir.iterdir())
-        if home.is_dir() and (not only or home.name in only)
+        if home.is_dir() and not home.name.startswith(".") and (not only or home.name in only)
     ]
     if missing := only - {t.id for t in tasks}:
         raise CorpusError(f"no such task: {', '.join(sorted(missing))}")
@@ -97,7 +100,7 @@ def materialize(task: Task, destination: Path, *, reference: bool = False) -> Pa
     with the reference solution laid over it if asked (then committed too)."""
     if destination.exists():
         raise FileExistsError(destination)
-    shutil.copytree(task.repo_home, destination, ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copytree(task.repo_home, destination, ignore=shutil.ignore_patterns(*CACHES))
     _git(destination, "init", "-q", "-b", "main")
     _commit(destination, "base")
     if reference:

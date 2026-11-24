@@ -106,6 +106,15 @@ def test_a_malformed_task_is_refused(tmp_path: Path, spec: str, message: str) ->
         corpus.load(root)
 
 
+def test_tool_caches_are_neither_tasks_nor_copied_into_a_repository(tmp_path: Path) -> None:
+    root, task = _copy_task(tmp_path, "textkit-wrap-last-line")
+    (root / "tasks" / ".ruff_cache").mkdir()  # ruff leaves one beside every config it reads
+    (root / "repos" / task.repo / ".ruff_cache" / "x").mkdir(parents=True)
+    (loaded,) = corpus.load(root)
+    repo = corpus.materialize(loaded, tmp_path / "repo")
+    assert not (repo / ".ruff_cache").exists()
+
+
 def test_only_the_named_tasks_load_and_an_unknown_name_is_refused() -> None:
     assert [t.id for t in corpus.load(EVALS, frozenset({"ledger-statement"}))] == [
         "ledger-statement"

@@ -1,0 +1,128 @@
+name: eval
+
+# PLAN §11: the task corpus (evals/) through arms of the system with the real model, every
+# delivered tree scored by the task's hidden tests. It spends, so it is manual only.
+#
+# Two caps: budget_usd on every run, and max_total_usd on the whole eval (no run starts
+# once that much is spent). A full pass is 20 tasks x 2 arms = 40 runs. The decision rule
+# is evals/decision.toml, registered before the first run; the report applies it.
+#
+# Arms: B (every stage, no Reviewer) and D (the full system). A and C are not built yet;
+# msa eval run refuses them before spending.
+#
+# Agent commands and the hidden tests run without network, and must: the settings say
+# isolate_network = "always" (scripts/live_run_settings.sh).
+on:
+  workflow_dispatch:
+    inputs:
+      arms:
+        description: Arms, comma separated (B and D exist)
+        required: true
+        default: "B,D"
+      tasks:
+        description: Task ids, comma separated; empty for all 20
+        required: false
+        default: ""
+      budget_usd:
+        description: Hard cap per run, in US dollars (at most 20)
+        required: true
+        default: "5"
+      max_total_usd:
+        description: Hard cap on the whole eval, in US dollars (at most 200)
+        required: true
+        default: "40"
+      repeats:
+        description: Runs per task and arm (1 to 3)
+        required: true
+        default: "1"
+
+permissions:
+  contents: read
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    # One spending job at a time, shared with the live runs.
+    concurrency:
+      group: live-run-spend
+      cancel-in-progress: false
+    env:
+      ARMS: ${{ inputs.arms }}
+      TASKS: ${{ inputs.tasks }}
+      BUDGET_USD: ${{ inputs.budget_usd }}
+      MAX_TOTAL_USD: ${{ inputs.max_total_usd }}
+      REPEATS: ${{ inputs.repeats }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+          enable-cache: true
+
+      - name: Install (locked)
+        run: uv sync --locked
+
+      - name: ripgrep (the search tool runs it)
+        run: command -v rg || { sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep; }
+
+      - name: Check the inputs
+        run: |
+          python3 - <<'PY'
+          import os, re, sys
+          def fail(message): sys.exit(f"::error::{message}")
+          budget, total = float(os.environ["BUDGET_USD"]), float(os.environ["MAX_TOTAL_USD"])
+          if not 0 < budget <= 20: fail(f"budget_usd must be above 0 and at most 20, not {budget}")
+          if not 0 < total <= 200: fail(f"max_total_usd must be above 0 and at most 200, not {total}")
+          if os.environ["REPEATS"] not in ("1", "2", "3"): fail("repeats must be 1, 2 or 3")
+          if not re.fullmatch(r"[A-Z](,[A-Z])*", os.environ["ARMS"]): fail("arms: letters, comma separated")
+          if not re.fullmatch(r"([a-z0-9-]+(,[a-z0-9-]+)*)?", os.environ["TASKS"]): fail("tasks: ids, comma separated")
+          PY
+          echo "OUT=$RUNNER_TEMP/eval" >> "$GITHUB_ENV"
+
+      - name: Network namespaces (agent commands and hidden tests get no network)
+        run: scripts/allow_network_namespaces.sh
+
+      - name: Settings for this eval
+        run: scripts/live_run_settings.sh "$RUNNER_TEMP/msa.toml"
+
+      - name: Every task is fit to score (spends nothing)
+        run: .venv/bin/msa --config "$RUNNER_TEMP/msa.toml" eval check
+
+      - name: The eval (real model)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          args=(--out "$OUT" --budget-usd "$BUDGET_USD" --max-total-usd "$MAX_TOTAL_USD" --repeats "$REPEATS")
+          IFS=, read -ra arms <<< "$ARMS"
+          for arm in "${arms[@]}"; do args+=(--arm "$arm"); done
+          if [ -n "$TASKS" ]; then
+            IFS=, read -ra tasks <<< "$TASKS"
+            for task in "${tasks[@]}"; do args+=(--task "$task"); done
+          fi
+          .venv/bin/msa --config "$RUNNER_TEMP/msa.toml" eval run "${args[@]}"
+
+      - name: The report and the decision
+        if: always()
+        run: |
+          if [ ! -s "$OUT/results.jsonl" ]; then
+            echo "No run finished: there is nothing to report." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          .venv/bin/msa eval report "$OUT" --output "$OUT/report.md"
+          cat "$OUT/report.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eval
+          # The results, the report, and each run's own files (journal, findings, rulings,
+          # reports); not the repositories and worktrees, which are rebuilt from the corpus.
+          path: |
+            ${{ runner.temp }}/eval/results.jsonl
+            ${{ runner.temp }}/eval/report.md
+            ${{ runner.temp }}/eval/runs/*/state/runs.db
+            ${{ runner.temp }}/eval/runs/*/state/runs/
+          if-no-files-found: warn
+          retention-days: 90
