@@ -119,6 +119,24 @@ settings escalate to the Arbiter rather than a person. Offline, with stand-ins f
 Coder, the Tester and the Arbiter, a repro test that really runs on the head tree dismisses
 the first claim, and a ruling dismisses the second.
 
+- **live-10** ran `seeded: dispute` on `restock-atomic` and cost $0.64. **Both remaining
+  escalation steps ran with the real model.** Every gate passed on the real Coder's first
+  implementation (0 revisions). Both planted findings were admitted, `c0-1` as a blocker
+  and `c0-2` as major. One negotiation round closed neither, because the planted Reviewer
+  never yields, so the run escalated to arbitration (NEGOTIATION to NEGOTIATION,
+  `request_arbitration`). The real Tester wrote a repro test for `c0-1`'s claim, and it
+  passed when run on the head tree in the sandbox, so the claim was **dismissed by the
+  repro test**. That is objective evidence the planted correctness claim was false, which
+  live-9 could only infer. The real Arbiter **dismissed** `c0-2`, the design claim the task
+  contradicts. The run went on through FINAL_VERIFICATION to HUMAN_APPROVAL.
+
+So every rung of negotiation has now run with the real model:
+- the author's move and the reviewer's reply (live-9);
+- the repro test (live-10);
+- the Arbiter (live-10).
+
+What stays planted is a Reviewer's side: the findings and, in live-10, its refusals.
+
 The workflow's `release` job is a live run's human gate. It waits in the `live-release`
 environment until that environment's required reviewer approves it in GitHub. It then
 approves the run in that person's name (`github:<login>`, read from GitHub's record of the
