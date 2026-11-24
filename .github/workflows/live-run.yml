@@ -16,6 +16,12 @@ name: live run
 # Agent commands and the integration suite run without network, and must: the run's
 # settings say isolate_network = "always" (scripts/live_run_settings.sh).
 #
+# seeded plants one known bug in the Coder's first implementation (scripts/live_run_seeded.py):
+# receive() applies a delivery note line by line, so a bad line part-way through leaves the
+# store partly restocked. Everything after it is the real model: the Tester, the gates, the
+# Reviewer, the Coder's own fixes or disputes, the Arbiter. It takes the restock task and no
+# crash, and its job summary says, first, that the Coder's first implementation was planted.
+#
 # Unless crash_after_seq is 0, the run is SIGKILLed partway through, its whole process tree
 # at once (scripts/live_run_crash.py), and `msa resume` continues it from the journal. The
 # summary then checks that no effect the journal had answered was invoked again.
@@ -50,6 +56,13 @@ on:
           the other is mid-call.
         required: true
         default: "6"
+      seeded:
+        description: >-
+          Plant one known bug in the Coder's first implementation; every later model call is
+          real (restock task, crash_after_seq 0)
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -71,6 +84,7 @@ jobs:
       TASK: ${{ inputs.task }}
       BUDGET_USD: ${{ inputs.budget_usd }}
       CRASH_AFTER_SEQ: ${{ inputs.crash_after_seq }}
+      SEEDED: ${{ inputs.seeded }}
     steps:
       - uses: actions/checkout@v4
 
@@ -92,6 +106,10 @@ jobs:
           python3 -c "import os, sys; c = os.environ['CRASH_AFTER_SEQ']; \
             sys.exit(0 if c.isdigit() else f'crash_after_seq must be a whole number, not {c!r}')"
           test -f ".github/live-run/$TASK.md"
+          if [ "$SEEDED" = "true" ] && { [ "$TASK" != restock ] || [ "$CRASH_AFTER_SEQ" != 0 ]; }
+          then
+            echo "::error::seeded runs take the restock task and crash_after_seq 0" && exit 1
+          fi
           echo "DB=$RUNNER_TEMP/aegis/runs.db" >> "$GITHUB_ENV"
           echo "CRASH=$RUNNER_TEMP/aegis/crash.json" >> "$GITHUB_ENV"
 
@@ -115,9 +133,15 @@ jobs:
         # The venv's msa directly, not `uv run`: the crash must reach msa's own process tree.
         run: |
           msa=("$GITHUB_WORKSPACE/.venv/bin/msa" --config "$RUNNER_TEMP/msa.toml")
-          run=("${msa[@]}" run --repo "$RUNNER_TEMP/inventory" \
+          args=(run --repo "$RUNNER_TEMP/inventory" \
             --task-file ".github/live-run/$TASK.md" --run-id "$RUN_ID" \
             --budget-usd "$BUDGET_USD" --db "$DB")
+          run=("${msa[@]}" "${args[@]}")
+          if [ "$SEEDED" = "true" ]; then
+            "$GITHUB_WORKSPACE/.venv/bin/python" scripts/live_run_seeded.py -- \
+              --config "$RUNNER_TEMP/msa.toml" "${args[@]}"
+            exit
+          fi
           if [ "$CRASH_AFTER_SEQ" -eq 0 ]; then
             "${run[@]}"
             exit
@@ -130,6 +154,16 @@ jobs:
         id: summary
         if: always()
         run: |
+          if [ "$SEEDED" = "true" ]; then
+            {
+              echo "## Seeded run: the Coder's first implementation was planted"
+              echo
+              echo "It was scripted, not the model's (scripts/live_run_seeded.py), with one known"
+              echo "bug: receive() applies a delivery note line by line, so a bad line part-way"
+              echo "through leaves the store partly restocked. Every other model call was real."
+              echo
+            } | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
           crash=()
           if [ -f "$CRASH" ]; then crash=(--crash "$CRASH"); fi
           uv run python scripts/live_run_summary.py --db "$DB" --run "$RUN_ID" \

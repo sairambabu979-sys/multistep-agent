@@ -45,6 +45,15 @@ No live run has raised a review finding: four runs, the last two on tasks chosen
 review something real to find. So negotiation has not yet run with the real model, and the
 scripted demo is still its only evidence.
 
+The workflow's `seeded` mode is for that gap. It plants one known bug in the Coder's first
+implementation (`scripts/live_run_seeded.py`): `receive()` applies a delivery note line by
+line, so a bad line part-way through leaves the store partly restocked. It is the bug the
+scripted demo's Reviewer catches. Every later model call is real: the Tester, the gates, the
+Reviewer, the Coder's own fixes or disputes, and the Arbiter. The run's job summary says
+first that the implementation was planted. Offline, the seed passes ruff, mypy, the tests
+and the security rules, so only review is left to find it
+(`tests/integration/test_live_run_seeded.py`).
+
 The workflow's `release` job is a live run's human gate. It waits in the `live-release`
 environment until that environment's required reviewer approves it in GitHub. It then
 approves the run in that person's name (`github:<login>`, read from GitHub's record of the

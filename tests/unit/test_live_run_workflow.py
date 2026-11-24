@@ -64,3 +64,16 @@ def test_a_release_nobody_approved_reports_nothing_it_never_restored() -> None:
     after = [s for s in release["steps"] if s.get("if", "").startswith("always()")]
     assert after  # the summary and the upload still run when publishing fails
     assert all("steps.restore.outcome == 'success'" in s["if"] for s in after)
+
+
+def test_a_seeded_run_says_so_first_and_takes_only_the_restock_task_uncrashed() -> None:
+    run = workflow()["jobs"]["run"]
+    steps = {step.get("name", ""): str(step.get("run", "")) for step in run["steps"]}
+    inputs = steps["Check the inputs"]
+    assert "seeded runs take the restock task and crash_after_seq 0" in inputs
+    assert (
+        "scripts/live_run_seeded.py"
+        in steps["The run (real model, every stage), crashed and resumed"]
+    )
+    summary = steps["Outcome, spend, the crash and the PR description"]
+    assert summary.index("was planted") < summary.index("live_run_summary.py")
