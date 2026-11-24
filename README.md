@@ -16,7 +16,7 @@ PostgreSQL, and runs can be driven in-process or by Temporal
 ([ADR-017](docs/adr/017-postgres-and-temporal.md)).
 
 **With the real model** it has run three times, from the manual `live run` workflow
-(`.github/workflows/live-run.yml`), each time stopping at the release approval:
+(`.github/workflows/live-run.yml`), each run stopping at the release approval:
 
 - **live-1** cost $0.53 of a $5 cap. Unit tests caught a bug in the Tester's own acceptance
   test, and the Tester fixed it. Its integration suite had network: the runner refused the
@@ -37,7 +37,12 @@ The workflow's `release` job is a live run's human gate. It waits in the `live-r
 environment until that environment's required reviewer approves it in GitHub. It then
 approves the run in that person's name (`github:<login>`, read from GitHub's record of the
 approval), and the run publishes and completes. If nobody approved, it approves nothing and
-fails. No live run has been released yet.
+fails.
+
+live-3 is the first live run released this way. Its release job refused twice while
+`live-release` had no reviewer. Then the repository owner approved it in GitHub, and the run
+was approved as `github:sairambabu979-sys` and published to `aegis/live-3` (commit
+`b33e5524`, `Approved-by: github:sairambabu979-sys`). It is COMPLETED.
 
 The full design is in [`docs/PLAN.md`](docs/PLAN.md), decisions are in
 [`docs/adr/`](docs/adr/), and the generated state diagram is in [`docs/fsm.md`](docs/fsm.md).
