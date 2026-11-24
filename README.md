@@ -30,6 +30,12 @@ the release approval:
 Neither run raised a review finding, so negotiation has not yet run with the real model.
 No person has reviewed a live patch.
 
+The workflow's `release` job is a live run's human gate. It waits in the `live-release`
+environment until that environment's required reviewer approves it in GitHub. It then
+approves the run in that person's name (`github:<login>`, read from GitHub's record of the
+approval), and the run publishes and completes. If nobody approved, it approves nothing and
+fails. No live run has been released yet.
+
 The full design is in [`docs/PLAN.md`](docs/PLAN.md), decisions are in
 [`docs/adr/`](docs/adr/), and the generated state diagram is in [`docs/fsm.md`](docs/fsm.md).
 

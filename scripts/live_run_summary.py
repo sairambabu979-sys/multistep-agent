@@ -112,6 +112,8 @@ def summarize(
         f"| events | {state.seq} |",
         "",
     ]
+    if state.phase is Phase.COMPLETED:
+        out += [f"Approved by `{state.approved_by}`, and published.", ""]
     if state.phase is Phase.HUMAN_APPROVAL:
         out += [
             "The run is waiting for a person to approve its release. Nothing was published, "
@@ -138,6 +140,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--run", required=True)
     parser.add_argument("--summary", type=Path)
     parser.add_argument("--crash", type=Path, help="the evidence live_run_crash.py wrote")
+    parser.add_argument(
+        "--output", type=Path, help="append phase=<the run's phase> here ($GITHUB_OUTPUT)"
+    )
     args = parser.parse_args(argv)
     crash = json.loads(args.crash.read_text(encoding="utf-8")) if args.crash else None
     text, reached = summarize(args.db, args.run, args.db.parent / "runs" / args.run, crash)
@@ -145,6 +150,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.summary is not None:
         with args.summary.open("a", encoding="utf-8") as summary:
             summary.write(text + "\n")
+    if args.output is not None:
+        with open_journal(args.db) as journal:
+            phase = journal.load(RunId(args.run)).phase
+        with args.output.open("a", encoding="utf-8") as output:
+            output.write(f"phase={phase.value}\n")
     return 0 if reached else 1
 
 

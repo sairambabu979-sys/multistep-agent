@@ -141,3 +141,22 @@ def test_an_answered_effect_invoked_again_after_the_crash_fails_the_run(tmp_path
     assert "(msa alone: no sandboxed command was running at that instant)" in text
     assert "**Invoked again after the crash, though the journal held their answers: " in text
     assert "`run-1:5:0`.** ADR-007 says this never happens." in text
+
+
+def test_a_completed_run_names_its_approver_and_reports_its_phase(tmp_path: Path) -> None:
+    d = Driver(limits(wall_clock=timedelta(days=3650)))
+    d.to_review()
+    d.review()
+    d.verify_release()
+    d.approve_release(by="github:ada")
+    d.publish()
+    db = tmp_path / "runs.db"
+    journaled(db, d)
+    output = tmp_path / "github-output"
+    output.write_text("before=1\n", encoding="utf-8")
+
+    assert script().main(["--db", str(db), "--run", RUN, "--output", str(output)]) == 0
+    assert output.read_text(encoding="utf-8") == "before=1\nphase=completed\n"  # appended
+    text, reached = script().summarize(db, RUN, tmp_path / "runs" / RUN)
+    assert reached
+    assert "Approved by `github:ada`, and published." in text
