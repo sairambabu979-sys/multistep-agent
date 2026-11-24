@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import click
 import pytest
 from typer.testing import CliRunner
 
@@ -54,7 +55,9 @@ def test_check_refuses_an_unknown_task() -> None:
 def test_run_requires_a_total_spending_cap() -> None:
     done = CliRunner().invoke(app, [*CONFIG, "eval", "run", "--corpus", str(ROOT / "evals")])
     assert done.exit_code == 2
-    assert "--max-total-usd" in done.output
+    # click.unstyle: on GitHub Actions, typer forces Rich's terminal mode, so the usage error
+    # arrives with colour codes inside it.
+    assert "--max-total-usd" in click.unstyle(done.output)
 
 
 @pytest.mark.parametrize("arm", ["A", "C"])
