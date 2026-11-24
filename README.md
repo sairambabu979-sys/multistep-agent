@@ -145,6 +145,22 @@ time its correctness claim is true. Offline, the repro test fails on the head tr
 claim is upheld, the Coder's revision makes `receive` all or nothing, and a second review
 passes it (`tests/integration/test_live_run_seeded.py`).
 
+- **live-11** ran `seeded: code-dispute` on `restock` and cost $0.60. **A true finding was
+  upheld and fixed with the real model.** The planted line-by-line `receive()` passed every
+  gate, since `restock`'s tests do not require all or nothing. Review then admitted the
+  planted findings `c0-1` (blocker) and `c0-2` (major). One round closed neither, and the
+  run escalated. The real Tester's repro test for `c0-1` **failed on the head tree, so the
+  claim was upheld**, and the real Arbiter **dismissed** `c0-2`. NEGOTIATION went to REWORK.
+  The real Coder's revision passed every gate again, and the repro test now ships with it
+  as a regression test (`tests/repro/test_live_11_c0_1.py`). The real Reviewer's second
+  review raised one advisory nit, that `receive` restates `restock`'s checks. The run
+  reached HUMAN_APPROVAL with 1 revision.
+
+  It also showed the PR overclaiming again. Its summary was the plan's, written before the
+  upheld finding: "calls `restock` for each" line, the opposite of the delivered code. A
+  revised run's PR now says its summary is the plan's approach and lists what each revision
+  changed.
+
 The workflow's `release` job is a live run's human gate. It waits in the `live-release`
 environment until that environment's required reviewer approves it in GitHub. It then
 approves the run in that person's name (`github:<login>`, read from GitHub's record of the
