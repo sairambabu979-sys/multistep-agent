@@ -10,6 +10,7 @@ Layout::
     .msa/runs/<run>/
         artifacts/<sha256 hex>   content-addressed: plans, verification reports, patches
         plan.json                the plan the build follows (the last one produced)
+        effects.jsonl            one line per effect an executor started, before it ran
         invocations.jsonl        one line per agent invocation: role, turns, spend
         verifications.jsonl      one line per verification: tree, passed, report digest
         report.md                the run report, written when the run ends

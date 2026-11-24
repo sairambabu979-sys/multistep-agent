@@ -11,8 +11,9 @@ cancelled, blocked, or still mid-run). Nothing here approves anything.
 
 With ``--crash`` (the evidence ``scripts/live_run_crash.py`` wrote when it SIGKILLed the
 run), it also checks the resumed run against the crash: an effect whose answer the journal
-held at the crash must never have been invoked again (ADR-007). One that was fails the run
-here too.
+held at the crash must never have started again (ADR-007). One that did fails the run here
+too. The check reads every effect start (``effects.jsonl``), the stages that call no model
+included; the agent invocations (``invocations.jsonl``) add the turns each one replayed.
 """
 
 from __future__ import annotations
@@ -37,14 +38,19 @@ def records(path: Path) -> list[dict[str, Any]]:
 
 
 def crash_section(
-    crash: dict[str, Any], events: list[Any], invocations: list[dict[str, Any]], head: int
+    crash: dict[str, Any],
+    events: list[Any],
+    effects: list[dict[str, Any]],
+    invocations: list[dict[str, Any]],
+    head: int,
 ) -> tuple[list[str], bool]:
     """What the crash interrupted, and whether the resume honoured the journal."""
     seq = int(crash["seq"])
     answered = {e.effect_id for e in events[:seq] if getattr(e, "effect_id", None)}
-    after = invocations[int(crash["invocations"]) :]
-    again = sorted({r["effect"] for r in after} & answered)
+    started = {r["effect"] for r in effects[int(crash["effects"]) :]}
+    again = sorted(started & answered)
     pending = {p["effect"] for p in crash["pending"]}
+    after = invocations[int(crash["invocations"]) :]
     rerun = [r for r in after if r["effect"] in pending]
     listed = ", ".join(f"`{p['effect']}` ({p['kind']})" for p in crash["pending"]) or "none"
     others = int(crash["processes"]) - 1
@@ -65,14 +71,17 @@ def crash_section(
     if again:
         named = ", ".join(f"`{e}`" for e in again)
         out.append(
-            f"- **Invoked again after the crash, though the journal held their answers: "
+            f"- **Started again after the crash, though the journal held their answers: "
             f"{named}.** ADR-007 says this never happens."
         )
     else:
         out.append(
             f"- Effects the journal had answered before the crash ({len(answered)}): none "
-            "was invoked again."
+            "started again (every effect start is logged, model calls or not)."
         )
+    restarted = sorted(pending & started)
+    if restarted:
+        out.append(f"- Started again, as in flight: {', '.join(f'`{e}`' for e in restarted)}.")
     if rerun:
         turns = sum(int(r["turns"]) for r in rerun)
         replayed = sum(int(r["replayed"]) for r in rerun)
@@ -123,7 +132,11 @@ def summarize(
     honoured = True
     if crash is not None:
         section, honoured = crash_section(
-            crash, events, records(run_dir / "invocations.jsonl"), state.seq
+            crash,
+            events,
+            records(run_dir / "effects.jsonl"),
+            records(run_dir / "invocations.jsonl"),
+            state.seq,
         )
         out += section
         lines.insert(int(crash["seq"]), "---  SIGKILL; `msa resume` continued from here")

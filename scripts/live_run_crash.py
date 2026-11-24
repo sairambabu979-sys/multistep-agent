@@ -12,9 +12,12 @@ in sessions of their own, so a signal to the command's process group would miss 
 whole process tree is stopped first, so nothing in it can fork past the kill.
 
 It writes what the journal holds at the crash to ``--evidence``, for
-``scripts/live_run_summary.py --crash`` to check the resumed run against. The exit status is
-0 once the run has been crashed, and 1 if the command ended before the journal reached
-``--after-seq``: then nothing was crashed, and the test did not happen.
+``scripts/live_run_summary.py --crash`` to check the resumed run against. That includes how
+many effect starts the run had logged (``effects.jsonl``), so the summary can tell which
+effects started again after the resume. The exit status is 0 once the run has been
+crashed. It is 1 when the command was not killed: it ended before the journal reached
+``--after-seq``, or it exited by itself before the kill landed. Then nothing was crashed,
+the test did not happen, and no evidence is written.
 
 Linux only: it reads the process tree from /proc.
 """
@@ -100,8 +103,7 @@ def evidence(db: Path, run_id: str, after_seq: int, processes: int) -> dict[str,
     with open_journal(db) as journal:
         state = journal.load(rid)
         last = journal.events(rid, after=state.seq - 1)[-1]
-    invocations = db.parent / "runs" / run_id / "invocations.jsonl"
-    lines = invocations.read_text(encoding="utf-8").splitlines() if invocations.exists() else []
+    run_dir = db.parent / "runs" / run_id
     return {
         "run": run_id,
         "after_seq": after_seq,
@@ -110,8 +112,16 @@ def evidence(db: Path, run_id: str, after_seq: int, processes: int) -> dict[str,
         "phase": state.phase.value,
         "pending": [{"effect": e.id, "kind": e.command.kind} for e in state.pending],
         "processes": processes,
-        "invocations": sum(1 for line in lines if line.strip()),
+        "effects": lines(run_dir / "effects.jsonl"),
+        "invocations": lines(run_dir / "invocations.jsonl"),
     }
+
+
+def lines(path: Path) -> int:
+    """Complete records in a run's .jsonl file (each is appended whole, then fsynced)."""
+    if not path.exists():
+        return 0
+    return sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -139,6 +149,12 @@ def main(argv: list[str] | None = None) -> int:
         time.sleep(POLL_SECONDS)
     processes = crash(process.pid)
     process.wait()
+    if process.returncode != -signal.SIGKILL:
+        sys.stderr.write(
+            f"the command exited by itself (exit {process.returncode}) with the journal at "
+            f"seq {seq}, before the kill landed: nothing was crashed\n"
+        )
+        return 1
     found = evidence(args.db, args.run, args.after_seq, processes)
     args.evidence.parent.mkdir(parents=True, exist_ok=True)
     args.evidence.write_text(json.dumps(found, indent=2) + "\n", encoding="utf-8")

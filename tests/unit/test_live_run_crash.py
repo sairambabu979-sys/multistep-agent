@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import sys
 import textwrap
+import time
 from datetime import timedelta
 from pathlib import Path
 
@@ -43,6 +44,7 @@ STAND_IN = textwrap.dedent(
     d.to_review(); d.review(); d.verify_release()
     environment = SimulationConfig(seed=0, profile=Profile.HAPPY).model_dump(mode="json")
     records = db.parent / "runs" / "run-1" / "invocations.jsonl"
+    starts = db.parent / "runs" / "run-1" / "effects.jsonl"
     records.parent.mkdir(parents=True)
     with SqliteJournal(db) as journal:
         journal.create(environment, d.events[0], d.steps[0].state)
@@ -51,6 +53,8 @@ STAND_IN = textwrap.dedent(
         for event, step in zip(d.events[1:], d.steps[1:]):
             if step.state.seq == 6:
                 records.write_text(json.dumps({{"effect": "run-1:5:0"}}) + "\\n")
+                starts.write_text("".join(json.dumps({{"effect": e}}) + "\\n" for e in
+                    ["run-1:1:0", "run-1:2:0", "run-1:3:0", "run-1:4:0", "run-1:5:0", "run-1:5:1"]))
             journal.append(event, step.state, snapshot=False)
             time.sleep(60 if step.state.seq == 6 else 0.02)
     """
@@ -87,6 +91,7 @@ def test_the_whole_tree_is_killed_at_the_seq_and_the_journal_is_recorded(tmp_pat
         "phase": d.steps[5].state.phase.value,
         "pending": [{"effect": "run-1:5:1", "kind": "author_acceptance_tests"}],
         "processes": found["processes"],
+        "effects": 6,
         "invocations": 1,
     }
     assert found["processes"] >= 2  # the stand-in and its grandchild, at least
@@ -99,4 +104,26 @@ def test_a_command_that_ends_before_the_seq_crashed_nothing(tmp_path: Path) -> N
         [*argv, "--evidence", str(evidence), "--", sys.executable, "-c", "pass"]
     )
     assert code == 1
+    assert not evidence.exists()
+
+
+def test_a_command_that_exits_by_itself_at_the_seq_crashed_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The run reaches the seq and exits before the kill lands: the kill hits a zombie, and
+    # that must not pass for a crash.
+    crash = load("live_run_crash")
+    done = tmp_path / "done"
+
+    def head_seq(db: Path, run_id: str) -> int:
+        if not done.exists():
+            return 0
+        time.sleep(0.5)  # the command has written its marker; let it finish exiting
+        return 6
+
+    monkeypatch.setattr(crash, "head_seq", head_seq)
+    evidence = tmp_path / "crash.json"
+    argv = ["--db", str(tmp_path / "runs.db"), "--run", RUN, "--after-seq", "6"]
+    exits = [sys.executable, "-c", f"open({str(done)!r}, 'w').close()"]
+    assert crash.main([*argv, "--evidence", str(evidence), "--", *exits]) == 1
     assert not evidence.exists()

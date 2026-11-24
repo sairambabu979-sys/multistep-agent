@@ -12,6 +12,7 @@ killed pytest left nothing behind that breaks the run.
 
 from __future__ import annotations
 
+import json
 import multiprocessing
 import os
 import signal
@@ -130,3 +131,8 @@ def test_a_kill_while_the_unit_tests_run_resumes_to_completion(harness: Harness)
     assert rerun[0] == (in_flight.id, "run_unit_tests")  # the killed stage, first, again
     assert not {effect for effect, _ in rerun} & completed  # nothing journaled ran again
     assert os.path.exists(harness.run_dir / "patch.diff")
+
+    # The run's own effect log (msa.runtime.live.EffectLog), which the live run's crash check
+    # reads, holds every start this test's observer saw, the killed process's included.
+    logged = (harness.run_dir / "effects.jsonl").read_text(encoding="utf-8").splitlines()
+    assert [json.loads(line)["effect"] for line in logged] == [e for e, _ in started.lines()]
