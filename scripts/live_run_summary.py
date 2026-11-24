@@ -27,14 +27,16 @@ from typing import Any
 from msa.core.ids import RunId
 from msa.core.values import Phase
 from msa.observability.report import timeline
+from msa.runtime.artifacts import RunFiles
 from msa.runtime.journal import open_journal
 
 REACHED = {Phase.HUMAN_APPROVAL, Phase.COMPLETED}
 
 
 def records(path: Path) -> list[dict[str, Any]]:
-    text = path.read_text(encoding="utf-8") if path.exists() else ""
-    return [json.loads(line) for line in text.splitlines() if line.strip()]
+    """A run's records as the runtime reads them: a line torn by the crash is skipped, so
+    the counts here agree with the ones live_run_crash.py took."""
+    return RunFiles(path.parent).records(path.name)
 
 
 def crash_section(

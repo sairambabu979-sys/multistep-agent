@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Any
 
 from msa.core.ids import RunId
+from msa.runtime.artifacts import RunFiles
 from msa.runtime.journal import open_journal
 
 POLL_SECONDS = 0.1
@@ -118,10 +119,9 @@ def evidence(db: Path, run_id: str, after_seq: int, processes: int) -> dict[str,
 
 
 def lines(path: Path) -> int:
-    """Complete records in a run's .jsonl file (each is appended whole, then fsynced)."""
-    if not path.exists():
-        return 0
-    return sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
+    """Records in a run's .jsonl file, read as the runtime and the summary read them: a
+    line the kill tore is not one."""
+    return len(RunFiles(path.parent).records(path.name))
 
 
 def main(argv: list[str] | None = None) -> int:

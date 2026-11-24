@@ -10,6 +10,7 @@ from typing import Any
 
 from msa.core.events import CancelRequested
 from msa.core.ids import RunId
+from msa.runtime.artifacts import RunFiles
 from msa.runtime.journal import SqliteJournal
 from msa.runtime.simulation import Profile, SimulationConfig
 from tests.support.driver import Driver
@@ -186,3 +187,17 @@ def test_a_completed_run_names_its_approver_and_reports_its_phase(tmp_path: Path
     text, reached = script().summarize(db, RUN, tmp_path / "runs" / RUN)
     assert reached
     assert "Approved by `github:ada`, and published." in text
+
+
+def test_a_line_the_kill_tore_neither_stops_the_summary_nor_hides_what_followed(
+    tmp_path: Path,
+) -> None:
+    db = crashed(tmp_path, [], invocation("run-1:5:1", "tester"))
+    run_dir = tmp_path / "runs" / RUN
+    with (run_dir / "effects.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write('{"effect": "run-1:5:1", "ki')  # torn by the kill
+    RunFiles(run_dir).record("effects.jsonl", {"effect": "run-1:3:0", "kind": "-"})  # resumed
+
+    text, reached = script().summarize(db, RUN, run_dir, CRASH)
+    assert not reached  # the restart after the torn line is still seen
+    assert "though the journal held their answers: `run-1:3:0`." in text
