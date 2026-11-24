@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from msa.runtime import release
-from msa.runtime.artifacts import RunFiles
+from msa.runtime.artifacts import SUMMARIES, RunFiles
 from msa.runtime.review import FINDINGS, ROUNDS, RULINGS
 
 
@@ -43,3 +43,31 @@ def test_each_finding_is_described_by_what_actually_settled_it(tmp_path: Path) -
     assert "`c0-4` [major] Something closed with no record of how: closed with no verdict" in text
     assert "settled in negotiation" not in text  # never claimed without a record of it
     assert deferred == []
+
+
+def test_a_revised_run_says_its_summary_is_the_plans_and_lists_each_revision(
+    tmp_path: Path,
+) -> None:
+    """live-11's PR summary was the plan's: receive applies each line with restock. A
+    finding upheld in review then made receive all or nothing, and the summary never said
+    so. A reader approving from the summary would have been told the opposite of the code."""
+    files = RunFiles(tmp_path)
+    files.record(SUMMARIES, {"kind": "implement_plan", "summary": "receive, line by line."})
+    files.record(
+        SUMMARIES,
+        {"kind": "revise_changes", "summary": "receive checks every line before it restocks."},
+    )
+    files.record(SUMMARIES, {"kind": "revise_changes", "summary": "  A second fix.  "})
+
+    lines = release.revision_lines(files)
+    text = "\n".join(lines)
+    assert "That is the plan's approach. The code changed in 2 revision(s) since:" in text
+    assert "1. receive checks every line before it restocks." in text
+    assert "2. A second fix." in text
+    assert "line by line" not in text  # the first implementation is not a revision
+
+
+def test_a_run_with_no_revisions_adds_nothing_to_its_summary(tmp_path: Path) -> None:
+    files = RunFiles(tmp_path)
+    files.record(SUMMARIES, {"kind": "implement_plan", "summary": "receive."})
+    assert release.revision_lines(files) == []

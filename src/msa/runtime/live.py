@@ -68,7 +68,7 @@ from msa.llm.gateway import Gateway
 from msa.llm.store import ResponseStore
 from msa.observability import report
 from msa.runtime import integration, review, security
-from msa.runtime.artifacts import PLAN_FILE, RunFiles, digest_of
+from msa.runtime.artifacts import PLAN_FILE, SUMMARIES, RunFiles, digest_of
 from msa.runtime.clock import Clock
 from msa.runtime.context import RunContext
 from msa.runtime.executors import Router
@@ -321,7 +321,7 @@ def write_report(
         plan=Plan.model_validate_json(stored).render() if stored else None,
         invocations=files.records("invocations.jsonl"),
         verifications=files.records("verifications.jsonl"),
-        summaries=files.records("summaries.jsonl"),
+        summaries=files.records(SUMMARIES),
         stand_ins={} if reviewed else STAND_INS,
         patch=files.read("patch.diff") if state.phase is Phase.COMPLETED else None,
         tests=tests,
