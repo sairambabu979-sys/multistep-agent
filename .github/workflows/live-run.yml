@@ -198,6 +198,7 @@ jobs:
           path: ${{ runner.temp }}
 
       - name: The run's state, where it ran
+        id: restore
         run: |
           tar -C "$RUNNER_TEMP" -xzf "$RUNNER_TEMP/live-state.tgz"
           uv run python -c "import json, sqlite3, sys, os; \
@@ -212,7 +213,7 @@ jobs:
             approve "$RUN_ID" --by "$APPROVER" --db "$DB"
 
       - name: The completed run and its published branch
-        if: always()
+        if: always() && steps.restore.outcome == 'success'
         run: |
           uv run python scripts/live_run_summary.py --db "$DB" --run "$RUN_ID" \
             --summary "$GITHUB_STEP_SUMMARY"
@@ -226,7 +227,7 @@ jobs:
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && steps.restore.outcome == 'success'
         with:
           name: live-release
           path: |

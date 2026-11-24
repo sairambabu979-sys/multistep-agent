@@ -57,3 +57,10 @@ def test_every_task_it_offers_exists() -> None:
     for name in task["options"]:
         assert Path(ROOT / ".github" / "live-run" / f"{name}.md").is_file(), name
     assert task["default"] in task["options"]
+
+
+def test_a_release_nobody_approved_reports_nothing_it_never_restored() -> None:
+    release = workflow()["jobs"]["release"]
+    after = [s for s in release["steps"] if s.get("if", "").startswith("always()")]
+    assert after  # the summary and the upload still run when publishing fails
+    assert all("steps.restore.outcome == 'success'" in s["if"] for s in after)
