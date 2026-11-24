@@ -41,6 +41,7 @@ from msa.core.events import (
     ReleaseVerified,
 )
 from msa.core.ids import TreeHash
+from msa.core.values import Severity
 from msa.runtime import integration, security
 from msa.runtime.artifacts import PLAN_FILE, RunFiles
 from msa.runtime.context import RunContext
@@ -172,8 +173,10 @@ def _review_lines(files: RunFiles) -> tuple[list[str], list[str]]:
             outcome = f"{ruling['verdict']} ({ruling['rung']})"
         elif verdict := negotiated.get(record["id"]):
             outcome = f"{verdict} in negotiation"
+        elif not Severity(record["severity"]).is_blocking:
+            outcome = "advisory: it does not block, so it was not negotiated"
         else:
-            outcome = "settled in negotiation"
+            outcome = "closed with no verdict recorded"
         title = " ".join(str(finding.get("claim") or "finding").split()).rstrip(".")
         lines.append(f"- `{record['id']}` [{record['severity']}] {title}: {outcome}")
         if ruling and ruling["verdict"] == "deferred":

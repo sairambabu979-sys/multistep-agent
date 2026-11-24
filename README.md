@@ -54,6 +54,16 @@ first that the implementation was planted. Offline, the seed passes ruff, mypy, 
 and the security rules, so only review is left to find it
 (`tests/integration/test_live_run_seeded.py`).
 
+- **live-6**, the first seeded run, cost $0.25. The real Reviewer raised findings for the
+  first time, two of them, both accurate and both about the code not following the real
+  plan. The minor one: the plan's listed tests were missing. The nit: each line was split on
+  every comma instead of once. Neither is blocking, so by design neither was negotiated.
+  **Nothing caught the planted bug.** The task never asks for `receive` to be all or
+  nothing, and the Reviewer judged the code against the plan, so the seed planted a design
+  choice the task allows, not a defect. That run also showed the PR overclaiming: it said
+  both advisory findings were "settled in negotiation". It now says what happened: advisory
+  findings are not negotiated, and a blocking finding with no recorded verdict says so.
+
 The workflow's `release` job is a live run's human gate. It waits in the `live-release`
 environment until that environment's required reviewer approves it in GitHub. It then
 approves the run in that person's name (`github:<login>`, read from GitHub's record of the
