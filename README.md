@@ -71,9 +71,19 @@ and the security rules, so only review is left to find it
   applies any. Every gate then passed on the delivered tree. The Reviewer raised one nit
   (the tests went into a new file), reported as advisory and not negotiated.
 
-So a planted defect has now been caught live by the real roles, through tests and rework.
-Negotiation still has only the scripted demo as evidence: across seven live runs, no
-reviewer finding was severe enough to be negotiated (only blocker and major ones are).
+- **live-8** seeded `restock-scale`, whose task forbids scanning or sorting the whole store
+  for a line. It planted a `receive()` that is right in every other way but looks each SKU
+  up through `items()`, which sorts the whole store once per line. Offline, small tests
+  cannot see that. Live, the real Tester's tests caught it anyway: UNIT_TESTING to REWORK,
+  as an implementation bug. The real Coder's revision checks SKUs with a dict lookup and
+  never calls `items()`. $0.58.
+
+So planted defects have now been caught live by the real roles, twice, through tests and
+rework. Negotiation still has only the scripted demo as evidence. Across eight live runs, no
+reviewer finding was severe enough to be negotiated, since only blocker and major ones are.
+The pipeline explains why. Tests run before review, and a capable Tester turns every rule a
+task states into a test, so a planted defect only reaches review if no test can express it.
+Those are the findings reviewers rate minor or nit.
 
 The workflow's `release` job is a live run's human gate. It waits in the `live-release`
 environment until that environment's required reviewer approves it in GitHub. It then
