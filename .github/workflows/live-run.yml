@@ -67,10 +67,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: live-run
-  cancel-in-progress: false
-
 env:
   RUN_ID: live-${{ github.run_number }}
 
@@ -78,6 +74,11 @@ jobs:
   run:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    # One spending run at a time. Only this job: a release waiting days for its reviewer
+    # must not hold up the next run (live-5 waited behind live-4's release).
+    concurrency:
+      group: live-run
+      cancel-in-progress: false
     outputs:
       phase: ${{ steps.summary.outputs.phase }}
     env:

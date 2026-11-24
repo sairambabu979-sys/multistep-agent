@@ -77,3 +77,13 @@ def test_a_seeded_run_says_so_first_and_takes_only_the_restock_task_uncrashed() 
     )
     summary = steps["Outcome, spend, the crash and the PR description"]
     assert summary.index("was planted") < summary.index("live_run_summary.py")
+
+
+def test_only_the_spending_job_waits_its_turn_a_waiting_release_holds_nobody() -> None:
+    loaded = workflow()
+    assert "concurrency" not in loaded  # not the whole workflow
+    assert loaded["jobs"]["run"]["concurrency"] == {
+        "group": "live-run",
+        "cancel-in-progress": False,
+    }
+    assert "concurrency" not in loaded["jobs"]["release"]
