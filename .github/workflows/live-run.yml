@@ -9,9 +9,41 @@ name: live run
 # - round-trip: from_csv(to_csv(store)) must hold the same items for any store. The
 #   fixture's to_csv does not quote, so a SKU holding a comma breaks it today. A change that
 #   ignores that leaves something real for the Reviewer to find.
+# - restock-atomic: restock, plus the rule that a bad delivery note changes nothing. With
+#   seeded, the planted non-atomic receive() breaks a rule the task states, so whatever real
+#   role catches it (the Tester's tests or the Reviewer) caught a planted defect.
+# - restock-scale: restock-atomic, plus the rule that receive never scans or sorts the whole
+#   store for a line. Seeded, the planted receive breaks only that rule, which no timing on
+#   a small store shows. In live-8 the real Tester's tests caught it anyway.
+# - thread-safe: make Store safe to share between threads, with a consistent items() snapshot.
+#   Races are what tests rarely catch and reviews often do: an unlocked read, a snapshot
+#   taken outside the lock, a lock held too widely.
 #
 # Agent commands and the integration suite run without network, and must: the run's
 # settings say isolate_network = "always" (scripts/live_run_settings.sh).
+#
+# seeded plants one thing (scripts/live_run_seeded.py), and its job summary says so first:
+# - code: one known bug in the Coder's first implementation. receive() applies a delivery
+#   note line by line, so a bad line part-way through leaves the store partly restocked.
+#   Everything after it is the real model: the Tester, the gates, the Reviewer, the Coder's
+#   own fixes or disputes, the Arbiter. It takes a restock task and no crash.
+# - finding: one blocking finding as the Reviewer's first review, written without reading
+#   the code: that receive() is not all or nothing. The Tester's tests catch planted bugs
+#   before review (live-7, live-8), so this is what starts negotiation with the real model:
+#   the real Coder answers it, the real Reviewer replies, and a dispute goes to the real
+#   Tester's repro test and the real Arbiter. It takes restock-atomic, which states the rule,
+#   and no crash.
+# - dispute: the Reviewer's whole side, which never yields. Its first review raises the same
+#   correctness blocker and a design claim the task contradicts (receive belongs on Store,
+#   not in the module the task names), and every reply maintains both. So the ladder must
+#   decide: the real Tester's repro test settles the correctness claim, and the real Arbiter
+#   rules on the design one (the run escalates to the Arbiter, not a person). In live-9 the
+#   real Reviewer withdrew in round one, so neither rung had run live. restock-atomic only.
+# - code-dispute: both plants, on restock. The line-by-line receive of code reaches review
+#   (restock never asks for all or nothing, live-6), and the Reviewer's side of dispute
+#   claims it is not all or nothing, which is true this time. Whether the repro test
+#   confirms it, the claim is upheld, and the real Coder's revision fixes it and passes a
+#   real review is the result. In live-10 both claims were false.
 #
 # Unless crash_after_seq is 0, the run is SIGKILLed partway through, its whole process tree
 # at once (scripts/live_run_crash.py), and `msa resume` continues it from the journal. The
@@ -34,7 +66,7 @@ on:
         description: Which task (.github/live-run/<task>.md)
         required: true
         type: choice
-        options: [restock, round-trip]
+        options: [restock, restock-atomic, restock-scale, round-trip, thread-safe]
         default: restock
       budget_usd:
         description: Hard cap on model spend for the run, in US dollars (at most 20)
@@ -47,13 +79,20 @@ on:
           the other is mid-call.
         required: true
         default: "6"
+      seeded:
+        description: >-
+          Plant one thing; every other model call is real. code: a bug in the Coder's first
+          implementation (a restock task). finding: a blocking finding as the Reviewer's
+          first review (restock-atomic). dispute: the Reviewer's whole side, never yielding,
+          so the repro test and the Arbiter decide (restock-atomic). code-dispute: both, so
+          the planted claim is true (restock). All take crash_after_seq 0.
+        required: true
+        type: choice
+        options: [none, code, finding, dispute, code-dispute]
+        default: none
 
 permissions:
   contents: read
-
-concurrency:
-  group: live-run
-  cancel-in-progress: false
 
 env:
   RUN_ID: live-${{ github.run_number }}
@@ -62,12 +101,18 @@ jobs:
   run:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    # One spending run at a time. Only this job: a release waiting days for its reviewer
+    # must not hold up the next run (live-5 waited behind live-4's release).
+    concurrency:
+      group: live-run-spend  # not "live-run": runs from before this held that name whole
+      cancel-in-progress: false
     outputs:
       phase: ${{ steps.summary.outputs.phase }}
     env:
       TASK: ${{ inputs.task }}
       BUDGET_USD: ${{ inputs.budget_usd }}
       CRASH_AFTER_SEQ: ${{ inputs.crash_after_seq }}
+      SEEDED: ${{ inputs.seeded }}
     steps:
       - uses: actions/checkout@v4
 
@@ -89,6 +134,26 @@ jobs:
           python3 -c "import os, sys; c = os.environ['CRASH_AFTER_SEQ']; \
             sys.exit(0 if c.isdigit() else f'crash_after_seq must be a whole number, not {c!r}')"
           test -f ".github/live-run/$TASK.md"
+          case "$SEEDED" in
+            none) ;;
+            code)
+              if [ "${TASK#restock}" = "$TASK" ] || [ "$CRASH_AFTER_SEQ" != 0 ]; then
+                echo "::error::seeded runs take a restock task and crash_after_seq 0" && exit 1
+              fi ;;
+            finding|dispute)
+              if [ "$TASK" != restock-atomic ] || [ "$CRASH_AFTER_SEQ" != 0 ]; then
+                echo "::error::a seeded $SEEDED takes restock-atomic and crash_after_seq 0"
+                exit 1
+              fi ;;
+            code-dispute)
+              if [ "$TASK" != restock ] || [ "$CRASH_AFTER_SEQ" != 0 ]; then
+                echo "::error::a seeded code-dispute takes restock and crash_after_seq 0"
+                exit 1
+              fi ;;
+            *)
+              echo "::error::seeded must be none, code, finding, dispute or code-dispute, not $SEEDED"
+              exit 1 ;;
+          esac
           echo "DB=$RUNNER_TEMP/aegis/runs.db" >> "$GITHUB_ENV"
           echo "CRASH=$RUNNER_TEMP/aegis/crash.json" >> "$GITHUB_ENV"
 
@@ -104,7 +169,14 @@ jobs:
           git -c user.name=fixture -c user.email=fixture@localhost commit -qm base
 
       - name: Settings for this run
-        run: scripts/live_run_settings.sh "$RUNNER_TEMP/msa.toml"
+        run: |
+          scripts/live_run_settings.sh "$RUNNER_TEMP/msa.toml"
+          # A planted Reviewer never yields: the Arbiter, not a person, rules on what is left.
+          if [ "$SEEDED" = dispute ] || [ "$SEEDED" = code-dispute ]; then
+            sed -i 's|^escalation = .*|escalation = "arbiter"|' "$RUNNER_TEMP/msa.toml"
+            test "$(grep -c '^escalation = "arbiter"$' "$RUNNER_TEMP/msa.toml")" -eq 1
+            uv run msa --config "$RUNNER_TEMP/msa.toml" config check
+          fi
 
       - name: The run (real model, every stage), crashed and resumed
         env:
@@ -112,9 +184,15 @@ jobs:
         # The venv's msa directly, not `uv run`: the crash must reach msa's own process tree.
         run: |
           msa=("$GITHUB_WORKSPACE/.venv/bin/msa" --config "$RUNNER_TEMP/msa.toml")
-          run=("${msa[@]}" run --repo "$RUNNER_TEMP/inventory" \
+          args=(run --repo "$RUNNER_TEMP/inventory" \
             --task-file ".github/live-run/$TASK.md" --run-id "$RUN_ID" \
             --budget-usd "$BUDGET_USD" --db "$DB")
+          run=("${msa[@]}" "${args[@]}")
+          if [ "$SEEDED" != none ]; then
+            "$GITHUB_WORKSPACE/.venv/bin/python" scripts/live_run_seeded.py --plant "$SEEDED" -- \
+              --config "$RUNNER_TEMP/msa.toml" "${args[@]}"
+            exit
+          fi
           if [ "$CRASH_AFTER_SEQ" -eq 0 ]; then
             "${run[@]}"
             exit
@@ -127,6 +205,53 @@ jobs:
         id: summary
         if: always()
         run: |
+          if [ "$SEEDED" = code-dispute ]; then
+            {
+              echo "## Seeded run: the Coder's first implementation and the Reviewer's side were planted"
+              echo
+              echo "Both were scripted, not the model's (scripts/live_run_seeded.py). The first"
+              echo "implementation's receive() applies a note line by line. The first review"
+              echo "claims that, which is true, plus a design claim the task contradicts, and every"
+              echo "reply maintains both. Every other model call was real: the Planner, the Coder's"
+              echo "answers and revisions, the Tester and its repro test, the Arbiter (this run"
+              echo "escalates to it), and every review after the first."
+              echo
+            } | tee -a "$GITHUB_STEP_SUMMARY"
+          elif [ "$SEEDED" = dispute ]; then
+            {
+              echo "## Seeded run: the Reviewer's side was planted"
+              echo
+              echo "It was scripted, not the model's (scripts/live_run_seeded.py): the first review"
+              echo "(two blocking findings, written without reading the code) and a maintain on"
+              echo "every reply. Every other model call was real: the Planner, the Coder, the"
+              echo "Tester and its repro test, and the Arbiter, which this run escalates to."
+              echo
+            } | tee -a "$GITHUB_STEP_SUMMARY"
+          elif [ "$SEEDED" = finding ]; then
+            {
+              echo "## Seeded run: the Reviewer's first review was planted"
+              echo
+              echo "It was scripted, not the model's (scripts/live_run_seeded.py): one blocking"
+              echo "finding, written without reading the code, that receive() is not all or"
+              echo "nothing. Every other model call was real, the Coder's implementation and its"
+              echo "answer to the finding included, and so was every later review."
+              echo
+            } | tee -a "$GITHUB_STEP_SUMMARY"
+          elif [ "$SEEDED" = code ]; then
+            {
+              echo "## Seeded run: the Coder's first implementation was planted"
+              echo
+              echo "It was scripted, not the model's (scripts/live_run_seeded.py), with one known"
+              if [ "$TASK" = restock-scale ]; then
+                echo "bug: receive() looks each SKU up through items(), which sorts the whole"
+                echo "store, once per line, against the task's rule. Every other model call was real."
+              else
+                echo "bug: receive() applies a delivery note line by line, so a bad line part-way"
+                echo "through leaves the store partly restocked. Every other model call was real."
+              fi
+              echo
+            } | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
           crash=()
           if [ -f "$CRASH" ]; then crash=(--crash "$CRASH"); fi
           uv run python scripts/live_run_summary.py --db "$DB" --run "$RUN_ID" \

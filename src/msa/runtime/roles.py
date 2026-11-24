@@ -51,7 +51,7 @@ from msa.core.ids import PlanId, TreeHash
 from msa.core.values import Owner, PlanRef
 from msa.llm.gateway import InvocationResult, Tool
 from msa.runtime import review
-from msa.runtime.artifacts import PLAN_FILE
+from msa.runtime.artifacts import PLAN_FILE, SUMMARIES
 from msa.runtime.context import RunContext, reservation
 from msa.runtime.guard import weakened
 from msa.runtime.interpreter import Executor
@@ -298,7 +298,7 @@ class Revisions:
 
 def _keep(ctx: RunContext, effect: Effect, summary: BaseModel) -> None:
     ctx.files.record(
-        "summaries.jsonl",
+        SUMMARIES,
         {"effect": effect.id, "kind": effect.command.kind, **summary.model_dump(mode="json")},
     )
 

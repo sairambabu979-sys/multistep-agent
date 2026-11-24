@@ -15,7 +15,7 @@ built and tested end to end, with only the model scripted. The journal runs on S
 PostgreSQL, and runs can be driven in-process or by Temporal
 ([ADR-017](docs/adr/017-postgres-and-temporal.md)).
 
-**With the real model** it has run three times, from the manual `live run` workflow
+**With the real model** it has run four times, from the manual `live run` workflow
 (`.github/workflows/live-run.yml`), each run stopping at the release approval:
 
 - **live-1** cost $0.53 of a $5 cap. Unit tests caught a bug in the Tester's own acceptance
@@ -33,10 +33,134 @@ PostgreSQL, and runs can be driven in-process or by Temporal
 For both crashes, "nothing answered ran again" covers the agent invocations only, 2 of the
 5 effects answered before the kill. The stages that call no model left no record a check
 could read. Every effect start is now logged (`effects.jsonl`), and the check reads that
-log, but no live run has been crashed since.
+log.
 
-No live run has raised a review finding, so negotiation has not yet run with the real
-model: the scripted demo is still its only evidence. No person has reviewed a live patch.
+- **live-4** ran the thread-safe task for $1.03 and was the first crash checked against every
+  effect start. It was SIGKILLed at seq 6 with the Tester mid-invocation. After the resume,
+  none of the 5 effects answered before the kill started again, model call or not, and the
+  Tester's in-flight effect started again. The Coder put a private lock around every read
+  and write and took `items()`'s snapshot under it. The Reviewer raised nothing.
+
+No live run has raised a review finding: four runs, the last two on tasks chosen to give
+review something real to find. So negotiation has not yet run with the real model, and the
+scripted demo is still its only evidence.
+
+The workflow's `seeded` mode is for that gap. It plants one known bug in the Coder's first
+implementation (`scripts/live_run_seeded.py`): `receive()` applies a delivery note line by
+line, so a bad line part-way through leaves the store partly restocked. It is the bug the
+scripted demo's Reviewer catches. Every later model call is real: the Tester, the gates, the
+Reviewer, the Coder's own fixes or disputes, and the Arbiter. The run's job summary says
+first that the implementation was planted. Offline, the seed passes ruff, mypy, the tests
+and the security rules, so only review is left to find it
+(`tests/integration/test_live_run_seeded.py`).
+
+- **live-6**, the first seeded run, cost $0.25. The real Reviewer raised findings for the
+  first time, two of them, both accurate and both about the code not following the real
+  plan. The minor one: the plan's listed tests were missing. The nit: each line was split on
+  every comma instead of once. Neither is blocking, so by design neither was negotiated.
+  **Nothing caught the planted bug.** The task never asks for `receive` to be all or
+  nothing, and the Reviewer judged the code against the plan, so the seed planted a design
+  choice the task allows, not a defect. That run also showed the PR overclaiming: it said
+  both advisory findings were "settled in negotiation". It now says what happened: advisory
+  findings are not negotiated, and a blocking finding with no recorded verdict says so.
+- **live-7** reran the seed on `restock-atomic`, which states the rule: a bad delivery note
+  raises and leaves the store exactly as it was. It cost $0.55. **The planted bug was
+  caught and fixed by the real model.** The real Tester's acceptance tests failed on the
+  planted tree. The real triage called it an implementation bug and sent it back to the
+  Coder (UNIT_TESTING to REWORK). The real Coder's revision checks every line before it
+  applies any. Every gate then passed on the delivered tree. The Reviewer raised one nit
+  (the tests went into a new file), reported as advisory and not negotiated.
+
+- **live-8** seeded `restock-scale`, whose task forbids scanning or sorting the whole store
+  for a line. It planted a `receive()` that is right in every other way but looks each SKU
+  up through `items()`, which sorts the whole store once per line. Offline, small tests
+  cannot see that. Live, the real Tester's tests caught it anyway: UNIT_TESTING to REWORK,
+  as an implementation bug. The real Coder's revision checks SKUs with a dict lookup and
+  never calls `items()`. $0.58.
+
+So planted defects have now been caught live by the real roles, twice, through tests and
+rework. Negotiation still has only the scripted demo as evidence. Across eight live runs, no
+reviewer finding was severe enough to be negotiated, since only blocker and major ones are.
+The pipeline explains why. Tests run before review, and a capable Tester turns every rule a
+task states into a test, so a planted defect only reaches review if no test can express it.
+Those are the findings reviewers rate minor or nit.
+
+So `seeded` now plants one of two things. `code` is the planted bug above. `finding`
+plants the Reviewer's first review instead, on `restock-atomic`: one blocking correctness
+finding, written without reading the code, that `receive()` is not all or nothing. It
+points at the lines of `src/inventory/receiving.py` that the review request lists as
+changed, so it is admitted wherever the real Coder put them. Everything else is real: the
+Planner, the Coder's implementation and its answer to the finding, the Reviewer's reply, and,
+if they still disagree, the Tester's repro test and the Arbiter. The real Tester's
+acceptance tests check that rule before review, so the claim is probably false, and what the
+real roles do with a probably-false blocking finding is the result. Offline, a stand-in
+rebuttal and withdrawal take it to a `withdrawn` verdict
+(`tests/integration/test_live_run_seeded.py`).
+
+- **live-9** ran `seeded: finding` on `restock-atomic` and cost $0.57. **This was the first
+  negotiation with the real model.** By its own summary, the real Coder's first
+  implementation checks every line in one pass and restocks in a second. Every gate passed
+  on it, the Tester's acceptance tests included. The planted finding `c0-1` was admitted as a
+  blocker: CODE_REVIEW to NEGOTIATION. In the one round, the real Coder contested it and
+  the real Reviewer withdrew it, with no code change (0 revisions). NEGOTIATION then went to
+  FINAL_VERIFICATION and on to HUMAN_APPROVAL. A `withdrawn` verdict only comes from a
+  rebuttal or counterproposal the reviewer assents to (`settle_round`). So the Coder did not
+  accept a false blocker to get through, and the finding closed only when the Reviewer
+  agreed. The two agreed in one round, so the repro test and the Arbiter did not run. Those
+  rungs are still evidenced only offline.
+
+`seeded: dispute` is for those two rungs. It plants the Reviewer's whole side, which never
+yields. Its first review raises two blocking findings, written without reading the code: the
+same correctness claim, and a design claim that the task itself contradicts (that `receive`
+belongs on `Store`, not in the module the task names). Every reply maintains both, so
+nothing closes in negotiation and the ladder must decide. The real Tester's repro test
+settles the correctness claim. The real Arbiter rules on the design one, because the run's
+settings escalate to the Arbiter rather than a person. Offline, with stand-ins for the
+Coder, the Tester and the Arbiter, a repro test that really runs on the head tree dismisses
+the first claim, and a ruling dismisses the second.
+
+- **live-10** ran `seeded: dispute` on `restock-atomic` and cost $0.64. **Both remaining
+  escalation steps ran with the real model.** Every gate passed on the real Coder's first
+  implementation (0 revisions). Both planted findings were admitted, `c0-1` as a blocker
+  and `c0-2` as major. One negotiation round closed neither, because the planted Reviewer
+  never yields, so the run escalated to arbitration (NEGOTIATION to NEGOTIATION,
+  `request_arbitration`). The real Tester wrote a repro test for `c0-1`'s claim, and it
+  passed when run on the head tree in the sandbox, so the claim was **dismissed by the
+  repro test**. That is objective evidence the planted correctness claim was false, which
+  live-9 could only infer. The real Arbiter **dismissed** `c0-2`, the design claim the task
+  contradicts. The run went on through FINAL_VERIFICATION to HUMAN_APPROVAL.
+
+So every rung of negotiation has now run with the real model:
+- the author's move and the reviewer's reply (live-9);
+- the repro test (live-10);
+- the Arbiter (live-10).
+
+What stays planted is a Reviewer's side: the findings and, in live-10, its refusals.
+
+In live-10 both planted claims were false, and both were dismissed. `seeded: code-dispute`
+is for the other case, a true finding. It plants both on `restock`. The Coder's first
+implementation is the line-by-line `receive()` of `code`, which that task's tests do not
+catch (live-6), so it reaches review. The Reviewer's side is that of `dispute`, so this
+time its correctness claim is true. Offline, the repro test fails on the head tree, the
+claim is upheld, the Coder's revision makes `receive` all or nothing, and a second review
+passes it (`tests/integration/test_live_run_seeded.py`).
+
+- **live-11** ran `seeded: code-dispute` on `restock` and cost $0.60. **A true finding was
+  upheld and fixed with the real model.** The planted line-by-line `receive()` passed every
+  gate, since `restock`'s tests do not require all or nothing. Review then admitted the
+  planted findings `c0-1` (blocker) and `c0-2` (major). One round closed neither, and the
+  run escalated. The real Tester's repro test for `c0-1` **failed on the head tree, so the
+  claim was upheld**, and the real Arbiter **dismissed** `c0-2`. NEGOTIATION went to REWORK.
+  The real Coder's revision passed every gate again, and the repro test now ships with it
+  as a regression test (`tests/repro/test_live_11_c0_1.py`). The real Reviewer's second
+  review raised one advisory nit, that `receive` restates `restock`'s checks. The run
+  reached HUMAN_APPROVAL with 1 revision. Its release was then approved by a person
+  (`Approved-by: github:sairambabu979-sys`) and published.
+
+  It also showed the PR overclaiming again. Its summary was the plan's, written before the
+  upheld finding: "calls `restock` for each" line, the opposite of the delivered code. A
+  revised run's PR now says its summary is the plan's approach and lists what each revision
+  changed.
 
 The workflow's `release` job is a live run's human gate. It waits in the `live-release`
 environment until that environment's required reviewer approves it in GitHub. It then

@@ -32,6 +32,7 @@ from typing import Any
 from msa.core.ids import Digest
 
 PLAN_FILE = "plan.json"  # the plan the Coder implemented, which every later step follows
+SUMMARIES = "summaries.jsonl"  # every Coder and Tester answer, revisions included
 
 
 class ArtifactMissing(LookupError):

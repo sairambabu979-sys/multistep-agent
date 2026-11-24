@@ -518,6 +518,8 @@ def test_the_definition_of_done_run(harness: Harness) -> None:
     ]
     assert f"- `{FINDING_ID}` [major] receive() is not atomic" in pr
     assert "half updated: accepted in negotiation" in pr
+    # The summary is the plan's; the four revisions after it say what the code became.
+    assert "That is the plan's approach. The code changed in 4 revision(s) since:" in pr
 
     if os.environ.get("MSA_UPDATE_DEMO") == "1":
         _export(harness, pr, timeline_lines)

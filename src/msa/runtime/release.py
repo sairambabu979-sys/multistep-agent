@@ -41,8 +41,9 @@ from msa.core.events import (
     ReleaseVerified,
 )
 from msa.core.ids import TreeHash
+from msa.core.values import Severity
 from msa.runtime import integration, security
-from msa.runtime.artifacts import PLAN_FILE, RunFiles
+from msa.runtime.artifacts import PLAN_FILE, SUMMARIES, RunFiles
 from msa.runtime.context import RunContext
 from msa.runtime.intake import base_commit
 from msa.runtime.review import FINDINGS, ROUNDS, RULINGS
@@ -138,6 +139,21 @@ def _failure(gate: str, record: Mapping[str, Any]) -> str:
     return str(record.get("kind") or "failed")
 
 
+def revision_lines(files: RunFiles) -> list[str]:
+    """What the code became after the plan: one line per revision, in order. The summary
+    above them is the plan's, written before anything was built; a revision can change what
+    it describes (live-11: a finding upheld in review made receive all or nothing)."""
+    revisions = [r for r in files.records(SUMMARIES) if r.get("kind") == "revise_changes"]
+    if not revisions:
+        return []
+    return [
+        f"That is the plan's approach. The code changed in {len(revisions)} revision(s) since:",
+        "",
+        *(f"{n}. {str(r.get('summary', '')).strip()}" for n, r in enumerate(revisions, 1)),
+        "",
+    ]
+
+
 def history_rows(files: RunFiles) -> list[str]:
     """Every gate failure in this run, in the order it happened, whichever tree it was on:
     what the gates caught on the way to the tree delivered here."""
@@ -172,8 +188,10 @@ def _review_lines(files: RunFiles) -> tuple[list[str], list[str]]:
             outcome = f"{ruling['verdict']} ({ruling['rung']})"
         elif verdict := negotiated.get(record["id"]):
             outcome = f"{verdict} in negotiation"
+        elif not Severity(record["severity"]).is_blocking:
+            outcome = "advisory: it does not block, so it was not negotiated"
         else:
-            outcome = "settled in negotiation"
+            outcome = "closed with no verdict recorded"
         title = " ".join(str(finding.get("claim") or "finding").split()).rstrip(".")
         lines.append(f"- `{record['id']}` [{record['severity']}] {title}: {outcome}")
         if ruling and ruling["verdict"] == "deferred":
@@ -270,6 +288,7 @@ class ReleaseExecutor:
             "",
             summary,
             "",
+            *revision_lines(ctx.files),
             "## Task",
             "",
             *(f"> {line}" if line else ">" for line in ctx.task.strip().splitlines()),

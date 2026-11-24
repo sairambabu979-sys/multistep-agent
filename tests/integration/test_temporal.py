@@ -221,15 +221,27 @@ def test_a_temporal_run_ends_exactly_as_the_interpreter_does(
 # ---------- 3: people answer by signal
 
 
-async def parked_on(client: Client, kinds: tuple[type, ...]) -> Effect:
-    """The run's pending question for a person, once the workflow has parked on it."""
+async def parked_on(
+    client: Client, kinds: tuple[type, ...], reported: list[RunState] | None = None
+) -> Effect:
+    """The run's pending question for a person, once the workflow has parked on it.
+
+    A question is pending as soon as the core asks it, before its activity has come back
+    parked. A test that answers then still passes, since the workflow takes signals first,
+    but the run never parks on that question. With ``reported`` (the worker's park reports),
+    wait until the run has also reported parking on it. The parked-run test once failed in CI
+    by answering first."""
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
         state = await state_of(client, RUN)
         if state is not None:
             questions = [e for e in state.pending if isinstance(e.command, kinds)]
             if questions and all(e.command.human for e in state.pending):
-                return questions[0]
+                question = questions[0]
+                if reported is None or any(
+                    question.id in {e.id for e in park.pending} for park in reported
+                ):
+                    return question
         await asyncio.sleep(0.1)
     raise AssertionError("the run never parked on a person")
 
@@ -247,7 +259,9 @@ def test_a_parked_run_waits_on_the_server_and_carries_on_when_answered(store: Op
             ):
                 handle = await begin(client, config)
                 while True:
-                    question = await parked_on(client, (AwaitPlanApproval, AwaitReleaseApproval))
+                    question = await parked_on(
+                        client, (AwaitPlanApproval, AwaitReleaseApproval), reported=parks
+                    )
                     # An answer for an effect the run is not waiting on: the core drops it.
                     stray = ReleaseApproved(at=EPOCH, effect_id=EffectId("run-t:999:0"), by="eve")
                     await send(client, RUN, stray)
