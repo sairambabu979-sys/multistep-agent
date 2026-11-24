@@ -70,7 +70,7 @@ def test_a_seeded_run_says_so_first_and_takes_only_the_restock_task_uncrashed() 
     run = workflow()["jobs"]["run"]
     steps = {step.get("name", ""): str(step.get("run", "")) for step in run["steps"]}
     inputs = steps["Check the inputs"]
-    assert "seeded runs take the restock task and crash_after_seq 0" in inputs
+    assert "seeded runs take a restock task and crash_after_seq 0" in inputs
     assert (
         "scripts/live_run_seeded.py"
         in steps["The run (real model, every stage), crashed and resumed"]
