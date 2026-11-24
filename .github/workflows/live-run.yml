@@ -12,6 +12,9 @@ name: live run
 # - restock-atomic: restock, plus the rule that a bad delivery note changes nothing. With
 #   seeded, the planted non-atomic receive() breaks a rule the task states, so whatever real
 #   role catches it (the Tester's tests or the Reviewer) caught a planted defect.
+# - restock-scale: restock-atomic, plus the rule that receive never scans or sorts the whole
+#   store for a line. Seeded, the planted receive breaks only that rule, which small tests
+#   cannot see, so it is left for the Reviewer, as a finding that would be negotiated.
 # - thread-safe: make Store safe to share between threads, with a consistent items() snapshot.
 #   Races are what tests rarely catch and reviews often do: an unlocked read, a snapshot
 #   taken outside the lock, a lock held too widely.
@@ -46,7 +49,7 @@ on:
         description: Which task (.github/live-run/<task>.md)
         required: true
         type: choice
-        options: [restock, restock-atomic, round-trip, thread-safe]
+        options: [restock, restock-atomic, restock-scale, round-trip, thread-safe]
         default: restock
       budget_usd:
         description: Hard cap on model spend for the run, in US dollars (at most 20)
@@ -110,7 +113,7 @@ jobs:
           python3 -c "import os, sys; c = os.environ['CRASH_AFTER_SEQ']; \
             sys.exit(0 if c.isdigit() else f'crash_after_seq must be a whole number, not {c!r}')"
           test -f ".github/live-run/$TASK.md"
-          if [ "$SEEDED" = "true" ] && { [ "${TASK%-atomic}" != restock ] || [ "$CRASH_AFTER_SEQ" != 0 ]; }
+          if [ "$SEEDED" = "true" ] && { [ "${TASK#restock}" = "$TASK" ] || [ "$CRASH_AFTER_SEQ" != 0 ]; }
           then
             echo "::error::seeded runs take a restock task and crash_after_seq 0" && exit 1
           fi
@@ -163,8 +166,13 @@ jobs:
               echo "## Seeded run: the Coder's first implementation was planted"
               echo
               echo "It was scripted, not the model's (scripts/live_run_seeded.py), with one known"
-              echo "bug: receive() applies a delivery note line by line, so a bad line part-way"
-              echo "through leaves the store partly restocked. Every other model call was real."
+              if [ "$TASK" = restock-scale ]; then
+                echo "bug: receive() looks each SKU up through items(), which sorts the whole"
+                echo "store, once per line, against the task's rule. Every other model call was real."
+              else
+                echo "bug: receive() applies a delivery note line by line, so a bad line part-way"
+                echo "through leaves the store partly restocked. Every other model call was real."
+              fi
               echo
             } | tee -a "$GITHUB_STEP_SUMMARY"
           fi

@@ -17,6 +17,10 @@ it, and lets the real roles find it.
   bug: it applies a delivery note line by line, so a bad line halfway through leaves the
   store partly restocked. It passes lint, types, the security rules and every behaviour the
   task names.
+- **restock-scale:** the task also states that receive must never scan or sort the whole
+  store per line. The seed's receive is right in every other way, but checks each SKU
+  through ``items()``, which sorts the whole store, once per line. Tests on small stores
+  cannot see that; a reviewer holding the code to the task can, as a blocking finding.
 - **What is real:** every request of every other role (Planner, Tester, Reviewer, Arbiter,
   triage), and every later Coder request (revisions, answers to findings), go to the model
   through the client msa.toml configures. Whether anything catches the bug, and how, is
@@ -73,6 +77,31 @@ def receive(store: Store, note: str) -> int:
         applied += 1
     return applied
 '''
+# For restock-scale, whose task states that receive must never scan or sort the whole store
+# per line: everything right (all or nothing, every check), except that each SKU is looked
+# up through items(), which sorts the whole store, once per line. Small tests cannot see it.
+RECEIVING_SCALE = '''"""Deliveries: "sku,quantity" lines, applied to a store all or nothing."""
+
+from inventory.store import Store
+
+
+def receive(store: Store, note: str) -> int:
+    """Restock ``store`` from ``note``, all or nothing; returns the number of lines applied."""
+    deliveries: list[tuple[str, int]] = []
+    for line in note.splitlines():
+        if not line.strip():
+            continue
+        name, _, quantity = line.partition(",")
+        sku, amount = name.strip(), int(quantity)
+        if amount <= 0:
+            raise ValueError(f"{sku}: a restock must add a positive quantity")
+        if sku not in [item.sku for item in store.items()]:
+            raise KeyError(sku)
+        deliveries.append((sku, amount))
+    for sku, amount in deliveries:
+        store.restock(sku, amount)
+    return len(deliveries)
+'''
 UNIT_TESTS = """from inventory import Store, receive
 
 
@@ -113,8 +142,10 @@ def _edit(call_id: str, path: str, old: str, new: str, before: str) -> dict[str,
     return fake.tool_use(call_id, "edit", arguments)
 
 
-def seed() -> list[fake.Step]:
-    """The Coder's first implementation, against the inventory fixture as committed."""
+def seed(task: str = "restock") -> list[fake.Step]:
+    """The Coder's first implementation, against the inventory fixture as committed: the
+    scale defect for the restock-scale task, the line-by-line one for the others."""
+    receiving = RECEIVING_SCALE if task == "restock-scale" else RECEIVING_SEEDED
     store = (FIXTURE / STORE).read_text(encoding="utf-8")
     init = (FIXTURE / INIT).read_text(encoding="utf-8")
     last = store.splitlines(keepends=True)[-1]
@@ -127,9 +158,7 @@ def seed() -> list[fake.Step]:
         _turn(fake.tool_use("seed-1", "read_file", {"path": STORE, **read})),
         _turn(
             _edit("seed-2", STORE, last, last + RESTOCK, store),
-            fake.tool_use(
-                "seed-3", "create_file", {"path": RECEIVING, "content": RECEIVING_SEEDED}
-            ),
+            fake.tool_use("seed-3", "create_file", {"path": RECEIVING, "content": receiving}),
             _edit("seed-4", INIT, init, new_init, init),
             fake.tool_use("seed-5", "create_file", {"path": UNIT_TEST, "content": UNIT_TESTS}),
         ),
@@ -173,14 +202,22 @@ class Seeded:
             await close()
 
 
+def task_of(args: list[str]) -> str:
+    """The task's name, from ``--task-file .github/live-run/<name>.md``."""
+    if "--task-file" in args and args.index("--task-file") + 1 < len(args):
+        return Path(args[args.index("--task-file") + 1]).stem
+    return "restock"
+
+
 def main(argv: list[str] | None = None) -> None:
     args = sys.argv[1:] if argv is None else argv
     if args[:1] == ["--"]:
         args = args[1:]
     real = cli._client
+    task = task_of(args)
 
     def seeded(settings: MsaConfig, environment: LiveEnvironment) -> MessagesClient:
-        return Seeded(real(settings, environment), seed())
+        return Seeded(real(settings, environment), seed(task))
 
     cli._client = seeded
     sys.argv = ["msa", *args]

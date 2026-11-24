@@ -24,13 +24,20 @@ pytestmark = pytest.mark.slow
 seeded = load("live_run_seeded")
 
 
+@pytest.mark.parametrize(
+    ("task", "planted"),
+    [
+        ("restock", "+        store.restock(sku.strip(), int(quantity))"),
+        ("restock-scale", "+        if sku not in [item.sku for item in store.items()]:"),
+    ],
+)
 def test_the_seed_passes_every_gate_with_only_its_planted_bug_left(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, task: str, planted: str
 ) -> None:
     monkeypatch.setenv("MSA_USER_PREFERENCES", str(tmp_path / "no-user-layer.yaml"))
     harness = make_harness(tmp_path, fixture="inventory", task=TASK)  # review: stand-in
     inner = RoleScripts(planner=PLANNER, tester=TESTER[:2])  # no Coder script at all
-    client = seeded.Seeded(inner, seeded.seed())
+    client = seeded.Seeded(inner, seeded.seed(task))
 
     final, journal = harness.run(client, approve_release=False)
     journal.close()
@@ -38,7 +45,7 @@ def test_the_seed_passes_every_gate_with_only_its_planted_bug_left(
     assert final.revisions == 0
     assert client.seed.exhausted  # the Coder's one invocation was the seed, whole
     patch = (harness.run_dir / "patch.diff").read_text(encoding="utf-8")
-    assert "+        store.restock(sku.strip(), int(quantity))" in patch  # the planted bug
+    assert planted in patch  # the planted bug, and nothing caught it
     assert '+            raise ValueError("a restock must add a positive quantity")' in patch
 
 
@@ -79,3 +86,10 @@ def test_the_seeded_command_runs_msa_with_the_seeding_client(
         assert seeded.cli._client is not real  # wrapped
     finally:
         seeded.cli._client = real
+
+
+def test_the_seed_follows_the_task_file() -> None:
+    assert seeded.task_of(["run", "--task-file", ".github/live-run/restock-scale.md"]) == (
+        "restock-scale"
+    )
+    assert seeded.task_of(["run", "--task", "x"]) == "restock"
