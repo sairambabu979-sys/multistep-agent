@@ -1,0 +1,6 @@
+kind = "refactor"
+repo = "textkit"
+expect = "resolve"
+task = '''
+Rename textkit.utils.norm to normalize_whitespace and use the new name everywhere inside textkit. Export normalize_whitespace from the package. Keep norm working for existing callers, both from textkit and from textkit.utils, but make it emit a DeprecationWarning that names normalize_whitespace. Behaviour must not change.
+'''

@@ -1,0 +1,6 @@
+kind = "feature"
+repo = "schedule"
+expect = "resolve"
+task = '''
+Business days should also skip public holidays. Add an optional holidays parameter (any collection of dates, empty by default) to add_business_days, and add is_business_day(day, holidays=()) to schedule.days, exported from the package: a day is a business day when it is neither a weekend day nor a holiday. Existing calls without holidays must behave as before.
+'''

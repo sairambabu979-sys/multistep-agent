@@ -1,0 +1,6 @@
+kind = "feature"
+repo = "textkit"
+expect = "resolve"
+task = '''
+Add truncate(text, width, ellipsis='…') to textkit, in a new module textkit/truncate.py, exported from the package. Text of at most width characters comes back unchanged. Longer text is cut to at most width characters including the ellipsis: as many whole words as fit, then the ellipsis, with no space before it. If not even the first word fits, cut it mid-word instead. width must be larger than the length of the ellipsis, or truncate raises ValueError.
+'''

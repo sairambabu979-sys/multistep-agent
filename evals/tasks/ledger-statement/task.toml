@@ -1,0 +1,6 @@
+kind = "feature"
+repo = "ledger"
+expect = "resolve"
+task = '''
+Add Ledger.statement(account, start, end): the account's postings dated from start to end inclusive, as a list of StatementLine(day, memo, amount, balance) in date order (postings on the same day stay in the order they were posted). balance is the running balance after each posting, starting from the account's balance before start. Export StatementLine from the ledger package.
+'''

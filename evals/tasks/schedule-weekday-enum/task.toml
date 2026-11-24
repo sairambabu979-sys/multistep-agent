@@ -1,0 +1,6 @@
+kind = "refactor"
+repo = "schedule"
+expect = "resolve"
+task = '''
+Replace the weekday int constants in schedule/days.py with an IntEnum, Weekday, whose members MONDAY to SUNDAY have the values 0 to 6. Keep the names MONDAY to SUNDAY importable from schedule.days and from schedule, now as the Weekday members, so code comparing them with date.weekday() keeps working. Export Weekday from the package. Behaviour must not change.
+'''

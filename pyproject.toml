@@ -221,7 +221,7 @@ name = "Layered architecture (PLAN §10)"
 type = "layers"
 layers = [
     "msa.cli",
-    "msa.service",
+    "msa.service | msa.evals",
     "msa.runtime",
     "msa.agents",
     "msa.llm",

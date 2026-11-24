@@ -1,0 +1,6 @@
+kind = "bugfix"
+repo = "ledger"
+expect = "resolve"
+task = '''
+Ledger.balance(account, as_of=day) is documented to count the postings up to and including as_of, but it leaves out the postings made on that day. Fix it.
+'''

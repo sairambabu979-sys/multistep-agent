@@ -1,0 +1,6 @@
+kind = "bugfix"
+repo = "configlib"
+expect = "resolve"
+task = '''
+with_env splits APP_<SECTION>__<KEY> variables at the first single underscore, so APP_DB__PORT=5433 sets the key '_port' instead of 'port', and APP_DB__MAX_CONNECTIONS=20 sets '_max_connections'. The section and the key are separated by a double underscore, as the docstring says: APP_DB__MAX_CONNECTIONS=20 must set config['db']['max_connections'] = 20. A variable without a double underscore after the prefix is not an override and is ignored.
+'''

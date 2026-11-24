@@ -1,0 +1,6 @@
+kind = "bugfix"
+repo = "textkit"
+expect = "resolve"
+task = '''
+title_case keeps small words lowercase even when they end the title: title_case('what are you up to') returns 'What Are You Up to'. Like the first word, the last word must always be capitalised: 'What Are You Up To'. Small words in the middle stay lowercase.
+'''

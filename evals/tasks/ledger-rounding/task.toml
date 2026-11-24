@@ -1,0 +1,6 @@
+kind = "refactor"
+repo = "ledger"
+expect = "resolve"
+task = '''
+Money rounds to the cent in three places, each calling Decimal.quantize itself. Move that rounding into one function, to_cents(amount: Decimal, *, down: bool = False) -> Decimal, in a new module ledger/rounding.py (half up by default, toward zero when down is true), and make money.py use it everywhere. Nothing else may change: every result must stay exactly as it is now.
+'''

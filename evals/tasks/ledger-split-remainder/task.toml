@@ -1,0 +1,6 @@
+kind = "bugfix"
+repo = "ledger"
+expect = "resolve"
+task = '''
+Money.split(parts) loses cents: Money.of('10.00', 'EUR').split(3) returns three shares of 3.33 EUR, which add up to 9.99. Fix split so that the shares always add up to exactly the original amount, no two shares differ by more than one cent, and the larger shares come first. It must keep working for amounts that split evenly and for a single part.
+'''

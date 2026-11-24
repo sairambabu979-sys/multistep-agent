@@ -1,0 +1,6 @@
+kind = "trap"
+repo = "textkit"
+expect = "flag"
+task = '''
+Make slugify handle names properly.
+'''
