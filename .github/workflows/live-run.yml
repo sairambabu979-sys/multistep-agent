@@ -33,6 +33,12 @@ name: live run
 #   the real Coder answers it, the real Reviewer replies, and a dispute goes to the real
 #   Tester's repro test and the real Arbiter. It takes restock-atomic, which states the rule,
 #   and no crash.
+# - dispute: the Reviewer's whole side, which never yields. Its first review raises the same
+#   correctness blocker and a design claim the task contradicts (receive belongs on Store,
+#   not in the module the task names), and every reply maintains both. So the ladder must
+#   decide: the real Tester's repro test settles the correctness claim, and the real Arbiter
+#   rules on the design one (the run escalates to the Arbiter, not a person). In live-9 the
+#   real Reviewer withdrew in round one, so neither rung had run live. restock-atomic only.
 #
 # Unless crash_after_seq is 0, the run is SIGKILLed partway through, its whole process tree
 # at once (scripts/live_run_crash.py), and `msa resume` continues it from the journal. The
@@ -72,10 +78,11 @@ on:
         description: >-
           Plant one thing; every other model call is real. code: a bug in the Coder's first
           implementation (a restock task). finding: a blocking finding as the Reviewer's
-          first review (restock-atomic). Both take crash_after_seq 0.
+          first review (restock-atomic). dispute: the Reviewer's whole side, never yielding,
+          so the repro test and the Arbiter decide (restock-atomic). All take crash_after_seq 0.
         required: true
         type: choice
-        options: [none, code, finding]
+        options: [none, code, finding, dispute]
         default: none
 
 permissions:
@@ -127,12 +134,12 @@ jobs:
               if [ "${TASK#restock}" = "$TASK" ] || [ "$CRASH_AFTER_SEQ" != 0 ]; then
                 echo "::error::seeded runs take a restock task and crash_after_seq 0" && exit 1
               fi ;;
-            finding)
+            finding|dispute)
               if [ "$TASK" != restock-atomic ] || [ "$CRASH_AFTER_SEQ" != 0 ]; then
-                echo "::error::a seeded finding takes restock-atomic and crash_after_seq 0"
+                echo "::error::a seeded $SEEDED takes restock-atomic and crash_after_seq 0"
                 exit 1
               fi ;;
-            *) echo "::error::seeded must be none, code or finding, not $SEEDED" && exit 1 ;;
+            *) echo "::error::seeded must be none, code, finding or dispute, not $SEEDED" && exit 1 ;;
           esac
           echo "DB=$RUNNER_TEMP/aegis/runs.db" >> "$GITHUB_ENV"
           echo "CRASH=$RUNNER_TEMP/aegis/crash.json" >> "$GITHUB_ENV"
@@ -149,7 +156,14 @@ jobs:
           git -c user.name=fixture -c user.email=fixture@localhost commit -qm base
 
       - name: Settings for this run
-        run: scripts/live_run_settings.sh "$RUNNER_TEMP/msa.toml"
+        run: |
+          scripts/live_run_settings.sh "$RUNNER_TEMP/msa.toml"
+          # A planted Reviewer never yields: the Arbiter, not a person, rules on what is left.
+          if [ "$SEEDED" = dispute ]; then
+            sed -i 's|^escalation = .*|escalation = "arbiter"|' "$RUNNER_TEMP/msa.toml"
+            test "$(grep -c '^escalation = "arbiter"$' "$RUNNER_TEMP/msa.toml")" -eq 1
+            uv run msa --config "$RUNNER_TEMP/msa.toml" config check
+          fi
 
       - name: The run (real model, every stage), crashed and resumed
         env:
@@ -178,7 +192,17 @@ jobs:
         id: summary
         if: always()
         run: |
-          if [ "$SEEDED" = finding ]; then
+          if [ "$SEEDED" = dispute ]; then
+            {
+              echo "## Seeded run: the Reviewer's side was planted"
+              echo
+              echo "It was scripted, not the model's (scripts/live_run_seeded.py): the first review"
+              echo "(two blocking findings, written without reading the code) and a maintain on"
+              echo "every reply. Every other model call was real: the Planner, the Coder, the"
+              echo "Tester and its repro test, and the Arbiter, which this run escalates to."
+              echo
+            } | tee -a "$GITHUB_STEP_SUMMARY"
+          elif [ "$SEEDED" = finding ]; then
             {
               echo "## Seeded run: the Reviewer's first review was planted"
               echo

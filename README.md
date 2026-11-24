@@ -109,6 +109,16 @@ rebuttal and withdrawal take it to a `withdrawn` verdict
   agreed. The two agreed in one round, so the repro test and the Arbiter did not run. Those
   rungs are still evidenced only offline.
 
+`seeded: dispute` is for those two rungs. It plants the Reviewer's whole side, which never
+yields. Its first review raises two blocking findings, written without reading the code: the
+same correctness claim, and a design claim that the task itself contradicts (that `receive`
+belongs on `Store`, not in the module the task names). Every reply maintains both, so
+nothing closes in negotiation and the ladder must decide. The real Tester's repro test
+settles the correctness claim. The real Arbiter rules on the design one, because the run's
+settings escalate to the Arbiter rather than a person. Offline, with stand-ins for the
+Coder, the Tester and the Arbiter, a repro test that really runs on the head tree dismisses
+the first claim, and a ruling dismisses the second.
+
 The workflow's `release` job is a live run's human gate. It waits in the `live-release`
 environment until that environment's required reviewer approves it in GitHub. It then
 approves the run in that person's name (`github:<login>`, read from GitHub's record of the

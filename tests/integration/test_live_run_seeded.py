@@ -16,11 +16,11 @@ from typing import Any
 
 import pytest
 
-from msa.core.values import Phase
+from msa.core.values import Escalation, Phase
 from msa.llm import fake
 from msa.llm.client import Request, Response
 from tests.integration.test_demo import PLANNER, TASK, TESTER
-from tests.support.runs import Harness, RoleScripts, make_harness
+from tests.support.runs import Harness, RoleScripts, create, make_harness
 from tests.support.scripts import load
 
 pytestmark = pytest.mark.slow
@@ -114,6 +114,92 @@ def test_the_planted_finding_is_admitted_and_negotiated_by_the_roles_after_it(
     assert seeded.CLAIM in str(reply["messages"][0]["content"])
 
 
+def _ids_in(request: Request) -> list[str]:
+    return list(dict.fromkeys(re.findall(r"\bc\d+-\d+\b", seeded.prompt_text(request))))
+
+
+def _rebut_all(request: Request) -> Response:
+    moves = [
+        {
+            "finding_id": finding_id,
+            "action": "rebut",
+            "rationale": "the task names this module, and receive checks every line first",
+            "evidence": "the task text; the first loop only parses and checks",
+        }
+        for finding_id in _ids_in(request)
+    ]
+    return fake.answer({"moves": moves})
+
+
+REPRO_TEST = """import pytest
+
+from inventory import Store, receive
+
+
+def test_a_bad_second_line_leaves_the_store_unchanged() -> None:
+    store = Store()
+    store.add("apple", 1)
+    with pytest.raises(KeyError):
+        receive(store, "apple,2\\nnope,1")
+    assert store.quantity("apple") == 1
+"""
+
+
+def _write_repro(request: Request) -> Response:
+    found = re.search(r"Write one test module at (\S+) ", seeded.prompt_text(request))
+    assert found, "the repro request names its path"
+    return fake.message(fake.thinking(), create("r1", found[1], REPRO_TEST), stop_reason="tool_use")
+
+
+def _dismiss_all(request: Request) -> Response:
+    rulings = [
+        {"finding_id": finding_id, "verdict": "dismissed", "rationale": "the task names it"}
+        for finding_id in _ids_in(request)
+    ]
+    return fake.answer({"rulings": rulings})
+
+
+def test_a_planted_dispute_is_decided_by_the_repro_test_and_the_arbiter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MSA_USER_PREFERENCES", str(tmp_path / "no-user-layer.yaml"))
+    harness = make_harness(tmp_path, review=True, fixture="inventory", task=TASK)
+    limits = harness.config.limits.model_copy(update={"escalation": Escalation.ARBITER})
+    harness.config = harness.config.model_copy(update={"limits": limits})
+    inner = RoleScripts(
+        planner=PLANNER,
+        tester=[
+            *TESTER[:2],
+            _write_repro,
+            fake.answer({"written": True, "explanation": "a bad second line"}),
+        ],
+        coder=[*seeded.seed("restock-scale"), _rebut_all],  # an all-or-nothing receive
+        arbiter=[_dismiss_all],
+    )
+    client = seeded.Disputing(inner)
+
+    final, journal = harness.run(client, approve_release=False)
+    journal.close()
+    assert final.phase is Phase.HUMAN_APPROVAL, final.outcome
+    assert client.planted == ["disputed_review", "maintained"]  # never a real Reviewer
+    assert inner.exhausted
+    findings = records(harness, "findings.jsonl")
+    assert [(f["admitted"], f["severity"]) for f in findings] == [
+        (True, "blocker"),
+        (True, "major"),
+    ]
+    assert [o["verdict"] for o in records(harness, "negotiation.jsonl")] == [None, None]
+    rulings = {
+        r["finding"]: (r["rung"], r["verdict"]) for r in records(harness, "arbitration.jsonl")
+    }
+    correctness, design = (f["id"] for f in findings)
+    assert rulings[correctness] == ("repro", "dismissed")  # the repro test passed on head
+    assert rulings[design] == ("arbiter", "dismissed")
+    (ruling,) = inner.requests("arbiter")
+    assert seeded.DESIGN_CLAIM in seeded.prompt_text(ruling)
+    assert seeded.CLAIM not in seeded.prompt_text(ruling)  # the repro test settled that one
+
+
 def test_a_planted_review_with_nothing_to_point_at_plants_nothing() -> None:
     request = {
         "model": "m",
@@ -190,3 +276,12 @@ def test_an_unknown_plant_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(seeded.cli, "main", lambda: pytest.fail("msa ran"))
     with pytest.raises(SystemExit, match="--plant must be one of code, finding"):
         seeded.main(["--plant", "bug", "--", "run"])
+
+
+def test_plant_dispute_plants_the_reviewers_whole_side(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(seeded.cli, "main", lambda: None)
+    monkeypatch.setattr(seeded.cli, "_client", lambda settings, environment: "the real client")
+    seeded.main(["--plant", "dispute", "--", "run"])
+    client = seeded.cli._client(None, None)
+    assert isinstance(client, seeded.Disputing)
+    assert client.inner == "the real client"

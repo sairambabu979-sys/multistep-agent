@@ -68,18 +68,25 @@ def test_a_release_nobody_approved_reports_nothing_it_never_restored() -> None:
 
 def test_a_seeded_run_says_so_first_and_takes_only_its_task_uncrashed() -> None:
     seeded = workflow()["on"]["workflow_dispatch"]["inputs"]["seeded"]
-    assert seeded["options"] == ["none", "code", "finding"]
+    assert seeded["options"] == ["none", "code", "finding", "dispute"]
     assert seeded["default"] == "none"
     run = workflow()["jobs"]["run"]
     steps = {step.get("name", ""): str(step.get("run", "")) for step in run["steps"]}
     inputs = steps["Check the inputs"]
     assert "seeded runs take a restock task and crash_after_seq 0" in inputs
-    assert "a seeded finding takes restock-atomic and crash_after_seq 0" in inputs
-    assert "seeded must be none, code or finding" in inputs  # anything else stops the run
+    assert "a seeded $SEEDED takes restock-atomic and crash_after_seq 0" in inputs
+    assert "finding|dispute)" in inputs
+    assert "seeded must be none, code, finding or dispute" in inputs  # anything else stops
     run_step = steps["The run (real model, every stage), crashed and resumed"]
     assert 'scripts/live_run_seeded.py --plant "$SEEDED"' in run_step
+    settings = steps["Settings for this run"]  # msa run takes its escalation from msa.toml
+    assert """sed -i 's|^escalation = .*|escalation = "arbiter"|'""" in settings
     summary = steps["Outcome, spend, the crash and the PR description"]
-    for planted in ("the Reviewer's first review was planted", "first implementation was planted"):
+    for planted in (
+        "the Reviewer's side was planted",
+        "the Reviewer's first review was planted",
+        "first implementation was planted",
+    ):
         assert summary.index(planted) < summary.index("live_run_summary.py"), planted
 
 

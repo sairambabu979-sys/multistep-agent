@@ -36,6 +36,15 @@ it directly.
   probably false. Everything else is real: the Planner, the Coder's implementation and its
   answer to the finding, the Reviewer's reply, the Tester's repro test and the Arbiter.
   Whether the finding is withdrawn, dismissed or upheld, and how, is the result.
+- **--plant dispute** (restock-atomic, with escalation to the Arbiter): the Reviewer's whole
+  side. Its first review raises two blocking findings, written without reading the code:
+  the same correctness claim, and a design claim that the task itself contradicts (receive
+  belongs on Store, not in the new module the task names). Every reply maintains both. So
+  a contested finding never closes in negotiation, and the ladder decides it: the real
+  Tester's repro test settles the correctness claim, and the real Arbiter rules on the
+  design one. What is real: the Planner, the Coder (its implementation and its moves), the
+  Tester (acceptance tests and the repro test) and the Arbiter. In live-9 the real Reviewer
+  withdrew the finding in round one, so neither rung had run live.
 
 The seeded turns carry placeholder thinking signatures, so a seeded conversation is never
 sent to the API. Their token counts are estimated locally.
@@ -43,8 +52,10 @@ sent to the API. Their token counts are estimated locally.
 
 from __future__ import annotations
 
+import json
 import re
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -193,11 +204,15 @@ EVIDENCE = (
 _CHANGED = re.compile(r"<changed_lines>\n(.*?)\n</changed_lines>", re.DOTALL)
 
 
+def prompt_text(request: Request) -> str:
+    """The text of a request's first message: the invocation's prompt."""
+    content: Any = request["messages"][0]["content"]
+    return content if isinstance(content, str) else "".join(b.get("text", "") for b in content)
+
+
 def changed(request: Request) -> dict[str, list[tuple[int, int]]]:
     """The changed_lines section of a review request, as line ranges per path."""
-    content: Any = request["messages"][0]["content"]
-    text = content if isinstance(content, str) else "".join(b.get("text", "") for b in content)
-    found = _CHANGED.search(text)
+    found = _CHANGED.search(prompt_text(request))
     ranges: dict[str, list[tuple[int, int]]] = {}
     for line in found[1].splitlines() if found else []:
         path, sep, spans = line.rpartition(": ")
@@ -232,7 +247,52 @@ def planted_review(request: Request) -> Response:
     return fake.answer({"summary": summary, "findings": [finding]})
 
 
-# ---------- the client
+DESIGN_CLAIM = (
+    "receive() belongs on Store as a method: a free function in a module of its own splits "
+    "the API that changes stock across two files."
+)
+DESIGN_EVIDENCE = (
+    "Store.add and Store.restock are methods of Store; receive is the one way to change stock "
+    "that is not, so reading store.py no longer shows every way the stock can change."
+)
+
+
+def disputed_review(request: Request) -> Response:
+    """The Reviewer's first answer, for --plant dispute: the correctness claim of
+    ``planted_review`` and a design claim, both blocking, both unread."""
+    answer: Any = json.loads(planted_review(request)["content"][-1]["text"])
+    if answer["findings"]:
+        design = {
+            **answer["findings"][0],
+            "severity": "major",
+            "kind": "design",
+            "claim": DESIGN_CLAIM,
+            "evidence": DESIGN_EVIDENCE,
+            "suggested_fix": "Make receive a method of Store and drop the new module.",
+            "confidence": 0.8,
+        }
+        answer["findings"].append(design)
+    return fake.answer(answer)
+
+
+_CONTESTED = re.compile(r"^### (c\d+-\d+): ", re.MULTILINE)
+
+
+def maintained(request: Request) -> Response:
+    """Every reply, for --plant dispute: the Reviewer maintains each contested finding."""
+    moves = [
+        {
+            "finding_id": finding_id,
+            "action": "maintain",
+            "rationale": "(planted) The finding stands as written.",
+            "amendment": "",
+        }
+        for finding_id in dict.fromkeys(_CONTESTED.findall(prompt_text(request)))
+    ]
+    return fake.answer({"moves": moves})
+
+
+# ---------- the clients
 
 _ROLE = re.compile(r"# Role: (\w+)")
 
@@ -270,6 +330,47 @@ class Seeded:
             await close()
 
 
+class Disputing:
+    """A ``MessagesClient`` for --plant dispute: the Reviewer's first review is
+    ``disputed_review`` and every reply is ``maintained``; every other request is real."""
+
+    def __init__(self, inner: MessagesClient) -> None:
+        self.inner = inner
+        self.reviewed = False
+        self.planted: list[str] = []  # which planted answer each seeded request got
+
+    def _plant(self, request: Request) -> Callable[[Request], Response] | None:
+        if role_of(request) != "reviewer":
+            return None
+        text = prompt_text(request)
+        if "<contested_findings>" in text:
+            return maintained
+        if not self.reviewed and "<changed_lines>" in text:
+            return disputed_review
+        return None
+
+    async def create(self, request: Request) -> Response:
+        step = self._plant(request)
+        if step is None:
+            return await self.inner.create(request)
+        self.reviewed = self.reviewed or step is disputed_review
+        self.planted.append(step.__name__)
+        response = step(request)
+        response.setdefault("model", request["model"])  # as the API answers: the model asked
+        return response
+
+    async def count_tokens(self, request: Request) -> int:
+        if self._plant(request) is not None:
+            return estimate_input_tokens(request)  # placeholder signatures: never sent
+        count: int = await self.inner.count_tokens(request)
+        return count
+
+    async def aclose(self) -> None:
+        close = getattr(self.inner, "aclose", None)
+        if close is not None:
+            await close()
+
+
 def task_of(args: list[str]) -> str:
     """The task's name, from ``--task-file .github/live-run/<name>.md``."""
     if "--task-file" in args and args.index("--task-file") + 1 < len(args):
@@ -277,7 +378,7 @@ def task_of(args: list[str]) -> str:
     return "restock"
 
 
-PLANTS = ("code", "finding")
+PLANTS = ("code", "finding", "dispute")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -295,6 +396,8 @@ def main(argv: list[str] | None = None) -> None:
     def seeded(settings: MsaConfig, environment: LiveEnvironment) -> MessagesClient:
         if plant == "finding":
             return Seeded(real(settings, environment), [planted_review], role="reviewer")
+        if plant == "dispute":
+            return Disputing(real(settings, environment))
         return Seeded(real(settings, environment), seed(task))
 
     cli._client = seeded
