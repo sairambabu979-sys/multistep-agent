@@ -40,6 +40,17 @@ Each run is crashed up to three times. Every trial must reach exactly the state 
 uninterrupted run with the same seed, and no journaled effect may execute again.
 A deliberate determinism break makes all trials fail, so the test can detect divergence.
 
+With the real model, the manual `live run` workflow tests the same claims, on one run at a
+time. `scripts/live_run_crash.py` SIGSTOPs, then SIGKILLs, the whole process tree of a live
+`msa run` once its journal reaches a given seq. That includes the agents' sandboxed
+commands, which run in sessions of their own. `msa resume` then continues the run. The
+summary fails the job if an effect the journal had answered before the kill started again.
+It reads every effect start from the run's `effects.jsonl`, which the live interpreter
+appends to and fsyncs before each executor runs (`msa.runtime.live.EffectLog`). That
+includes the stages that call no model, which the agent invocations alone cannot show. It
+also lists how many turns the resumed invocations replayed. Those results live in the
+workflow's own runs, not here.
+
 ## Consequences
 
 - Executors must be idempotent per effect id, or at least safe to repeat. This is part of

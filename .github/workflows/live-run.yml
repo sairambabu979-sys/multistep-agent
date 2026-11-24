@@ -1,20 +1,52 @@
 name: live run
 
-# The agents on a real task with the real model, nothing scripted: the multi-file inventory
-# task of the definition-of-done run (tests/integration/test_demo.py), on the same fixture,
-# with every stage real. It spends, so it is manual only, and the budget is a hard cap.
+# The agents on a real task with the real model, nothing scripted, on the inventory fixture
+# (tests/fixtures/repos/inventory), with every stage real. It spends, so it is manual only,
+# and the budget is a hard cap.
 #
-# The run stops at HUMAN_APPROVAL. Nothing is published and no workflow approves it: its PR
-# description, report, patch, timeline and journal are uploaded for a person to read, and
-# the job summary shows the outcome and the spend. The job fails if the run never reached
-# the human gate (failed, cancelled, blocked), so a red run here is a real finding.
+# Tasks (.github/live-run/):
+# - restock: the definition-of-done task of tests/integration/test_demo.py.
+# - round-trip: from_csv(to_csv(store)) must hold the same items for any store. The
+#   fixture's to_csv does not quote, so a SKU holding a comma breaks it today. A change that
+#   ignores that leaves something real for the Reviewer to find.
+#
+# Agent commands and the integration suite run without network, and must: the run's
+# settings say isolate_network = "always" (scripts/live_run_settings.sh).
+#
+# Unless crash_after_seq is 0, the run is SIGKILLed partway through, its whole process tree
+# at once (scripts/live_run_crash.py), and `msa resume` continues it from the journal. The
+# summary then checks that no effect the journal had answered was invoked again.
+#
+# The run job stops at HUMAN_APPROVAL. Nothing is published there, and the job fails if the
+# run never reached that gate (failed, cancelled, blocked), so a red run is a real finding.
+#
+# The release job is the human gate. It runs in the `live-release` environment, which must
+# have a required reviewer (Settings, Environments): GitHub then holds the job until that
+# person approves it. The job reads who approved from GitHub's record of this run, runs
+# `msa approve --by github:<login>`, and the run publishes to a branch of the fixture
+# repository and completes. If nobody approved (an environment GitHub created on first use
+# has no reviewer, and runs the job at once), it approves nothing and fails. It never
+# receives the model key: approving and publishing make no model call.
 on:
   workflow_dispatch:
     inputs:
+      task:
+        description: Which task (.github/live-run/<task>.md)
+        required: true
+        type: choice
+        options: [restock, round-trip]
+        default: restock
       budget_usd:
         description: Hard cap on model spend for the run, in US dollars (at most 20)
         required: true
         default: "5"
+      crash_after_seq:
+        description: >-
+          SIGKILL the run once its journal holds this many events, then resume it (0: no
+          crash). At 6 one of the implementation and the acceptance tests is journaled and
+          the other is mid-call.
+        required: true
+        default: "6"
 
 permissions:
   contents: read
@@ -23,13 +55,19 @@ concurrency:
   group: live-run
   cancel-in-progress: false
 
+env:
+  RUN_ID: live-${{ github.run_number }}
+
 jobs:
   run:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    outputs:
+      phase: ${{ steps.summary.outputs.phase }}
     env:
-      RUN_ID: live-${{ github.run_number }}
+      TASK: ${{ inputs.task }}
       BUDGET_USD: ${{ inputs.budget_usd }}
+      CRASH_AFTER_SEQ: ${{ inputs.crash_after_seq }}
     steps:
       - uses: actions/checkout@v4
 
@@ -44,10 +82,18 @@ jobs:
       - name: ripgrep (the search tool runs it)
         run: command -v rg || { sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep; }
 
-      - name: Check the budget
+      - name: Check the inputs
         run: |
           python3 -c "import os, sys; b = float(os.environ['BUDGET_USD']); \
             sys.exit(0 if 0 < b <= 20 else f'budget_usd must be above 0 and at most 20, not {b}')"
+          python3 -c "import os, sys; c = os.environ['CRASH_AFTER_SEQ']; \
+            sys.exit(0 if c.isdigit() else f'crash_after_seq must be a whole number, not {c!r}')"
+          test -f ".github/live-run/$TASK.md"
+          echo "DB=$RUNNER_TEMP/aegis/runs.db" >> "$GITHUB_ENV"
+          echo "CRASH=$RUNNER_TEMP/aegis/crash.json" >> "$GITHUB_ENV"
+
+      - name: Network namespaces (agent commands and integration suites get no network)
+        run: scripts/allow_network_namespaces.sh
 
       - name: The repository to change (the inventory fixture, committed)
         run: |
@@ -58,35 +104,132 @@ jobs:
           git -c user.name=fixture -c user.email=fixture@localhost commit -qm base
 
       - name: Settings for this run
-        # The fixture has no environment of its own, so the sandbox runs ruff, mypy and pytest
-        # with this checkout's Python, as the integration tests do. Everything else is msa.toml.
-        run: |
-          sed "s|^launcher = .*|launcher = [\"$GITHUB_WORKSPACE/.venv/bin/python\", \"-m\"]|" \
-            msa.toml > "$RUNNER_TEMP/msa.toml"
-          grep -n '^launcher' "$RUNNER_TEMP/msa.toml"
-          uv run msa --config "$RUNNER_TEMP/msa.toml" config check
+        run: scripts/live_run_settings.sh "$RUNNER_TEMP/msa.toml"
 
-      - name: The run (real model, every stage)
+      - name: The run (real model, every stage), crashed and resumed
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        # The venv's msa directly, not `uv run`: the crash must reach msa's own process tree.
         run: |
-          uv run msa --config "$RUNNER_TEMP/msa.toml" run \
-            --repo "$RUNNER_TEMP/inventory" \
-            --task-file .github/live-run/task.md \
-            --run-id "$RUN_ID" \
-            --budget-usd "$BUDGET_USD" \
-            --db "$RUNNER_TEMP/aegis/runs.db"
+          msa=("$GITHUB_WORKSPACE/.venv/bin/msa" --config "$RUNNER_TEMP/msa.toml")
+          run=("${msa[@]}" run --repo "$RUNNER_TEMP/inventory" \
+            --task-file ".github/live-run/$TASK.md" --run-id "$RUN_ID" \
+            --budget-usd "$BUDGET_USD" --db "$DB")
+          if [ "$CRASH_AFTER_SEQ" -eq 0 ]; then
+            "${run[@]}"
+            exit
+          fi
+          uv run python scripts/live_run_crash.py --db "$DB" --run "$RUN_ID" \
+            --after-seq "$CRASH_AFTER_SEQ" --evidence "$CRASH" -- "${run[@]}"
+          "${msa[@]}" resume "$RUN_ID" --db "$DB"
 
-      - name: Outcome, spend and the PR description
+      - name: Outcome, spend, the crash and the PR description
+        id: summary
         if: always()
         run: |
-          uv run python scripts/live_run_summary.py \
-            --db "$RUNNER_TEMP/aegis/runs.db" --run "$RUN_ID" --summary "$GITHUB_STEP_SUMMARY"
+          crash=()
+          if [ -f "$CRASH" ]; then crash=(--crash "$CRASH"); fi
+          uv run python scripts/live_run_summary.py --db "$DB" --run "$RUN_ID" \
+            --summary "$GITHUB_STEP_SUMMARY" --output "$GITHUB_OUTPUT" "${crash[@]}"
+
+      - name: The run's state, for its release
+        # Everything the release job resumes from, at the same paths: the journal, the run's
+        # files and worktrees, and the repository with its history.
+        if: steps.summary.outputs.phase == 'human_approval'
+        run: tar -C "$RUNNER_TEMP" -czf "$RUNNER_TEMP/live-state.tgz" aegis inventory msa.toml
+
+      - uses: actions/upload-artifact@v4
+        if: steps.summary.outputs.phase == 'human_approval'
+        with:
+          name: live-state
+          path: ${{ runner.temp }}/live-state.tgz
+          retention-days: 30
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: live-run
+          path: |
+            ${{ runner.temp }}/aegis/runs.db
+            ${{ runner.temp }}/aegis/crash.json
+            ${{ runner.temp }}/aegis/runs/
+          if-no-files-found: warn
+
+  release:
+    # A person approves this job in GitHub, as the live-release environment's reviewer.
+    needs: run
+    if: needs.run.outputs.phase == 'human_approval'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: live-release
+    permissions:
+      contents: read
+      actions: read  # GitHub's record of who approved this run
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+          enable-cache: true
+
+      - name: Install (locked)
+        run: uv sync --locked
+
+      - name: Who approved (fails unless a person did)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/approvals" > approvals.json
+          if ! approver=$(uv run python scripts/live_run_approver.py live-release < approvals.json)
+          then
+            echo "::error::no person approved this release; nothing was approved" && exit 1
+          fi
+          echo "approved by $approver"
+          echo "APPROVER=github:$approver" >> "$GITHUB_ENV"
+          echo "DB=$RUNNER_TEMP/aegis/runs.db" >> "$GITHUB_ENV"
+
+      - name: Network namespaces (the settings require them)
+        run: scripts/allow_network_namespaces.sh
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: live-state
+          path: ${{ runner.temp }}
+
+      - name: The run's state, where it ran
+        id: restore
+        run: |
+          tar -C "$RUNNER_TEMP" -xzf "$RUNNER_TEMP/live-state.tgz"
+          uv run python -c "import json, sqlite3, sys, os; \
+            row = sqlite3.connect(sys.argv[1]).execute('SELECT environment FROM runs WHERE run_id = ?', (sys.argv[2],)).fetchone(); \
+            repo = json.loads(row[0])['repo']; \
+            sys.exit(0 if os.path.isdir(os.path.join(repo, '.git')) else f'the run expects its repository at {repo}')" \
+            "$DB" "$RUN_ID"
+
+      - name: Approve and publish
+        run: |
+          "$GITHUB_WORKSPACE/.venv/bin/msa" --config "$RUNNER_TEMP/msa.toml" \
+            approve "$RUN_ID" --by "$APPROVER" --db "$DB"
+
+      - name: The completed run and its published branch
+        if: always() && steps.restore.outcome == 'success'
+        run: |
+          uv run python scripts/live_run_summary.py --db "$DB" --run "$RUN_ID" \
+            --summary "$GITHUB_STEP_SUMMARY"
+          {
+            echo "## The published branch"
+            echo
+            echo '```'
+            git -C "$RUNNER_TEMP/inventory" log -1 --format='%H%n%n%B' "aegis/$RUN_ID"
+            git -C "$RUNNER_TEMP/inventory" diff --stat main "aegis/$RUN_ID"
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.restore.outcome == 'success'
+        with:
+          name: live-release
           path: |
             ${{ runner.temp }}/aegis/runs.db
             ${{ runner.temp }}/aegis/runs/

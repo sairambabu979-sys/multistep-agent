@@ -39,6 +39,8 @@ def test_records_append_and_survive_a_torn_line(tmp_path: Path) -> None:
     with (tmp_path / "log.jsonl").open("a", encoding="utf-8") as handle:
         handle.write('{"n": 3')  # a crash mid-write
     assert files.records("log.jsonl") == [{"n": 1}, {"n": 2}]
+    files.record("log.jsonl", {"n": 4})  # after the crash: on a line of its own
+    assert files.records("log.jsonl") == [{"n": 1}, {"n": 2}, {"n": 4}]
 
 
 def test_named_files_round_trip(tmp_path: Path) -> None:

@@ -10,6 +10,7 @@ Layout::
     .msa/runs/<run>/
         artifacts/<sha256 hex>   content-addressed: plans, verification reports, patches
         plan.json                the plan the build follows (the last one produced)
+        effects.jsonl            one line per effect an executor started, before it ran
         invocations.jsonl        one line per agent invocation: role, turns, spend
         verifications.jsonl      one line per verification: tree, passed, report digest
         report.md                the run report, written when the run ends
@@ -106,9 +107,16 @@ class RunFiles:
             return None
 
     def record(self, name: str, entry: dict[str, Any]) -> None:
+        """Append ``entry`` as one line, durably. A line a crash left torn (no newline)
+        stays its own malformed line, which ``records`` skips: this one starts afresh
+        rather than run on from it."""
         self.directory.mkdir(parents=True, exist_ok=True)
-        line = json.dumps(entry, sort_keys=True, ensure_ascii=False) + "\n"
-        with (self.directory / name).open("a", encoding="utf-8") as handle:
+        line = (json.dumps(entry, sort_keys=True, ensure_ascii=False) + "\n").encode()
+        with (self.directory / name).open("a+b") as handle:
+            if handle.seek(0, os.SEEK_END) > 0:
+                handle.seek(-1, os.SEEK_END)
+                if handle.read(1) != b"\n":
+                    line = b"\n" + line
             handle.write(line)
             handle.flush()
             os.fsync(handle.fileno())

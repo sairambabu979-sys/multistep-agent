@@ -43,7 +43,7 @@ from typing import Literal
 
 from msa.agents.schemas import Plan
 from msa.config import MsaConfig, Role
-from msa.core import RunState
+from msa.core import RunState, Step, TransitionRejected
 from msa.core._frozen import Frozen
 from msa.core.effects import (
     AwaitHumanRuling,
@@ -341,6 +341,34 @@ def write_report(
     return files.write("report.md", text)
 
 
+EFFECTS = "effects.jsonl"
+
+
+class EffectLog(Observer):
+    """Records every effect an executor starts, in the run's ``effects.jsonl``, durably and
+    before the executor runs. It is the audit of what ran. After a crash it shows what ran
+    again: nothing the journal had answered, and the effects in flight at least once
+    (ADR-007). ``invocations.jsonl`` records only agent invocations, so it cannot show that
+    for the stages that call no model."""
+
+    def __init__(self, files: RunFiles, inner: Observer | None = None) -> None:
+        self.files = files
+        self.inner = inner or Observer()
+
+    def effect_started(self, effect: Effect) -> None:
+        self.files.record(EFFECTS, {"effect": effect.id, "kind": effect.command.kind})
+        self.inner.effect_started(effect)
+
+    def before_commit(self, event: AnyEvent, step: Step) -> None:
+        self.inner.before_commit(event, step)
+
+    def after_commit(self, event: AnyEvent, step: Step) -> None:
+        self.inner.after_commit(event, step)
+
+    def rejected(self, event: AnyEvent, error: TransitionRejected) -> None:
+        self.inner.rejected(event, error)
+
+
 def interpreter(
     environment: LiveEnvironment,
     config: MsaConfig,
@@ -389,7 +417,7 @@ def interpreter(
         journal,
         executors(run, admission, validation, loading),
         clock=clock,
-        observer=observer,
+        observer=EffectLog(run.files, observer),
         on_outcome=finished,
         on_park=finished,
         snapshot_every=config.journal.snapshot_every,

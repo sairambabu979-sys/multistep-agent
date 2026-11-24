@@ -13,8 +13,41 @@ release, unblock, pause), the skills registry and security policy, the CLI, and 
 API with roles, a live event stream, an audit log and traces, and the web workbench are
 built and tested end to end, with only the model scripted. The journal runs on SQLite or
 PostgreSQL, and runs can be driven in-process or by Temporal
-([ADR-017](docs/adr/017-postgres-and-temporal.md)). **No model has run any of it yet**: the
-first live run needs `ANTHROPIC_API_KEY`.
+([ADR-017](docs/adr/017-postgres-and-temporal.md)).
+
+**With the real model** it has run three times, from the manual `live run` workflow
+(`.github/workflows/live-run.yml`), each run stopping at the release approval:
+
+- **live-1** cost $0.53 of a $5 cap. Unit tests caught a bug in the Tester's own acceptance
+  test, and the Tester fixed it. Its integration suite had network: the runner refused the
+  network namespace, and `isolate_network = "auto"` fell back.
+- **live-2** ran with isolation required and cost $0.40. It was SIGKILLed at seq 6 with the
+  Coder mid-invocation, then resumed. No agent invocation already answered ran again,
+  and the Coder's resumed invocation replayed 4 of its 7 turns instead of paying for them
+  again. Its integration suite ran without network.
+- **live-3** ran the round-trip task (`from_csv(to_csv(store))` for any store) for $0.64,
+  crashed at seq 6 and resumed in the same way. The fixture's `to_csv` does not quote, so a
+  SKU holding a comma breaks it. The Coder saw that and moved `to_csv` to the csv module,
+  keeping plain output byte for byte, so the Reviewer found nothing left to raise.
+
+For both crashes, "nothing answered ran again" covers the agent invocations only, 2 of the
+5 effects answered before the kill. The stages that call no model left no record a check
+could read. Every effect start is now logged (`effects.jsonl`), and the check reads that
+log, but no live run has been crashed since.
+
+No live run has raised a review finding, so negotiation has not yet run with the real
+model: the scripted demo is still its only evidence. No person has reviewed a live patch.
+
+The workflow's `release` job is a live run's human gate. It waits in the `live-release`
+environment until that environment's required reviewer approves it in GitHub. It then
+approves the run in that person's name (`github:<login>`, read from GitHub's record of the
+approval), and the run publishes and completes. If nobody approved, it approves nothing and
+fails.
+
+live-3 is the first live run released this way. Its release job refused twice while
+`live-release` had no reviewer. Then the repository owner approved it in GitHub, and the run
+was approved as `github:sairambabu979-sys` and published to `aegis/live-3` (commit
+`b33e5524`, `Approved-by: github:sairambabu979-sys`). It is COMPLETED.
 
 The full design is in [`docs/PLAN.md`](docs/PLAN.md), decisions are in
 [`docs/adr/`](docs/adr/), and the generated state diagram is in [`docs/fsm.md`](docs/fsm.md).
@@ -353,6 +386,8 @@ uv run msa policy show
 | Negotiation rules | Silence never closes a finding, only the other side's assent closes a contested one, and admission never widens a finding's scope (Hypothesis) |
 | The workbench | Unit tests of progress, the diff and stream parsers, and the approval panel's role gating (Vitest). End to end, the real workbench drives a real `msa serve` (Playwright) to approve a release, rule on a dispute and follow the run to the end, from the keyboard, with axe finding no serious or critical WCAG 2.1 AA violation on any page in either theme. |
 | Dependency audit | Every locked Python dependency, dev tools and extras included, is checked against PyPI's advisory data (`make audit`, CI's `audit` job), and the workbench's production npm dependencies with `npm audit` |
+| Network isolation | CI lets unprivileged users create network namespaces, which Ubuntu 24.04 refuses by default, and then requires them (`MSA_REQUIRE_NETNS=1`): an agent command and an integration suite must each fail to reach the network, and a runner that cannot isolate fails those tests instead of skipping them. Before this, CI skipped both. |
+| Live crash | The `live run` workflow SIGKILLs the real-model run's whole process tree once its journal reaches a given seq, then resumes it with `msa resume`. Its summary fails the job if any effect the journal had answered before the kill started again, model call or not: every effect start is logged durably before it runs (`effects.jsonl`). It lists the turns the resumed invocations replayed instead of buying them again. The same kill, from outside, lands while the unit-test stage's pytest runs in the sandbox, and the resumed run completes (`tests/integration/test_crash_mid_command.py`). A kill that missed the sandboxed pytest was shown to fail that test. |
 | Contracts | Core purity (AST allowlist), schema completeness, `docs/fsm.md` freshness, layering (`import-linter`), only `msa.llm` imports the SDK, no credential in any cassette |
 
 ## Develop
