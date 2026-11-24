@@ -9,6 +9,9 @@ name: live run
 # - round-trip: from_csv(to_csv(store)) must hold the same items for any store. The
 #   fixture's to_csv does not quote, so a SKU holding a comma breaks it today. A change that
 #   ignores that leaves something real for the Reviewer to find.
+# - thread-safe: make Store safe to share between threads, with a consistent items() snapshot.
+#   Races are what tests rarely catch and reviews often do: an unlocked read, a snapshot
+#   taken outside the lock, a lock held too widely.
 #
 # Agent commands and the integration suite run without network, and must: the run's
 # settings say isolate_network = "always" (scripts/live_run_settings.sh).
@@ -34,7 +37,7 @@ on:
         description: Which task (.github/live-run/<task>.md)
         required: true
         type: choice
-        options: [restock, round-trip]
+        options: [restock, round-trip, thread-safe]
         default: restock
       budget_usd:
         description: Hard cap on model spend for the run, in US dollars (at most 20)
