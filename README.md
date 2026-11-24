@@ -97,6 +97,18 @@ real roles do with a probably-false blocking finding is the result. Offline, a s
 rebuttal and withdrawal take it to a `withdrawn` verdict
 (`tests/integration/test_live_run_seeded.py`).
 
+- **live-9** ran `seeded: finding` on `restock-atomic` and cost $0.57. **This was the first
+  negotiation with the real model.** By its own summary, the real Coder's first
+  implementation checks every line in one pass and restocks in a second. Every gate passed
+  on it, the Tester's acceptance tests included. The planted finding `c0-1` was admitted as a
+  blocker: CODE_REVIEW to NEGOTIATION. In the one round, the real Coder contested it and
+  the real Reviewer withdrew it, with no code change (0 revisions). NEGOTIATION then went to
+  FINAL_VERIFICATION and on to HUMAN_APPROVAL. A `withdrawn` verdict only comes from a
+  rebuttal or counterproposal the reviewer assents to (`settle_round`). So the Coder did not
+  accept a false blocker to get through, and the finding closed only when the Reviewer
+  agreed. The two agreed in one round, so the repro test and the Arbiter did not run. Those
+  rungs are still evidenced only offline.
+
 The workflow's `release` job is a live run's human gate. It waits in the `live-release`
 environment until that environment's required reviewer approves it in GitHub. It then
 approves the run in that person's name (`github:<login>`, read from GitHub's record of the
