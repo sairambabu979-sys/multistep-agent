@@ -66,17 +66,21 @@ def test_a_release_nobody_approved_reports_nothing_it_never_restored() -> None:
     assert all("steps.restore.outcome == 'success'" in s["if"] for s in after)
 
 
-def test_a_seeded_run_says_so_first_and_takes_only_the_restock_task_uncrashed() -> None:
+def test_a_seeded_run_says_so_first_and_takes_only_its_task_uncrashed() -> None:
+    seeded = workflow()["on"]["workflow_dispatch"]["inputs"]["seeded"]
+    assert seeded["options"] == ["none", "code", "finding"]
+    assert seeded["default"] == "none"
     run = workflow()["jobs"]["run"]
     steps = {step.get("name", ""): str(step.get("run", "")) for step in run["steps"]}
     inputs = steps["Check the inputs"]
     assert "seeded runs take a restock task and crash_after_seq 0" in inputs
-    assert (
-        "scripts/live_run_seeded.py"
-        in steps["The run (real model, every stage), crashed and resumed"]
-    )
+    assert "a seeded finding takes restock-atomic and crash_after_seq 0" in inputs
+    assert "seeded must be none, code or finding" in inputs  # anything else stops the run
+    run_step = steps["The run (real model, every stage), crashed and resumed"]
+    assert 'scripts/live_run_seeded.py --plant "$SEEDED"' in run_step
     summary = steps["Outcome, spend, the crash and the PR description"]
-    assert summary.index("was planted") < summary.index("live_run_summary.py")
+    for planted in ("the Reviewer's first review was planted", "first implementation was planted"):
+        assert summary.index(planted) < summary.index("live_run_summary.py"), planted
 
 
 def test_only_the_spending_job_waits_its_turn_a_waiting_release_holds_nobody() -> None:

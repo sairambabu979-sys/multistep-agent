@@ -1,17 +1,19 @@
-"""Run ``msa`` with one bug planted in the Coder's first implementation; the rest is real.
+"""Run ``msa`` with one thing planted, the Coder's first implementation or the Reviewer's
+first review; every other model call is real.
 
-Used by the `live run` workflow's ``seeded`` mode (.github/workflows/live-run.yml), on the
-``restock`` task:
+Used by the `live run` workflow's ``seeded`` mode (.github/workflows/live-run.yml):
 
-    uv run python scripts/live_run_seeded.py -- --config msa.toml run --repo ... \\
-        --task-file .github/live-run/restock.md ...
+    uv run python scripts/live_run_seeded.py --plant code -- --config msa.toml run \\
+        --repo ... --task-file .github/live-run/restock.md ...
 
 Four live runs never raised a review finding: the real Coder's code kept passing review, so
 neither the Reviewer catching a defect nor the negotiation that follows had run with the
-real model. This plants one known defect where the scripted definition-of-done demo plants
-it, and lets the real roles find it.
+real model. ``--plant code`` plants one known defect where the scripted definition-of-done
+demo plants it, and lets the real roles find it. In live-7 and live-8 the real Tester's
+tests caught it before review, so negotiation still never ran: ``--plant finding`` starts
+it directly.
 
-- **What is seeded:** the Coder's first invocation only (``implement_plan``). It is
+- **--plant code:** the Coder's first invocation only (``implement_plan``). It is
   answered from the script below instead of the model, and writes a correct
   ``Store.restock``, the export and passing unit tests, plus ``receive()`` with the planted
   bug: it applies a delivery note line by line, so a bad line halfway through leaves the
@@ -26,6 +28,14 @@ it, and lets the real roles find it.
   triage), and every later Coder request (revisions, answers to findings), go to the model
   through the client msa.toml configures. Whether anything catches the bug, and how, is
   the result.
+- **--plant finding** (restock-atomic): the Reviewer's first review only. It is answered
+  with one blocking correctness finding, written without reading the code: that receive()
+  is not all or nothing. It points at the lines of src/inventory/receiving.py the request's
+  changed_lines lists, so it is admitted wherever the real Coder put them. The task states
+  that rule, and the real Tester's acceptance tests passed before review, so the claim is
+  probably false. Everything else is real: the Planner, the Coder's implementation and its
+  answer to the finding, the Reviewer's reply, the Tester's repro test and the Arbiter.
+  Whether the finding is withdrawn, dismissed or upheld, and how, is the result.
 
 The seeded turns carry placeholder thinking signatures, so a seeded conversation is never
 sent to the API. Their token counts are estimated locally.
@@ -168,6 +178,62 @@ def seed(task: str = "restock") -> list[fake.Step]:
     ]
 
 
+# ---------- --plant finding
+
+CLAIM = (
+    "receive() is not all or nothing: a note whose second line names an unknown SKU raises "
+    "KeyError after the first line was already restocked, so the store is left changed."
+)
+EVIDENCE = (
+    "receive() restocks each line as it reads it, so the lines before a bad one are already "
+    'applied when it raises. With apple added at 1, receive(store, "apple,2\\nnope,1") '
+    "raises KeyError and leaves apple at 3, against the task's rule that a bad note leaves "
+    "the store exactly as it was."
+)
+_CHANGED = re.compile(r"<changed_lines>\n(.*?)\n</changed_lines>", re.DOTALL)
+
+
+def changed(request: Request) -> dict[str, list[tuple[int, int]]]:
+    """The changed_lines section of a review request, as line ranges per path."""
+    content: Any = request["messages"][0]["content"]
+    text = content if isinstance(content, str) else "".join(b.get("text", "") for b in content)
+    found = _CHANGED.search(text)
+    ranges: dict[str, list[tuple[int, int]]] = {}
+    for line in found[1].splitlines() if found else []:
+        path, sep, spans = line.rpartition(": ")
+        if not sep:
+            continue
+        for span in spans.split(", "):
+            start, _, end = span.partition("-")
+            if start.isdigit() and (end or start).isdigit():
+                ranges.setdefault(path, []).append((int(start), int(end or start)))
+    return ranges
+
+
+def planted_review(request: Request) -> Response:
+    """The Reviewer's first answer: one blocking finding on receive(), unread."""
+    spans = changed(request).get(RECEIVING)
+    if not spans:
+        summary = f"(planted) {RECEIVING} was not changed, so no finding was planted."
+        return fake.answer({"summary": summary, "findings": []})
+    start, end = spans[0]
+    finding = {
+        "severity": "blocker",
+        "kind": "correctness",
+        "location": {"path": RECEIVING, "start_line": start, "end_line": end},
+        "claim": CLAIM,
+        "evidence": EVIDENCE,
+        "suggested_fix": "Parse and check every line first, then restock them all.",
+        "preference_ref": "",
+        "reopens": "",
+        "confidence": 0.9,
+    }
+    summary = "receive() breaks the task's all-or-nothing rule; the rest is sound."
+    return fake.answer({"summary": summary, "findings": [finding]})
+
+
+# ---------- the client
+
 _ROLE = re.compile(r"# Role: (\w+)")
 
 
@@ -177,14 +243,15 @@ def role_of(request: Request) -> str:
 
 
 class Seeded:
-    """A ``MessagesClient``: the Coder's first invocation from ``steps``, the rest real."""
+    """A ``MessagesClient``: ``role``'s first invocation from ``steps``, the rest real."""
 
-    def __init__(self, inner: MessagesClient, steps: list[fake.Step]) -> None:
+    def __init__(self, inner: MessagesClient, steps: list[fake.Step], role: str = "coder") -> None:
         self.inner = inner
+        self.role = role
         self.seed = fake.ScriptedClient(*steps)
 
     def _seeding(self, request: Request) -> bool:
-        return role_of(request) == "coder" and not self.seed.exhausted
+        return role_of(request) == self.role and not self.seed.exhausted
 
     async def create(self, request: Request) -> Response:
         if self._seeding(request):
@@ -210,14 +277,24 @@ def task_of(args: list[str]) -> str:
     return "restock"
 
 
+PLANTS = ("code", "finding")
+
+
 def main(argv: list[str] | None = None) -> None:
     args = sys.argv[1:] if argv is None else argv
+    plant = "code"
+    if args[:1] == ["--plant"]:
+        plant, args = (args[1] if len(args) > 1 else ""), args[2:]
+    if plant not in PLANTS:
+        raise SystemExit(f"--plant must be one of {', '.join(PLANTS)}, not {plant!r}")
     if args[:1] == ["--"]:
         args = args[1:]
     real = cli._client
     task = task_of(args)
 
     def seeded(settings: MsaConfig, environment: LiveEnvironment) -> MessagesClient:
+        if plant == "finding":
+            return Seeded(real(settings, environment), [planted_review], role="reviewer")
         return Seeded(real(settings, environment), seed(task))
 
     cli._client = seeded

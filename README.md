@@ -85,6 +85,18 @@ The pipeline explains why. Tests run before review, and a capable Tester turns e
 task states into a test, so a planted defect only reaches review if no test can express it.
 Those are the findings reviewers rate minor or nit.
 
+So `seeded` now plants one of two things. `code` is the planted bug above. `finding`
+plants the Reviewer's first review instead, on `restock-atomic`: one blocking correctness
+finding, written without reading the code, that `receive()` is not all or nothing. It
+points at the lines of `src/inventory/receiving.py` that the review request lists as
+changed, so it is admitted wherever the real Coder put them. Everything else is real: the
+Planner, the Coder's implementation and its answer to the finding, the Reviewer's reply, and,
+if they still disagree, the Tester's repro test and the Arbiter. The real Tester's
+acceptance tests check that rule before review, so the claim is probably false, and what the
+real roles do with a probably-false blocking finding is the result. Offline, a stand-in
+rebuttal and withdrawal take it to a `withdrawn` verdict
+(`tests/integration/test_live_run_seeded.py`).
+
 The workflow's `release` job is a live run's human gate. It waits in the `live-release`
 environment until that environment's required reviewer approves it in GitHub. It then
 approves the run in that person's name (`github:<login>`, read from GitHub's record of the
