@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from msa.agents.schemas import Plan, PlanStep
 from msa.config import MsaConfig, Role
 from msa.core import start
 from msa.core.effects import (
@@ -44,6 +45,7 @@ from msa.llm import fake
 from msa.llm.gateway import Gateway
 from msa.llm.store import MemoryResponseStore
 from msa.runtime import integration, live, release, security
+from msa.runtime.artifacts import PLAN_FILE
 from msa.runtime.context import RunContext
 from msa.runtime.intake import (
     AdmissionExecutor,
@@ -585,6 +587,55 @@ def test_a_run_whose_gates_never_failed_has_no_history_section(run: RunContext) 
     assert isinstance(_verify(run, tree), ReleaseVerified)
     pr = (run.files.directory / release.PR_FILE).read_text(encoding="utf-8")
     assert "## Caught along the way" not in pr
+
+
+def _planned(run: RunContext, risks: list[str]) -> None:
+    plan = Plan(
+        summary="Add farewell next to greet.",
+        steps=[PlanStep(description="Add farewell(name).", files=["src/farewell.py"])],
+        acceptance_criteria=['farewell("ada") returns "ada"'],
+        risks=risks,
+    )
+    run.files.write(PLAN_FILE, plan.model_dump_json(indent=2))
+
+
+def test_the_pr_names_the_risks_the_plan_named_for_the_person_who_approves(
+    run: RunContext,
+) -> None:
+    _with_context(run)
+    _planned(
+        run,
+        [
+            "'Say goodbye properly' is undefined: I read it as returning the name.",
+            "The task names no module\n  for farewell; I chose src/farewell.py.",
+            "   ",  # nothing to judge
+        ],
+    )
+    tree = change(run, {"src/farewell.py": "def farewell(n: str) -> str:\n    return n\n"})
+    _passed_gates(run, tree)
+    assert isinstance(_verify(run, tree), ReleaseVerified)
+    pr = (run.files.directory / release.PR_FILE).read_text(encoding="utf-8")
+    section = pr.split("## Risks the plan named\n\n", 1)[1].split("\n\n## ", 1)[0]
+    assert section.splitlines() == [
+        "The Planner named these before anything was built. No gate checks whether they were "
+        "resolved, so judge each one before you approve.",
+        "",
+        "- 'Say goodbye properly' is undefined: I read it as returning the name.",
+        "- The task names no module for farewell; I chose src/farewell.py.",
+    ]
+    # Read straight after the plan's summary, before the task and the evidence.
+    assert pr.index("## Summary") < pr.index("## Risks the plan named") < pr.index("## Task")
+
+
+def test_a_plan_that_named_no_risk_adds_no_risk_section(run: RunContext) -> None:
+    _with_context(run)
+    _planned(run, [])
+    tree = change(run, {"src/farewell.py": "X = 1\n"})
+    _passed_gates(run, tree)
+    assert isinstance(_verify(run, tree), ReleaseVerified)
+    pr = (run.files.directory / release.PR_FILE).read_text(encoding="utf-8")
+    assert "Add farewell next to greet." in pr  # the plan was read
+    assert "## Risks" not in pr
 
 
 def test_publishing_never_moves_a_branch_that_holds_something_else(run: RunContext) -> None:

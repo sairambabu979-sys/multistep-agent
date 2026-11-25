@@ -12,10 +12,11 @@ a model:
   and the security review each recorded a pass for exactly the tree being released. The
   core already refuses to get here otherwise; the run files must agree with the journal.
 
-Then it writes the pull request: ``pr.md`` (title, description, the evidence of every gate,
-the review, the dependency changes, follow-ups, how to approve) and the bundle (the same,
-as JSON, with the patch), stored as an artifact. ``ReleaseVerified`` names the bundle and a
-person is asked. No agent can approve: the core refuses any ``agent:`` principal.
+Then it writes the pull request: ``pr.md`` (title, description, the risks the plan named,
+the evidence of every gate, the review, the dependency changes, follow-ups, how to approve)
+and the bundle (the same, as JSON, with the patch), stored as an artifact.
+``ReleaseVerified`` names the bundle and a person is asked. No agent can approve: the core
+refuses any ``agent:`` principal.
 
 ``publish_release`` runs only after a person approved. It commits the tree onto the base
 commit, with the description as its message and ``Approved-by:`` naming the person, to a
@@ -154,6 +155,25 @@ def revision_lines(files: RunFiles) -> list[str]:
     ]
 
 
+def risk_lines(plan: Plan | None) -> list[str]:
+    """The risks the Planner named, for the person who approves. The Planner never refuses:
+    an ambiguity it could not settle, or something it could not do, is recorded here
+    instead (planner.md). No gate checks them, so without this section the approver would
+    never see a doubt the run itself raised."""
+    risks = [" ".join(risk.split()) for risk in (plan.risks if plan else []) if risk.strip()]
+    if not risks:
+        return []
+    return [
+        "## Risks the plan named",
+        "",
+        "The Planner named these before anything was built. No gate checks whether they "
+        "were resolved, so judge each one before you approve.",
+        "",
+        *(f"- {risk}" for risk in risks),
+        "",
+    ]
+
+
 def history_rows(files: RunFiles) -> list[str]:
     """Every gate failure in this run, in the order it happened, whichever tree it was on:
     what the gates caught on the way to the tree delivered here."""
@@ -279,7 +299,8 @@ class ReleaseExecutor:
     ) -> str:
         ctx = self.context
         stored = ctx.files.read(PLAN_FILE)
-        summary = Plan.model_validate_json(stored).summary.strip() if stored else "(no plan)"
+        plan = Plan.model_validate_json(stored) if stored else None
+        summary = plan.summary.strip() if plan else "(no plan)"
         review, deferred = _review_lines(ctx.files)
         history = history_rows(ctx.files)
         manifests = [p for p in changed if security.is_manifest(p)]
@@ -289,6 +310,7 @@ class ReleaseExecutor:
             summary,
             "",
             *revision_lines(ctx.files),
+            *risk_lines(plan),
             "## Task",
             "",
             *(f"> {line}" if line else ">" for line in ctx.task.strip().splitlines()),

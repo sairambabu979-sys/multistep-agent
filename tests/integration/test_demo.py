@@ -520,6 +520,9 @@ def test_the_definition_of_done_run(harness: Harness) -> None:
     assert "half updated: accepted in negotiation" in pr
     # The summary is the plan's; the four revisions after it say what the code became.
     assert "That is the plan's approach. The code changed in 4 revision(s) since:" in pr
+    # The risk the Planner named reaches the person who approves.
+    assert "## Risks the plan named" in pr
+    assert "- A delivery note with a malformed line." in pr
 
     if os.environ.get("MSA_UPDATE_DEMO") == "1":
         _export(harness, pr, timeline_lines)

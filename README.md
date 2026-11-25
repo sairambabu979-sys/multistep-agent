@@ -236,8 +236,10 @@ uv run msa run --repo path/to/repo --task "Add a --verbose flag to the CLI"
 
 The checkout is never modified. The work happens in git worktrees under `.msa/worktrees/`.
 When every gate has passed, the run writes the pull request to `.msa/runs/<run>/pr.md`
-(with `patch.diff` beside it) and waits for you. Approve it, and it is committed onto the
-base commit as the branch `aegis/<run>`, with `Approved-by:` naming you. Nothing is pushed:
+(with `patch.diff` beside it) and waits for you. It lists any risks the Planner named, such
+as an ambiguity in the task it had to resolve by guessing: no gate checks those, so you are
+the one who judges them. Approve it, and it is committed onto the base commit as the
+branch `aegis/<run>`, with `Approved-by:` naming you. Nothing is pushed:
 
 ```bash
 uv run msa approve <run>
