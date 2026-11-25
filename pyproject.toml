@@ -196,7 +196,7 @@ only_mutate = ["src/msa/core/*"]
 also_copy = [  # read by the selected tests
   "scripts/", "docs/", "schemas/", "msa.toml",
   ".github/workflows/", ".github/live-run/",  # tests/unit/test_live_run_workflow.py
-  "evals/decision.toml",  # tests/unit/test_eval_report.py
+  "evals/",  # tests/unit/test_eval_report.py reads evals/decision.toml
 ]
 pytest_add_cli_args = ["-p", "no:cacheprovider", "-q"]
 pytest_add_cli_args_test_selection = [

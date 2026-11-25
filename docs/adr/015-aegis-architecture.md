@@ -139,7 +139,8 @@ from the terminal and another from the browser.
 - **FINAL_VERIFICATION** rebuilds the patch and checks it again (non-empty, every path one
   the Coder or the Tester may write, no secret), and requires each gate's own record to
   name the exact tree, so the run files must agree with the journal. Then it writes
-  `pr.md` and the bundle.
+  `pr.md` and the bundle. `pr.md` lists the risks the Planner named, since no gate checks
+  them and the person approving is the only one left who can.
 - **Publishing** commits the tree onto the base commit as `<branch_prefix><run>`, with
   `Approved-by:` naming the person. It never pushes, never moves an existing branch that
   holds anything else, and reuses its own commit when it runs again after a crash.
