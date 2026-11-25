@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import tomllib
 from pathlib import Path
 
 import pytest
 
 from scripts.mutation_gate import main, problems, score
+from tests.support.scripts import ROOT
 
 CLEAN = {"killed": 1067, "timeout": 3, "survived": 0, "total": 1070, "skipped": 0}
 
@@ -44,3 +46,15 @@ def test_score_counts_timeouts_as_detected_and_ignores_skipped() -> None:
 def test_missing_stats_fail_with_a_hint(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["--stats", str(tmp_path / "absent.json")]) == 1
     assert "mutmut export-cicd-stats" in capsys.readouterr().err
+
+
+def test_every_path_mutmut_copies_exists_and_no_copied_file_is_below_the_root() -> None:
+    """mutmut copies a file in ``also_copy`` with ``shutil.copy2`` into ``mutants/``, which
+    creates no parent directory: a file below the root (``evals/decision.toml``) crashes the
+    whole mutation run before a mutant is tested. A directory is copied whole, parents and
+    all, so list the directory instead."""
+    also_copy = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"][
+        "mutmut"
+    ]["also_copy"]
+    assert [p for p in also_copy if not (ROOT / p).exists()] == []
+    assert [p for p in also_copy if (ROOT / p).is_file() and Path(p).parent != Path(".")] == []
