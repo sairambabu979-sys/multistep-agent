@@ -1,0 +1,6 @@
+kind = "feature"
+repo = "textkit"
+expect = "resolve"
+task = '''
+Add word_frequencies(text, top=None) to textkit, exported from the package: (word, count) pairs for the words in text, most frequent first, ties in alphabetical order. A word is a run of letters, digits and apostrophes, compared case-insensitively and reported in lowercase. With top, return at most that many pairs.
+'''

@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import getpass
+import subprocess
+import sys
+import tempfile
 import uuid
 from collections.abc import Awaitable, Callable, Coroutine
 from pathlib import Path
@@ -56,6 +59,10 @@ from msa.core.graph import analyze, render_markdown
 from msa.core.ids import Digest, FindingId, RunId
 from msa.core.transitions import TABLE
 from msa.core.values import Escalation, Limits, Phase, PlanGate, Resolution, Verdict
+from msa.evals import corpus as eval_corpus
+from msa.evals import report as eval_report
+from msa.evals import runner as eval_runner
+from msa.evals import validity as eval_validity
 from msa.llm.anthropic_client import AnthropicMessages
 from msa.llm.cassette import CassetteClient, CassetteMiss
 from msa.llm.client import MessagesClient
@@ -102,6 +109,9 @@ prefs_app = typer.Typer(no_args_is_help=True, help="Inspect, check and change co
 skills_app = typer.Typer(no_args_is_help=True, help="Manage versioned skills for the roles.")
 tokens_app = typer.Typer(no_args_is_help=True, help="Issue and revoke API tokens.")
 policy_app = typer.Typer(no_args_is_help=True, help="Show the security policy.")
+eval_app = typer.Typer(
+    no_args_is_help=True, help="Measure each part of the system on the task corpus."
+)
 app.add_typer(fsm_app, name="fsm")
 app.add_typer(config_app, name="config")
 app.add_typer(llm_app, name="llm")
@@ -109,6 +119,7 @@ app.add_typer(prefs_app, name="prefs")
 app.add_typer(skills_app, name="skills")
 app.add_typer(tokens_app, name="tokens")
 app.add_typer(policy_app, name="policy")
+app.add_typer(eval_app, name="eval")
 
 Db = Annotated[
     Path | None,
@@ -1557,6 +1568,148 @@ def replay(ctx: typer.Context, run_id: Run, db: Db = None) -> None:
         f"ok: {result.events} events replay deterministically; "
         f"{result.snapshots_checked} snapshot(s) match"
     )
+
+
+# ---------- msa eval (PLAN §11)
+
+CorpusDir = Annotated[
+    Path,
+    typer.Option("--corpus", help="The corpus: repos/, tasks/ and decision.toml.", file_okay=False),
+]
+TaskIds = Annotated[
+    list[str] | None, typer.Option("--task", help="Only this task (repeatable) [default: all].")
+]
+
+
+def _eval_sandbox(sandbox: SandboxConfig) -> SandboxConfig:
+    """The corpus repositories have no environment of their own: their tools (pytest, ruff,
+    mypy) run with this interpreter, as the live runs do on their fixture."""
+    return sandbox.model_copy(update={"launcher": (sys.executable, "-m")})
+
+
+def _eval_tasks(corpus: Path, task: list[str] | None) -> list[eval_corpus.Task]:
+    try:
+        return eval_corpus.load(corpus, frozenset(task or ()))
+    except eval_corpus.CorpusError as exc:
+        raise _fail(str(exc)) from exc
+
+
+@eval_app.command(name="check")
+def eval_check(
+    ctx: typer.Context,
+    corpus: CorpusDir = Path("evals"),
+    task: TaskIds = None,
+    parallel: Annotated[int, typer.Option(min=1, help="Tasks checked at once.")] = 4,
+) -> None:
+    """Check that every task is fit to score, spending nothing: on the base repository and
+    with the reference, the gates and the visible tests pass; the hidden tests fail on the
+    base and all pass with the reference."""
+    settings = _settings(ctx)
+    sandbox = _eval_sandbox(settings.sandbox if settings else SandboxConfig())
+    tasks = _eval_tasks(corpus, task)
+    with tempfile.TemporaryDirectory(prefix="msa-eval-check-") as tmp:
+        found = asyncio.run(eval_validity.check_all(tasks, Path(tmp), sandbox, parallel=parallel))
+    for task_id, problems in found.items():
+        typer.echo(f"{'ok ' if not problems else 'BAD'} {task_id}")
+        for problem in problems:
+            typer.echo(f"    {problem}")
+    unfit = [t for t, problems in found.items() if problems]
+    typer.echo(f"{len(found) - len(unfit)} of {len(found)} task(s) fit to score")
+    if unfit:
+        raise typer.Exit(code=1)
+
+
+@eval_app.command(name="run")
+def eval_run(
+    ctx: typer.Context,
+    max_total_usd: Annotated[
+        float,
+        typer.Option(
+            min=0.01, help="Start no run once this much is spent in total (required: it spends)."
+        ),
+    ],
+    corpus: CorpusDir = Path("evals"),
+    task: TaskIds = None,
+    arm: Annotated[
+        list[str] | None, typer.Option("--arm", help="An arm to run (repeatable) [default: B, D].")
+    ] = None,
+    out: Annotated[
+        Path, typer.Option(help="Results directory; a rerun resumes it.", file_okay=False)
+    ] = Path(".msa/evals"),
+    budget_usd: Annotated[
+        float | None, typer.Option(min=0.000001, help="Per run [default: msa.toml].")
+    ] = None,
+    repeats: Annotated[int, typer.Option(min=1, help="Runs per (task, arm).")] = 1,
+) -> None:
+    """Run the corpus through the system with the real model, one live run per (task, arm),
+    and score each delivered tree with the task's hidden tests. It spends: every run is
+    capped by --budget-usd, and no run starts once --max-total-usd is spent."""
+    settings = _settings(ctx)
+    if settings is None:
+        raise _fail("msa eval run needs msa.toml: model ids and prices live there")
+    settings = settings.model_copy(update={"sandbox": _eval_sandbox(settings.sandbox)})
+    tasks = _eval_tasks(corpus, task)
+    arms = arm or ["B", "D"]
+    per_run = budget_usd or settings.limits.budget_usd
+    try:
+        for name in arms:
+            eval_runner.arm_config(settings, name, per_run)
+    except eval_runner.ArmUnavailable as exc:
+        raise _fail(str(exc)) from exc
+    planned = len(tasks) * len(arms) * repeats
+    typer.echo(
+        f"{planned} run(s), each capped at ${per_run:.2f} (one that errors is tried once "
+        f"more); no run starts once ${max_total_usd:.2f} is spent. "
+        f"Results: {out / eval_runner.RESULTS}"
+    )
+
+    def shown(r: eval_runner.Result) -> None:
+        mark = "error" if r.error else "-" if r.resolved is None else "✓" if r.resolved else "✗"
+        typer.echo(f"{mark:>5}  {r.task}  arm {r.arm}  ${r.spend_usd:.2f}  {r.phase}")
+
+    asyncio.run(
+        eval_runner.run_all(
+            tasks,
+            arms,
+            settings,
+            out,
+            _client,
+            budget_usd=per_run,
+            max_total_usd=max_total_usd,
+            repeats=repeats,
+            on_result=shown,
+        )
+    )
+    typer.echo(f"report: msa eval report {out}")
+
+
+@eval_app.command(name="report")
+def eval_report_command(
+    results: Annotated[
+        Path, typer.Argument(help="The results directory of msa eval run.", file_okay=False)
+    ],
+    corpus: CorpusDir = Path("evals"),
+    output: Annotated[
+        Path | None, typer.Option(help="Write the report here instead of printing it.")
+    ] = None,
+) -> None:
+    """What each arm achieved, and what the registered decision rule (decision.toml) says."""
+    found = eval_runner.read_results(results / eval_runner.RESULTS)
+    if not found:
+        raise _fail(f"no results in {results / eval_runner.RESULTS}")
+    rule_file = corpus / "decision.toml"
+    commit = subprocess.run(
+        ["git", "log", "-1", "--format=%h %cs", "--", str(rule_file)],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+    text = eval_report.render(found, eval_report.load_rules(rule_file), commit or None)
+    if output is None:
+        typer.echo(text, nl=False)
+    else:
+        output.write_text(text, encoding="utf-8")
+        typer.echo(f"report: {output}")
 
 
 def main() -> None:

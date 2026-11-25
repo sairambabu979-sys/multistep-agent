@@ -1,0 +1,6 @@
+kind = "feature"
+repo = "configlib"
+expect = "resolve"
+task = '''
+Add get(config, path, default) to configlib, exported from the package: get(config, 'db.port') returns config['db']['port']. When the section or the key is missing, return default if one was given (None counts as a given default), and otherwise raise KeyError with the whole dotted path in its message. A path must contain exactly one dot, or get raises ValueError.
+'''

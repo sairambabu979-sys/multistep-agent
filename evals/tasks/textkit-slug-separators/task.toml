@@ -1,0 +1,6 @@
+kind = "bugfix"
+repo = "textkit"
+expect = "resolve"
+task = '''
+slugify leaves separators at the ends and doubles them: slugify('Hello, World!') returns 'hello-world-', and slugify(' -Already slugged- ') returns '-already-slugged-'. A slug must never start or end with the separator, never contain it twice in a row, and be empty when the text has no letters or digits. This must hold for any separator.
+'''

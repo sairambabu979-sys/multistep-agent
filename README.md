@@ -514,6 +514,63 @@ uv run msa policy show
 | Live crash | The `live run` workflow SIGKILLs the real-model run's whole process tree once its journal reaches a given seq, then resumes it with `msa resume`. Its summary fails the job if any effect the journal had answered before the kill started again, model call or not: every effect start is logged durably before it runs (`effects.jsonl`). It lists the turns the resumed invocations replayed instead of buying them again. The same kill, from outside, lands while the unit-test stage's pytest runs in the sandbox, and the resumed run completes (`tests/integration/test_crash_mid_command.py`). A kill that missed the sandboxed pytest was shown to fail that test. |
 | Contracts | Core purity (AST allowlist), schema completeness, `docs/fsm.md` freshness, layering (`import-linter`), only `msa.llm` imports the SDK, no credential in any cassette |
 
+## The eval (PLAN §11)
+
+Every part of the system has to earn its cost on an eval. A part that doesn't gets turned
+off by default. `evals/` holds the corpus:
+- **Tasks:** 20 hand-built ones on four small base repositories (8 bug fixes, 6 features,
+  4 refactors, and 2 traps: an ambiguous spec and a task that cannot be done offline).
+- **Hidden tests:** each task to resolve has tests the agents never see.
+- **Reference solutions:** each also has a solution laid over its base repository.
+- **The rule:** `evals/decision.toml` is the decision rule, registered before the first
+  paid run.
+
+```bash
+uv run msa eval check                      # every task is fit to score; spends nothing
+uv run msa eval run --repeats 3 --max-total-usd 120  # arms B and D, 3 times, real model
+uv run msa eval report .msa/evals          # the metrics, and what the rule decides
+```
+
+- **What check proves.** A task is fit to score only if, on its base repository and with
+  its reference:
+  - the static gate (ruff, ruff format and mypy, with the system's own command lines)
+    passes;
+  - the repository's visible tests pass;
+  - the hidden tests fail on the base, and all pass with the reference.
+
+  All 20 are fit. Tests show the check failing a task with nothing to do, a reference that
+  resolves nothing, and a reference the gate rejects.
+- **How run scores.** Each (task, arm) is one live run on a fresh copy of the base
+  repository, with the same interpreter as `msa run`. It escalates to the Arbiter, since
+  nobody is there. A run that reaches HUMAN_APPROVAL has delivered. Its tree is exported and
+  scored by the hidden tests in the sandbox, without network. So a change the run's own
+  gates accepted can still be delivered and not resolved, which a test shows with a fix that
+  passes the Tester's test but not the hidden ones.
+- **Resuming, retries and caps.** Results are appended to `results.jsonl` as each run
+  finishes, so a rerun resumes without paying twice. A run that raises (the harness, the
+  model client or the scoring broke) is recorded as an error, not evidence, and tried once
+  more, so one broken run doesn't leave an arm short of the 54 results the rule needs. Its
+  spend, from its model calls' records, stays in the results and counts against
+  `--max-total-usd`, which stops new runs once that much is spent.
+- **Arms.** B is every stage, with the Reviewer as a pass-through stand-in. D is the full
+  system. A (no Tester) and C (the author must accept every finding) are refused for now:
+  A needs the unit-test stage to accept a run without acceptance tests, and C needs a
+  negotiation that cannot dispute.
+- **What report measures.**
+  - Per arm: resolve rate (overall and by kind), cost per resolved task, wall clock,
+    revisions, negotiation rounds, a false-blocker proxy, PLAN §4's degenerate-negotiation
+    flags, and the cache hit rate.
+  - The decision: it applies `decision.toml`. Arm D stays enabled only if it gains 10
+    points of resolve rate, a one-sided exact paired test (McNemar) gives p ≤ 0.05, and it
+    costs no more than twice as much per resolved task, over 54 results per arm (every task
+    three times). On one pass of 18 tasks, no gain under 28 points could pass the test.
+  - For a person: whether each trap's plan named the real problem, and the findings the
+    system acted on, so reviewer precision can be judged.
+- **The workflow.** The `eval` workflow runs it on demand, with a cap per run and on the
+  whole eval, after `msa eval check`.
+
+No paid eval has run yet.
+
 ## Develop
 
 ```bash

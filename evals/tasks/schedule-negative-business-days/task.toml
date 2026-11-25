@@ -1,0 +1,6 @@
+kind = "bugfix"
+repo = "schedule"
+expect = "resolve"
+task = '''
+add_business_days(day, count) should go back in time for a negative count, as its docstring says, but it always moves forward: add_business_days(date(2026, 1, 5), -1), from a Monday, gives Tuesday 6 January instead of Friday 2 January. Fix it.
+'''

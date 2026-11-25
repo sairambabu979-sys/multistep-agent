@@ -1,0 +1,6 @@
+kind = "bugfix"
+repo = "schedule"
+expect = "resolve"
+task = '''
+format_duration gives nonsense for negative durations: format_duration(timedelta(seconds=-90)) returns '-1h58m30s'. A negative duration must format as '-' followed by the format of its absolute value, so -90 seconds is '-1m30s'. Positive durations and zero must format as they do now.
+'''

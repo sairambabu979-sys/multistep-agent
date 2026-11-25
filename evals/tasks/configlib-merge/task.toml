@@ -1,0 +1,6 @@
+kind = "refactor"
+repo = "configlib"
+expect = "resolve"
+task = '''
+layered() and with_env() each copy and update nested dicts by hand. Add merge(base, override) in a new module configlib/merge.py: a new Config in which every section of override is merged key by key over base, changing neither argument. Make both layered() and with_env() use it. Behaviour must not change.
+'''

@@ -1,0 +1,6 @@
+kind = "bugfix"
+repo = "textkit"
+expect = "resolve"
+task = '''
+wrap drops the last line of its text: wrap('the quick brown fox', 10) returns ['the quick'] instead of ['the quick', 'brown fox'], and wrap('hello', 10) returns []. Fix it. Lines must still hold at most width characters, words stay whole, and a word longer than width gets a line of its own.
+'''

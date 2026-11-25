@@ -1,0 +1,6 @@
+kind = "feature"
+repo = "schedule"
+expect = "resolve"
+task = '''
+Add schedule.recurrence.weekly(start, until, weekdays): every date from start to until inclusive whose weekday (numbered as date.weekday() numbers it, Monday = 0) is in weekdays, in order. An empty range gives an empty list, and weekdays may be any collection of ints. Export weekly from the package.
+'''
