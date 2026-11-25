@@ -24,6 +24,20 @@ by [git-cliff](https://git-cliff.org). Regenerate with `make changelog`; do not 
 - **runtime:** review, negotiation and the arbitration ladder; msa approve and msa rule (M8) ([`519186b`](https://github.com/sairambabu979-sys/multistep-agent/commit/519186b6ddeba6fce1d12700383cf91279bc7a11))
 - **core:** rebuild the state machine on the twenty AEGIS phases ([`dd35f40`](https://github.com/sairambabu979-sys/multistep-agent/commit/dd35f402bcbdb58ff23681fd3e0ca238d59da6ab))
 - **runtime:** executors for admission, context, integration, security, release ([`ed140ca`](https://github.com/sairambabu979-sys/multistep-agent/commit/ed140caf368cf7336924de438afa1df4383bef2c))
+- **skills:** a versioned skills registry and a security policy above preferences ([`83afb29`](https://github.com/sairambabu979-sys/multistep-agent/commit/83afb2911302c1f249d816f40dd6383f2573d09a))
+- **service:** an HTTP API with roles, a live event stream, an audit log and traces ([`0223721`](https://github.com/sairambabu979-sys/multistep-agent/commit/0223721ffa9d4ff656bdd8871c6c7201c301829e))
+- **web:** the AEGIS workbench over the HTTP API ([`3a797c6`](https://github.com/sairambabu979-sys/multistep-agent/commit/3a797c6b3a2a94d470fa50b37048d1052cdc64a9))
+- **tools:** agent commands run without network where the kernel allows ([`9686066`](https://github.com/sairambabu979-sys/multistep-agent/commit/9686066cc21122faa9f4ea85e669081515bbe850))
+- **release:** PR titles in the task's own words, and what the gates caught ([`ac53646`](https://github.com/sairambabu979-sys/multistep-agent/commit/ac53646a4fbd487f3b66163666efdf130bf4e058))
+- **runtime:** a PostgreSQL journal beside SQLite ([`d32a98b`](https://github.com/sairambabu979-sys/multistep-agent/commit/d32a98b9a178dd578d8258c7103104c787bcf960))
+- **runtime:** drive runs with Temporal ([`652eb68`](https://github.com/sairambabu979-sys/multistep-agent/commit/652eb6806181615a2da55dabad79570c5f1f8814))
+- **service:** run, answer and serve runs on Temporal ([`a8ad14e`](https://github.com/sairambabu979-sys/multistep-agent/commit/a8ad14e52b4342773452e4dc6eefc4d528cf6eee))
+- **evals:** a 20-task corpus with hidden tests, and a check that every task is fair ([`7d106ac`](https://github.com/sairambabu979-sys/multistep-agent/commit/7d106ac5031919916208a820e7b98703040179d9))
+- **evals:** run the corpus through arms B and D and score by hidden tests ([`2202092`](https://github.com/sairambabu979-sys/multistep-agent/commit/220209259e65319922bf6368f999631582c2b193))
+- **evals:** the report, a pre-registered decision rule, msa eval, and a manual workflow ([`f79cb3a`](https://github.com/sairambabu979-sys/multistep-agent/commit/f79cb3af40d384b2e5f4f8bbe81b88d93492b4d6))
+- **evals:** the decision rule also requires the paired test, over three repeats ([`cbacf5b`](https://github.com/sairambabu979-sys/multistep-agent/commit/cbacf5b554ecfdf0f8e743c913a2a438012961fa))
+- **evals:** try a run that errors once more, and keep what it spent ([`42c95d7`](https://github.com/sairambabu979-sys/multistep-agent/commit/42c95d73a1f36ea6c588e0dbb85d527aa6934d94))
+- **release:** the PR names the risks the plan named, for the person who approves ([`9b25891`](https://github.com/sairambabu979-sys/multistep-agent/commit/9b258912d8e1c2ea7f9856abb7e338ee5257110b))
 
 ### Bug fixes
 
@@ -40,6 +54,18 @@ by [git-cliff](https://git-cliff.org). Regenerate with `make changelog`; do not 
 - **runtime:** keep pytest from collecting TesterExecutor as a test class ([`d71bfc4`](https://github.com/sairambabu979-sys/multistep-agent/commit/d71bfc48544d9a2af046532a5d029a7fdc03650e))
 - **runtime:** only acceptance tests that ran count, on the delivered tree (ADR-013) ([`d956d7c`](https://github.com/sairambabu979-sys/multistep-agent/commit/d956d7c1e7123b75ac4bd15e0ecbbebee0688c68))
 - **core:** a run waiting on a person never expires while it waits ([`a100d68`](https://github.com/sairambabu979-sys/multistep-agent/commit/a100d68c98f9e7c0a31ed7bf47eb0adc49ab9960))
+- **live-run:** say what the crash actually killed, and record live-2 ([`1f689de`](https://github.com/sairambabu979-sys/multistep-agent/commit/1f689de757538b03b1a6b56bb2c8d88e45658e15))
+- **test:** a process reaped mid-read is gone, not an error ([`7771138`](https://github.com/sairambabu979-sys/multistep-agent/commit/7771138b6649ef287f03b546e31b498309a83176))
+- **live-run:** a release nobody approved reports nothing, and record live-3 ([`b30478e`](https://github.com/sairambabu979-sys/multistep-agent/commit/b30478eb9d7277dd9565a9208a32aaa24fdddb93))
+- **live-run:** log every effect start, and count only a real kill as a crash ([`2fe9e73`](https://github.com/sairambabu979-sys/multistep-agent/commit/2fe9e73a3e43f73df5904181686b40b4d22eb4b5))
+- **runtime:** a record after a torn line starts its own line ([`7e23252`](https://github.com/sairambabu979-sys/multistep-agent/commit/7e232524e55e2cd061f76134cb986e86b345d4c3))
+- **live-run:** a release waiting for its reviewer no longer holds up the next run ([`add71eb`](https://github.com/sairambabu979-sys/multistep-agent/commit/add71ebb74b1a72440a19cc71d70db9e7b044a9f))
+- **live-run:** the spending job's queue gets a name no old run holds ([`0634ea9`](https://github.com/sairambabu979-sys/multistep-agent/commit/0634ea97f7cf2ac786512efdfca219afd6092b7e))
+- **release:** the PR says what settled each finding, never a negotiation it didn't have ([`bb48408`](https://github.com/sairambabu979-sys/multistep-agent/commit/bb48408df52802bfae62595eef251aba3689ef9d))
+- **ci:** mutmut copies the workflow files the live-run workflow tests read ([`ed3de30`](https://github.com/sairambabu979-sys/multistep-agent/commit/ed3de303d779bbf561c4798de135e8b70c2b179b))
+- **release:** a revised run's PR says its summary is the plan's, and lists each revision ([`8c2d470`](https://github.com/sairambabu979-sys/multistep-agent/commit/8c2d4700b3de2c45593ac719b6672462478b1336))
+- **test:** the parked-run Temporal test waits for the park it asserts on ([`f2fd34d`](https://github.com/sairambabu979-sys/multistep-agent/commit/f2fd34dedfccbe6e2e25dac2c9e747bc2049c675))
+- **ci:** mutmut copies evals/ whole, so the nightly mutation run starts ([`6a7cd58`](https://github.com/sairambabu979-sys/multistep-agent/commit/6a7cd580e0f87cc7ef4d11a3600dd78127356c81))
 
 ### Refactoring
 
@@ -65,6 +91,17 @@ by [git-cliff](https://git-cliff.org). Regenerate with `make changelog`; do not 
 - ADR-014 for review and negotiation, and M8 status in PLAN and README ([`e066fd9`](https://github.com/sairambabu979-sys/multistep-agent/commit/e066fd95b630d0f9b38c1902960e1bfb7796480b))
 - **changelog:** regenerate for M8 ([`60925bc`](https://github.com/sairambabu979-sys/multistep-agent/commit/60925bc8359f506b1fba9e3062d2089776491450))
 - the AEGIS workflow in the README, ADR-015 verification, PLAN name map ([`e63c227`](https://github.com/sairambabu979-sys/multistep-agent/commit/e63c2275236e85eb513a33fb189a826050c2b9e5))
+- **changelog:** regenerate for the AEGIS core and stages ([`09597de`](https://github.com/sairambabu979-sys/multistep-agent/commit/09597def4cf460774de033b1c624b0115a52d9ab))
+- **adr:** ADR-017, PostgreSQL storage and Temporal orchestration ([`d4841ec`](https://github.com/sairambabu979-sys/multistep-agent/commit/d4841ec083c4ab922ef5a098eecaceb077e24091))
+- live-3 released by a person and completed ([`f868d3c`](https://github.com/sairambabu979-sys/multistep-agent/commit/f868d3cb6d36e51283b6797ce232c71cbb97140d))
+- live-4, the first crash checked against every effect start ([`af6d7c8`](https://github.com/sairambabu979-sys/multistep-agent/commit/af6d7c8b5152fc0fe57376f98206404af26f3694))
+- live-7, a planted defect caught and fixed by the real roles ([`743acc2`](https://github.com/sairambabu979-sys/multistep-agent/commit/743acc21a2c5c1aa5d653338d7b3606e67cef812))
+- live-8, the scale defect caught by tests too, and why review never negotiates ([`c9d0532`](https://github.com/sairambabu979-sys/multistep-agent/commit/c9d05320609ea6d609e194771e9913dc5669df53))
+- **live-run:** the scale seed's docstring says what live-8 showed ([`7a8bd19`](https://github.com/sairambabu979-sys/multistep-agent/commit/7a8bd19053d3ea54d0ab7f953f27c3c0323a2f64))
+- live-9, the first negotiation with the real model ([`23e8ba1`](https://github.com/sairambabu979-sys/multistep-agent/commit/23e8ba1b5406e2072f26f09fb1397deeb56c0aaa))
+- live-10, the repro test and the Arbiter with the real model ([`eed7ad3`](https://github.com/sairambabu979-sys/multistep-agent/commit/eed7ad3a5743ae05821e79cf9ed7b908e3ae10c6))
+- live-11, a true finding upheld by the repro test and fixed ([`ae9112e`](https://github.com/sairambabu979-sys/multistep-agent/commit/ae9112e4ce1581ed496dd8b673aed4641fe33105))
+- live-11's release was approved by a person and published ([`5e76378`](https://github.com/sairambabu979-sys/multistep-agent/commit/5e76378ab64aad4884b5048bbfd8e814e3207fc4))
 
 ### Tests
 
@@ -73,6 +110,11 @@ by [git-cliff](https://git-cliff.org). Regenerate with `make changelog`; do not 
 - **tools:** expect the requested file in permission errors ([`e16e5db`](https://github.com/sairambabu979-sys/multistep-agent/commit/e16e5dbeb26663dd42f6fb43e4ecfd2a2041b61a))
 - **chaos:** race the symlink swap from its own process, not a thread ([`f57ac8c`](https://github.com/sairambabu979-sys/multistep-agent/commit/f57ac8c5391ded662b6486aa77d757c18c23ce79))
 - AEGIS stages on real worktrees and the human gates on the CLI ([`34542d5`](https://github.com/sairambabu979-sys/multistep-agent/commit/34542d5e8a2331ef5a930dd95006a62be49d2e46))
+- **demo:** the definition-of-done run, with seeded bugs and a real crash ([`cf67102`](https://github.com/sairambabu979-sys/multistep-agent/commit/cf67102182e96e1f0d8a5407ae2629649df4fb41))
+- **temporal:** worker loss on the real dev server ([`cb4e35e`](https://github.com/sairambabu979-sys/multistep-agent/commit/cb4e35eb77509ca89bb3a4071dddc2a9f2290bd6))
+- **control:** the Deferred ledger validates and holds, never journals ([`ad02b40`](https://github.com/sairambabu979-sys/multistep-agent/commit/ad02b4005b920ab45fd46cfc5825b4724088d61c))
+- SIGKILL a run while its sandboxed pytest runs, then resume it ([`730b4ea`](https://github.com/sairambabu979-sys/multistep-agent/commit/730b4eac5e7eba2f488fd4d65d8f711dbc504af0))
+- **evals:** read the eval CLI's usage error without its colour codes ([`2448ad6`](https://github.com/sairambabu979-sys/multistep-agent/commit/2448ad6e1bc21d45027f051d00f9b03853fcb581))
 
 ### Build and tooling
 
@@ -80,4 +122,16 @@ by [git-cliff](https://git-cliff.org). Regenerate with `make changelog`; do not 
 - conventional-commit subject check ([`3d83448`](https://github.com/sairambabu979-sys/multistep-agent/commit/3d834486043f2cbf895d9470a46b81ed1021d9ac))
 - wire mutation testing, changelog, config and commit checks ([`3480a03`](https://github.com/sairambabu979-sys/multistep-agent/commit/3480a03907883887a904de489dc1da8c2f089753))
 - generate CHANGELOG.md, keeping subjects as written ([`72f8a37`](https://github.com/sairambabu979-sys/multistep-agent/commit/72f8a370c1869229cdfe13054010e6194b5d61fa))
+- audit the locked Python dependencies for known vulnerabilities ([`70da8bb`](https://github.com/sairambabu979-sys/multistep-agent/commit/70da8bba4c98d3f299c36549f6e951d6828cfa32))
+- a manual live run of the agents, stopped at the human gate ([`4b6b249`](https://github.com/sairambabu979-sys/multistep-agent/commit/4b6b249950df9b3327653a42123b3ae248b4d232))
+- require network isolation, and crash the live run to resume it ([`6aea6ae`](https://github.com/sairambabu979-sys/multistep-agent/commit/6aea6ae284d4c4ff82c8515f6261dbe19ce05e17))
+- **live-run:** a release job behind a person's approval, and a round-trip task ([`9a96834`](https://github.com/sairambabu979-sys/multistep-agent/commit/9a9683407f504017cfae509e0a79014ca55bafae))
+- **live-run:** a thread-safety task, where review has room to find something ([`2122b0e`](https://github.com/sairambabu979-sys/multistep-agent/commit/2122b0e9785dfdd193ac5ea1d6c53dec8476ee8b))
+- **live-run:** a seeded run, one planted bug for the real roles to find ([`e5afb00`](https://github.com/sairambabu979-sys/multistep-agent/commit/e5afb0084b629b6258b363931e5ff46b32bfce20))
+- **live-run:** a restock-atomic task, so the seeded bug breaks a stated rule ([`a7b601a`](https://github.com/sairambabu979-sys/multistep-agent/commit/a7b601a587b806274d27b5ef7ccb1bbf4baad437))
+- **live-run:** a scale seed that only a reviewer holding the code to the task can catch ([`7af9d97`](https://github.com/sairambabu979-sys/multistep-agent/commit/7af9d972b3c80a03968f9e0e663e451be1c8660a))
+- **live-run:** seeded=finding, a planted blocking finding the real roles negotiate ([`e1afcaf`](https://github.com/sairambabu979-sys/multistep-agent/commit/e1afcaf3bb6aa0338481e7e61951261003cdfc6c))
+- **live-run:** seeded=dispute, a planted Reviewer that never yields ([`27a87bd`](https://github.com/sairambabu979-sys/multistep-agent/commit/27a87bd055f9041c593ad886755a566ae92e3926))
+- **live-run:** seeded=code-dispute, a planted true finding for the ladder to uphold ([`460f54c`](https://github.com/sairambabu979-sys/multistep-agent/commit/460f54c059539a138cffc0b48a19f3d1eb44de34))
+- run ci and nightly on the actions that moved to Node 24 ([`f89e493`](https://github.com/sairambabu979-sys/multistep-agent/commit/f89e493b1a01f7fe8362a291dd57b0b7969bffa3))
 
