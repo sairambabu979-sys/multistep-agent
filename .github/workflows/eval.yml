@@ -4,8 +4,9 @@ name: eval
 # delivered tree scored by the task's hidden tests. It spends, so it is manual only.
 #
 # Two caps: budget_usd on every run, and max_total_usd on the whole eval (no run starts
-# once that much is spent). A full pass is 20 tasks x 2 arms = 40 runs. The decision rule
-# is evals/decision.toml, registered before the first run; the report applies it.
+# once that much is spent). A full pass is 20 tasks x 2 arms x 3 repeats = 120 runs: the
+# decision rule (evals/decision.toml, registered before the first run; the report applies
+# it) needs 54 results per arm on the 18 tasks to resolve.
 #
 # Arms: B (every stage, no Reviewer) and D (the full system). A and C are not built yet;
 # msa eval run refuses them before spending.
@@ -30,11 +31,11 @@ on:
       max_total_usd:
         description: Hard cap on the whole eval, in US dollars (at most 200)
         required: true
-        default: "40"
+        default: "120"
       repeats:
-        description: Runs per task and arm (1 to 3)
+        description: Runs per task and arm (1 to 3; the decision rule needs 3)
         required: true
-        default: "1"
+        default: "3"
 
 permissions:
   contents: read

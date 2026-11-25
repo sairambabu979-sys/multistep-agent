@@ -13,6 +13,7 @@ RULE = report.Rule(
     with_arm="D",
     without_arm="B",
     min_resolve_gain=0.10,
+    max_p=0.05,
     max_cost_ratio=2.0,
     min_runs=3,
 )
@@ -54,9 +55,18 @@ def finding(fid: str, verdict: str | None, severity: str = "blocker") -> Finding
 
 @pytest.mark.parametrize(
     ("only_with", "only_without", "p"),
-    [(0, 0, 1.0), (5, 0, 0.0625), (6, 0, 0.03125), (0, 6, 0.03125), (3, 3, 1.0), (4, 1, 0.375)],
+    [
+        (0, 0, 1.0),
+        (2, 0, 0.25),
+        (5, 0, 1 / 32),
+        (6, 0, 1 / 64),
+        (0, 6, 1.0),  # one-sided: the component losing every disagreement is no evidence for it
+        (3, 3, 42 / 64),
+        (4, 1, 6 / 32),
+        (12, 4, 2517 / 65536),
+    ],
 )
-def test_the_exact_mcnemar_p_value(only_with: int, only_without: int, p: float) -> None:
+def test_the_one_sided_exact_mcnemar_p_value(only_with: int, only_without: int, p: float) -> None:
     assert report.exact_mcnemar(only_with, only_without) == pytest.approx(p)
 
 
@@ -114,13 +124,23 @@ def test_too_few_runs_decide_nothing() -> None:
     assert d.verdict == "not enough evidence"
 
 
-def test_a_component_that_clears_both_margins_stays_enabled() -> None:
-    results = _arms([True, True, True, False], [True, False, False, False], with_spend=1.5)
+def test_a_component_that_clears_every_margin_stays_enabled() -> None:
+    results = _arms([True] * 6, [True, False, False, False, False, False], with_spend=1.5)
     d = report.decide(RULE, report.summarize(results), results)
     assert d.verdict == "keep it enabled"
+    assert d.gain == pytest.approx(5 / 6)
+    assert d.p_value == pytest.approx(1 / 32)
+    assert d.cost_ratio == pytest.approx((9.0 / 6) / (6.0 / 1))
+    assert d.discordant == (5, 0, 6)
+
+
+def test_a_gain_that_could_be_chance_ships_it_disabled() -> None:
+    # 50 points of resolve rate, cheaply, but on two disagreements: p = 0.25.
+    results = _arms([True, True, True, False], [True, False, False, False])
+    d = report.decide(RULE, report.summarize(results), results)
+    assert d.verdict == "ship it disabled"
     assert d.gain == pytest.approx(0.5)
-    assert d.cost_ratio == pytest.approx((6.0 / 3) / (4.0 / 1))
-    assert d.discordant == (2, 0, 4)
+    assert d.reasons == ["the paired test gives p = 0.250, over 0.05: it could be chance"]
 
 
 def test_too_small_a_gain_ships_it_disabled() -> None:
@@ -140,7 +160,12 @@ def test_too_dear_a_gain_ships_it_disabled() -> None:
 def test_the_registered_rule_loads() -> None:
     (rule,) = report.load_rules(ROOT / "evals" / "decision.toml")
     assert (rule.name, rule.with_arm, rule.without_arm) == ("review", "D", "B")
-    assert (rule.min_resolve_gain, rule.max_cost_ratio, rule.min_runs) == (0.10, 2.0, 18)
+    assert (rule.min_resolve_gain, rule.max_p, rule.max_cost_ratio, rule.min_runs) == (
+        0.10,
+        0.05,
+        2.0,
+        54,
+    )
 
 
 def test_the_report_shows_the_decision_and_what_a_person_must_judge() -> None:
@@ -151,8 +176,9 @@ def test_the_report_shows_the_decision_and_what_a_person_must_judge() -> None:
     ]
     text = report.render(results, [RULE], rule_commit="abc1234 2026-11-24")
     assert "# Eval report" in text
-    assert "**review** (arm D against B): **keep it enabled**." in text
-    assert "exact McNemar p = 0.50 (could well be chance)." in text
+    assert "**review** (arm D against B): **ship it disabled**." in text
+    assert "- the paired test gives p = 0.250, over 0.05: it could be chance." in text
+    assert "exact one-sided McNemar p = 0.250 (could be chance)." in text
     assert "last changed in `abc1234 2026-11-24`" in text
     assert "- `trap`, arm D, delivered: 'properly' is undefined" in text
     assert "- `x` D `c0-1` [blocker, upheld]: claim c0-1" in text

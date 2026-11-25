@@ -527,7 +527,7 @@ off by default. `evals/` holds the corpus:
 
 ```bash
 uv run msa eval check                      # every task is fit to score; spends nothing
-uv run msa eval run --max-total-usd 40     # arms B and D over the corpus, real model
+uv run msa eval run --repeats 3 --max-total-usd 120  # arms B and D, 3 times, real model
 uv run msa eval report .msa/evals          # the metrics, and what the rule decides
 ```
 
@@ -557,9 +557,10 @@ uv run msa eval report .msa/evals          # the metrics, and what the rule deci
   - Per arm: resolve rate (overall and by kind), cost per resolved task, wall clock,
     revisions, negotiation rounds, a false-blocker proxy, PLAN §4's degenerate-negotiation
     flags, and the cache hit rate.
-  - The decision: it applies `decision.toml` (arm D must gain 10 points of resolve rate at
-    no more than twice the cost per resolved task). An exact paired test says whether the
-    gain could be chance: with 20 tasks, it could be unless the arms disagree on about six.
+  - The decision: it applies `decision.toml`. Arm D stays enabled only if it gains 10
+    points of resolve rate, a one-sided exact paired test (McNemar) gives p ≤ 0.05, and it
+    costs no more than twice as much per resolved task, over 54 results per arm (every task
+    three times). On one pass of 18 tasks, no gain under 28 points could pass the test.
   - For a person: whether each trap's plan named the real problem, and the findings the
     system acted on, so reviewer precision can be judged.
 - **The workflow.** The `eval` workflow runs it on demand, with a cap per run and on the

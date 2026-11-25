@@ -17,9 +17,10 @@ Two things need a person: whether a trap's plan named the real problem, and whet
 upheld finding was a real defect (reviewer precision). The report lists both for labelling.
 
 The decision applies ``evals/decision.toml``: the arm with a component must gain at least
-``min_resolve_gain`` of resolve rate at no more than ``max_cost_ratio`` times the cost per
-resolved task, over at least ``min_runs`` results per arm. An exact paired test on the
-tasks where the arms disagree says whether the gain could be chance.
+``min_resolve_gain`` of resolve rate, with a one-sided exact paired test (McNemar's, on the
+tasks where the arms disagree) at ``max_p`` or under, at no more than ``max_cost_ratio``
+times the cost per resolved task, over at least ``min_runs`` results per arm. Anything less
+ships the component disabled: a gain that could be chance has not been shown.
 """
 
 from __future__ import annotations
@@ -47,6 +48,7 @@ class Rule(BaseModel):
     with_arm: str
     without_arm: str
     min_resolve_gain: float
+    max_p: float
     max_cost_ratio: float
     min_runs: int
 
@@ -59,6 +61,7 @@ def load_rules(path: Path) -> list[Rule]:
             with_arm=spec["with"],
             without_arm=spec["without"],
             min_resolve_gain=spec["min_resolve_gain"],
+            max_p=spec["max_p"],
             max_cost_ratio=spec["max_cost_ratio"],
             min_runs=spec["min_runs"],
         )
@@ -172,15 +175,13 @@ def paired(results: Sequence[Result], with_arm: str, without_arm: str) -> tuple[
 
 
 def exact_mcnemar(only_with: int, only_without: int) -> float:
-    """Two-sided exact p-value of McNemar's test: the chance of a split at least this
-    lopsided among the discordant tasks if neither arm were better."""
+    """One-sided exact p-value of McNemar's test that the arm with the component is better:
+    the chance that at least ``only_with`` of the discordant tasks go its way if neither
+    arm were better. One-sided because the rule asks only whether the component helps; one
+    that hurts ships disabled all the same."""
     n = only_with + only_without
-    if n == 0:
-        return 1.0
-    tail = sum(math.comb(n, i) for i in range(min(only_with, only_without) + 1)) / (
-        1 << n
-    )  # int ** int is Any to mypy
-    return min(1.0, 2 * tail)
+    tail = sum(math.comb(n, i) for i in range(only_with, n + 1))
+    return tail / (1 << n)  # 1 << n, not 2 ** n: int ** int is Any to mypy
 
 
 @dataclass(frozen=True)
@@ -220,6 +221,8 @@ def decide(rule: Rule, arms: dict[str, ArmSummary], results: Sequence[Result]) -
         reasons.append(
             f"the resolve rate gained {gain:+.0%}, under the {rule.min_resolve_gain:.0%} margin"
         )
+    if p > rule.max_p:
+        reasons.append(f"the paired test gives p = {p:.3f}, over {rule.max_p}: it could be chance")
     if ratio is None:
         reasons.append("the cost per resolved task cannot be compared (an arm resolved nothing)")
     elif ratio > rule.max_cost_ratio:
@@ -229,7 +232,8 @@ def decide(rule: Rule, arms: dict[str, ArmSummary], results: Sequence[Result]) -
     verdict = "keep it enabled" if not reasons else "ship it disabled"
     if not reasons:
         reasons.append(
-            f"the resolve rate gained {gain:+.0%} at {ratio:.2f}x the cost per resolved task"
+            f"the resolve rate gained {gain:+.0%} (p = {p:.3f}) at {ratio:.2f}x the cost per"
+            " resolved task"
         )
     return Decision(rule, verdict, reasons, gain, ratio, p, discordant)
 
@@ -308,8 +312,8 @@ def render(results: Sequence[Result], rules: Sequence[Rule], rule_commit: str | 
             "",
             *(f"- {reason}." for reason in d.reasons),
             f"- Of {pairs} paired task(s), {only_with} resolved only with it and "
-            f"{only_without} only without it: exact McNemar p = {d.p_value:.2f}"
-            + (" (could well be chance)." if d.p_value >= 0.05 else "."),
+            f"{only_without} only without it: exact one-sided McNemar p = {d.p_value:.3f}"
+            + (" (could be chance)." if d.p_value > rule.max_p else "."),
             "",
         ]
     lines += _per_task(results, list(arms)) + _for_a_person(results)
