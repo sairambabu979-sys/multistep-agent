@@ -88,13 +88,13 @@ def test_an_arms_metrics() -> None:
         ),
         result("c", "D", True, 1.0, cache_read_tokens=300, input_tokens=100),
         result("t", "D", None, 0.5),  # a trap: spent, but not a task to resolve
-        result("e", "D", False, 0.0, error="ValueError: the harness broke"),
+        result("e", "D", False, 0.25, error="ValueError: the harness broke"),
     ]
     (d,) = report.summarize(results).values()
     assert (d.runs, d.errors, d.to_resolve, d.resolved) == (5, 1, 3, 2)
     assert d.resolve_rate == pytest.approx(2 / 3)
     assert d.cost_per_resolved == pytest.approx(4.0 / 2)  # the trap's spend is not counted
-    assert d.spend == pytest.approx(4.5)
+    assert d.spend == pytest.approx(4.75)  # what the errored run spent is still spent
     assert d.blocking == 3  # the nit is not blocking
     assert d.false_blocker_rate == pytest.approx(2 / 3)  # withdrawn + dismissed of 3 settled
     assert d.acceptance_rate == pytest.approx(1 / 3)

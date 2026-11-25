@@ -1658,8 +1658,9 @@ def eval_run(
         raise _fail(str(exc)) from exc
     planned = len(tasks) * len(arms) * repeats
     typer.echo(
-        f"{planned} run(s) at most, each capped at ${per_run:.2f}; no run starts once "
-        f"${max_total_usd:.2f} is spent. Results: {out / eval_runner.RESULTS}"
+        f"{planned} run(s), each capped at ${per_run:.2f} (one that errors is tried once "
+        f"more); no run starts once ${max_total_usd:.2f} is spent. "
+        f"Results: {out / eval_runner.RESULTS}"
     )
 
     def shown(r: eval_runner.Result) -> None:

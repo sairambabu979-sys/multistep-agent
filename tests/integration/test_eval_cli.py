@@ -106,7 +106,7 @@ def test_run_then_report(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
         ],
     )
     assert ran.exit_code == 0, ran.output
-    assert "1 run(s) at most, each capped at $5.00" in ran.output
+    assert "1 run(s), each capped at $5.00 (one that errors is tried once more)" in ran.output
     assert "✓  textkit-wrap-last-line  arm B" in ran.output
     (recorded,) = (json.loads(line) for line in (out / runner.RESULTS).read_text().splitlines())
     assert runner.Result.model_validate(recorded).resolved is True

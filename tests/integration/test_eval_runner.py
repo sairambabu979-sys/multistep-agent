@@ -15,7 +15,7 @@ from typing import Any
 import pytest
 
 from msa.config import MsaConfig
-from msa.evals import corpus, runner
+from msa.evals import corpus, runner, scoring
 from msa.llm import fake
 from msa.llm.client import MessagesClient
 from msa.runtime.live import LiveEnvironment
@@ -223,3 +223,79 @@ def test_an_arm_that_does_not_exist_yet_is_refused_before_anything_runs(
             )
         )
     assert not (tmp_path / runner.RESULTS).exists()
+
+
+def test_an_attempt_that_errors_is_tried_once_more_and_its_spend_is_kept(
+    settings: MsaConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = scoring.hidden_tests
+    broke: list[Path] = []
+
+    async def breaks_once(*args: Any, **kwargs: Any) -> Any:
+        if not broke:
+            broke.append(args[1])
+            raise OSError("the sandbox went away")
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(runner, "hidden_tests", breaks_once)
+    results = asyncio.run(
+        runner.run_all(
+            [task("textkit-wrap-last-line")], ["B"], settings, tmp_path, scripts(GOOD), budget_usd=5
+        )
+    )
+    first, second = results
+    assert first.error == "OSError: the sandbox went away"
+    assert first.spend_usd > 0  # the run had delivered: what its model calls spent is kept
+    assert first.input_tokens > 0
+    assert second.error is None
+    assert second.resolved is True
+    assert runner.read_results(tmp_path / runner.RESULTS) == results
+    runs = tmp_path / "runs"
+    assert (runs / "textkit-wrap-last-line-B-0" / "state").is_dir()  # kept for diagnosis
+    assert (runs / "textkit-wrap-last-line-B-0-attempt2" / "state").is_dir()
+
+
+def test_an_attempt_is_tried_at_most_twice_even_across_resumes(
+    settings: MsaConfig, tmp_path: Path
+) -> None:
+    calls: list[str] = []
+
+    def broken(_: MsaConfig, environment: LiveEnvironment) -> MessagesClient:
+        calls.append(Path(environment.repo).parent.name)
+        raise RuntimeError("no client")
+
+    tasks = [task("textkit-wrap-last-line")]
+    results = asyncio.run(runner.run_all(tasks, ["B"], settings, tmp_path, broken, budget_usd=5))
+    assert [r.error for r in results] == ["RuntimeError: no client"] * 2
+    assert asyncio.run(runner.run_all(tasks, ["B"], settings, tmp_path, broken, budget_usd=5)) == []
+    assert calls == ["textkit-wrap-last-line-B-0", "textkit-wrap-last-line-B-0-attempt2"]
+
+    # An eval stopped after the first errored attempt tries the second when it resumes.
+    path = tmp_path / runner.RESULTS
+    path.write_text(path.read_text(encoding="utf-8").splitlines()[0] + "\n", encoding="utf-8")
+    again = asyncio.run(runner.run_all(tasks, ["B"], settings, tmp_path, broken, budget_usd=5))
+    assert len(again) == 1
+    assert len(runner.read_results(path)) == 2
+
+
+def test_what_an_errored_attempt_spent_counts_against_the_total_cap(
+    settings: MsaConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def broken(*_: Any, **__: Any) -> Any:
+        raise OSError("the sandbox went away")
+
+    monkeypatch.setattr(runner, "hidden_tests", broken)
+    results = asyncio.run(
+        runner.run_all(
+            [task("textkit-wrap-last-line")],
+            ["B"],
+            settings,
+            tmp_path,
+            scripts(GOOD),
+            budget_usd=5,
+            max_total_usd=0.000_000_1,  # under a micro-dollar: the first attempt's spend is over
+        )
+    )
+    (only,) = results  # no second attempt: the first one's spend reached the cap
+    assert only.error is not None
+    assert only.spend_usd > 0.000_000_1

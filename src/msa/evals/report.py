@@ -1,7 +1,7 @@
 """The eval report (``msa eval report``): what each arm achieved, and what the rule decides.
 
 Metrics (PLAN §11), per arm, over the runs the harness completed (a harness error is
-counted, not scored):
+counted, and its spend is in the arm's total, but it is not scored):
 
 - **resolve rate**: delivered and passing every hidden test, over the tasks to resolve;
 - **cost per resolved task**: everything spent on tasks to resolve, over those resolved;
@@ -135,10 +135,10 @@ def summarize(results: Sequence[Result]) -> dict[str, ArmSummary]:
     for r in results:
         s = arms.setdefault(r.arm, ArmSummary(r.arm))
         s.runs += 1
+        s.spend += r.spend_usd
         if r.error is not None:
             s.errors += 1
             continue
-        s.spend += r.spend_usd
         s.walls.append(r.wall_seconds)
         s.revisions.append(r.revisions)
         s.rounds.append(r.negotiation_rounds)

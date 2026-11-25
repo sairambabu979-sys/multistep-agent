@@ -546,9 +546,12 @@ uv run msa eval report .msa/evals          # the metrics, and what the rule deci
   scored by the hidden tests in the sandbox, without network. So a change the run's own
   gates accepted can still be delivered and not resolved, which a test shows with a fix that
   passes the Tester's test but not the hidden ones.
-- **Resuming and caps.** Results are appended to `results.jsonl` as each run finishes, so a
-  rerun resumes without paying twice. `--max-total-usd` stops new runs once that much is
-  spent.
+- **Resuming, retries and caps.** Results are appended to `results.jsonl` as each run
+  finishes, so a rerun resumes without paying twice. A run that raises (the harness, the
+  model client or the scoring broke) is recorded as an error, not evidence, and tried once
+  more, so one broken run doesn't leave an arm short of the 54 results the rule needs. Its
+  spend, from its model calls' records, stays in the results and counts against
+  `--max-total-usd`, which stops new runs once that much is spent.
 - **Arms.** B is every stage, with the Reviewer as a pass-through stand-in. D is the full
   system. A (no Tester) and C (the author must accept every finding) are refused for now:
   A needs the unit-test stage to accept a run without acceptance tests, and C needs a

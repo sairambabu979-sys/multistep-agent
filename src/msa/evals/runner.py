@@ -15,6 +15,12 @@ Arms (PLAN §11). Only B and D exist so far:
 Results are appended to ``results.jsonl`` one line per run as each finishes, so an eval that
 stops part-way (a crash, a budget cap) resumes where it stopped and never pays twice for a
 finished run.
+
+A run that raises (the harness, the model client or the scoring broke) is recorded with an
+``error`` and is not evidence; it is tried once more (``ATTEMPTS``), so one broken run does
+not leave an arm short of the results the decision rule needs. The errored attempt stays in
+``results.jsonl`` with what its model calls recorded spending, which counts against
+``max_total_usd``.
 """
 
 from __future__ import annotations
@@ -22,6 +28,7 @@ from __future__ import annotations
 import json
 import shutil
 import time
+from collections import Counter
 from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Literal
@@ -53,6 +60,8 @@ UNBUILT = {
     "C": "arm C (the author accepts every finding) needs a negotiation that cannot dispute",
 }
 RESULTS = "results.jsonl"
+ATTEMPTS = 2  # per (task, arm, repeat): one more after an attempt that errored
+INVOCATIONS = "invocations.jsonl"
 DELIVERED = frozenset({Phase.HUMAN_APPROVAL, Phase.COMPLETED})
 
 ClientFactory = Callable[[MsaConfig, live.LiveEnvironment], MessagesClient]
@@ -144,12 +153,17 @@ async def run_one(
         "repeat": repeat,
         "run_id": run_id,
     }
+    files = RunFiles.for_run(state_dir, run_id)
     started = time.monotonic()
     try:
         state = await _drive(environment, config, run_id, client_factory)
-    except Exception as exc:  # the eval goes on; this run is not evidence
+        record["wall_seconds"] = time.monotonic() - started
+        delivered = state.phase in DELIVERED and state.head_tree is not None
+        record |= await _score(task, state, repo, workdir, config)
+    except Exception as exc:  # the eval goes on; this attempt is not evidence
         return Result.model_validate(
             record
+            | _recorded_spend(files)
             | {
                 "phase": "none",
                 "outcome": None,
@@ -159,22 +173,8 @@ async def run_one(
                 "error": f"{type(exc).__name__}: {exc}",
             }
         )
-    record["wall_seconds"] = time.monotonic() - started
-    files = RunFiles.for_run(state_dir, run_id)
-    delivered = state.phase in DELIVERED and state.head_tree is not None
-    record["resolved"] = None if task.expect == "flag" else False
-    if task.expect == "resolve" and delivered and state.head_tree is not None:
-        tree = export_tree(repo, state.head_tree, workdir / "delivered")
-        score = await hidden_tests(task, tree, config.sandbox, workdir / "junit" / "hidden.xml")
-        record |= {
-            "resolved": score.ok,
-            "hidden_passed": score.passed,
-            "hidden_failed": list(score.failed),
-            "hidden_error": score.error,
-            "hidden_isolated": score.isolated,
-        }
     spent = state.ledger.spent
-    invocations = files.records("invocations.jsonl")
+    invocations = files.records(INVOCATIONS)
     return Result.model_validate(
         record
         | {
@@ -191,6 +191,36 @@ async def run_one(
             "plan_risks": _risks(files),
         }
     )
+
+
+async def _score(
+    task: Task, state: RunState, repo: Path, workdir: Path, config: MsaConfig
+) -> dict[str, object]:
+    """A delivered tree's hidden-test score; a trap, or a run that delivered nothing, is not
+    scored by tests."""
+    if task.expect != "resolve" or state.phase not in DELIVERED or state.head_tree is None:
+        return {"resolved": None if task.expect == "flag" else False}
+    tree = export_tree(repo, state.head_tree, workdir / "delivered")
+    score = await hidden_tests(task, tree, config.sandbox, workdir / "junit" / "hidden.xml")
+    return {
+        "resolved": score.ok,
+        "hidden_passed": score.passed,
+        "hidden_failed": list(score.failed),
+        "hidden_error": score.error,
+        "hidden_isolated": score.isolated,
+    }
+
+
+def _recorded_spend(files: RunFiles) -> dict[str, object]:
+    """What an attempt that raised had spent, from its model calls' records. A floor: a call
+    cut off mid-flight records nothing."""
+    calls = files.records(INVOCATIONS)
+    return {
+        "spend_usd": sum(int(c.get("usd_micros", 0)) for c in calls) / 1_000_000,
+        "input_tokens": sum(int(c.get("input_tokens", 0)) for c in calls),
+        "output_tokens": sum(int(c.get("output_tokens", 0)) for c in calls),
+        "cache_read_tokens": sum(int(c.get("cache_read_tokens", 0)) for c in calls),
+    }
 
 
 async def _drive(
@@ -285,39 +315,47 @@ async def run_all(
     repeats: int = 1,
     on_result: Callable[[Result], None] | None = None,
 ) -> list[Result]:
-    """Every (task, arm, repeat) not already in ``out/results.jsonl``, arms interleaved per
-    task so a partial eval still compares the arms on the same tasks. Stops starting runs
-    once ``max_total_usd`` has been spent, counting runs recorded before."""
+    """Every (task, arm, repeat) without a result in ``out/results.jsonl``, arms interleaved
+    per task so a partial eval still compares the arms on the same tasks. One whose attempt
+    errored is tried again, up to ``ATTEMPTS`` in all, counting attempts recorded before.
+    Stops starting runs once ``max_total_usd`` has been spent, counting runs recorded
+    before."""
     tasks, arms = list(tasks), list(arms)
     for arm in arms:
         arm_config(settings, arm, budget_usd)  # refuse an unbuilt arm before spending
     out.mkdir(parents=True, exist_ok=True)
     results_path = out / RESULTS
     earlier = read_results(results_path)
-    done = {(r.task, r.arm, r.repeat) for r in earlier}
+    attempts = Counter((r.task, r.arm, r.repeat) for r in earlier)
+    done = {(r.task, r.arm, r.repeat) for r in earlier if r.error is None}
     spent = sum(r.spend_usd for r in earlier)
     new: list[Result] = []
     for repeat in range(repeats):
         for task in tasks:
             for arm in arms:
-                if (task.id, arm, repeat) in done:
-                    continue
-                if max_total_usd is not None and spent >= max_total_usd:
-                    return new
-                workdir = out / "runs" / f"{task.id}-{arm}-{repeat}"
-                result = await run_one(
-                    task,
-                    arm,
-                    settings,
-                    workdir,
-                    client_factory,
-                    budget_usd=budget_usd,
-                    repeat=repeat,
-                )
-                with results_path.open("a", encoding="utf-8") as sink:
-                    sink.write(json.dumps(result.model_dump(mode="json")) + "\n")
-                spent += result.spend_usd
-                new.append(result)
-                if on_result is not None:
-                    on_result(result)
+                key = (task.id, arm, repeat)
+                while key not in done and attempts[key] < ATTEMPTS:
+                    if max_total_usd is not None and spent >= max_total_usd:
+                        return new
+                    name = f"{task.id}-{arm}-{repeat}"
+                    if attempts[key]:  # a fresh directory; the errored attempt's stays
+                        name += f"-attempt{attempts[key] + 1}"
+                    result = await run_one(
+                        task,
+                        arm,
+                        settings,
+                        out / "runs" / name,
+                        client_factory,
+                        budget_usd=budget_usd,
+                        repeat=repeat,
+                    )
+                    with results_path.open("a", encoding="utf-8") as sink:
+                        sink.write(json.dumps(result.model_dump(mode="json")) + "\n")
+                    attempts[key] += 1
+                    spent += result.spend_usd
+                    if result.error is None:
+                        done.add(key)
+                    new.append(result)
+                    if on_result is not None:
+                        on_result(result)
     return new
