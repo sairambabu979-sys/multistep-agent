@@ -84,7 +84,7 @@ from msa.runtime.checks import CheckError, CheckFinding, run_checks
 from msa.runtime.clock import LogicalClock, SystemClock
 from msa.runtime.intake import secrets_in_task
 from msa.runtime.interpreter import Interpreter, Observer
-from msa.runtime.journal import JournalError, SqlJournal, open_journal
+from msa.runtime.journal import JournalError, PastTheEnd, SqlJournal, open_journal
 from msa.runtime.live import LiveEnvironment
 from msa.runtime.simulation import (
     Profile,
@@ -1546,12 +1546,11 @@ def inspect(
     with _journal(ctx, db) as journal:
         try:
             state = journal.load(RunId(run_id), upto=at)
+        except PastTheEnd as exc:
+            events = f"{exc.head} event{'' if exc.head == 1 else 's'}"
+            raise _fail(f"{run_id} has {events}; --at {exc.seq} is past the end") from exc
         except JournalError as exc:
             raise _fail(str(exc)) from exc
-    # The journal clamps ``upto`` to the head, so an overshoot comes back as the final state.
-    if at is not None and at > state.seq:
-        events = f"{state.seq} event{'' if state.seq == 1 else 's'}"
-        raise _fail(f"{run_id} has {events}; --at {at} is past the end")
     if as_json:
         typer.echo(state.model_dump_json(indent=2))
         return
