@@ -38,7 +38,9 @@ def main() -> int:
         sys.stdout.write(f"$ {command}\n")
         sys.stdout.flush()
         # The README's own words, run the way a reader would paste them into a shell.
-        done = subprocess.run(command, shell=True, cwd=ROOT, check=False)
+        # No stdin: a command that prompts fails at once instead of waiting for the job's
+        # time limit.
+        done = subprocess.run(command, shell=True, cwd=ROOT, stdin=subprocess.DEVNULL, check=False)
         if done.returncode != 0:
             sys.stderr.write(f"::error::the README quickstart failed at: {command}\n")
             return done.returncode
