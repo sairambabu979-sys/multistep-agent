@@ -202,3 +202,31 @@ def _person(value: str) -> str:
 
 # Who approved, ruled or unblocked: always a person. Agents act as "agent:<role>".
 Person = Annotated[str, AfterValidator(_person)]
+
+
+class PublishMode(StrEnum):
+    """What happens to an approved release once it is committed to its local branch
+    (ADR-018). Chosen by the person who approves, and recorded with the approval."""
+
+    LOCAL = "local"  # the local branch only: the person pushes it
+    PUSH = "push"  # also push the branch to the remote
+    PR = "pr"  # push it and open a pull request
+
+
+class Publication(Frozen):
+    """Where an approved release went (ADR-018). A push or a pull request that failed is
+    recorded with its error, not raised: the release is committed either way."""
+
+    mode: PublishMode
+    branch: str  # the local branch holding the approved commit
+    commit: str
+    remote: str | None = None  # the remote it was pushed to
+    remote_branch: str | None = None
+    pr_url: str | None = None
+    error: str | None = None  # why the push or the pull request did not happen
+
+    @model_validator(mode="after")
+    def _local_stays_local(self) -> Self:
+        if self.mode is PublishMode.LOCAL and (self.remote or self.remote_branch or self.pr_url):
+            raise ValueError("a local release names no remote, remote branch or pull request")
+        return self

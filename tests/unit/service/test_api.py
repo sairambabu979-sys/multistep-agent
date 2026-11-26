@@ -18,6 +18,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from msa.config import load_config
 from msa.core.effects import Effect, RequestArbitration, RunIntegrationTests, RunNegotiationRound
 from msa.core.events import (
     AnyEvent,
@@ -26,7 +27,7 @@ from msa.core.events import (
     NegotiationRoundCompleted,
 )
 from msa.core.ids import RunId
-from msa.core.values import FailureKind, Severity, Triage
+from msa.core.values import FailureKind, PlanGate, PublishMode, Severity, Triage
 from msa.runtime.clock import LogicalClock
 from msa.runtime.interpreter import Interpreter, Parked
 from msa.runtime.journal import SqlJournal
@@ -36,6 +37,7 @@ from msa.service.tokens import Role, TokenError, TokenStore
 from tests.support.driver import Driver
 from tests.support.factory import BUILD, digest, finding, limits
 from tests.support.journals import BACKENDS, POSTGRES_URL, drop_schema, needs_postgres
+from tests.support.scripts import ROOT
 
 HAPPY = SimulationConfig(seed=0, profile=Profile.HAPPY)
 
@@ -202,6 +204,54 @@ def test_a_run_parks_for_release_approval_and_an_approver_publishes_it(
     assert [(e["action"], e["status"]) for e in log if e["principal"] == "approver-person"] == [
         ("approve", 200)
     ]
+
+
+def test_an_approval_can_ask_for_a_pull_request_and_the_run_shows_it(
+    api: TestClient, tokens: dict[str, str]
+) -> None:
+    start(api, tokens["operator"])
+    approved = api.post(
+        "/api/runs/r1/approve", json={"publish": "pr"}, headers=auth(tokens["approver"])
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["event"]["publish"] == "pr"
+    final = wait_until_parked(api, tokens["viewer"], "r1")
+    assert final["phase"] == "completed"
+    publication = final["state"]["publication"]
+    assert publication["mode"] == "pr"
+    assert publication["pr_url"].startswith("https://github.invalid/simulated/pull/")
+    assert publication["remote_branch"] == publication["branch"]
+
+
+def test_an_approval_with_no_mode_publishes_as_the_service_is_configured(
+    settings: Settings, tokens: dict[str, str]
+) -> None:
+    config = load_config(ROOT / "msa.toml")
+    pushing = replace(
+        settings,
+        config=config.model_copy(
+            update={"publish": config.publish.model_copy(update={"mode": PublishMode.PUSH})}
+        ),
+    )
+    with TestClient(create_app(pushing, factory=parking)) as client:
+        start(client, tokens["operator"])
+        approved = client.post("/api/runs/r1/approve", headers=auth(tokens["approver"]))
+        assert approved.status_code == 200, approved.text
+        assert approved.json()["event"]["publish"] == "push"
+
+
+def test_a_publish_mode_for_a_plan_gate_is_refused(
+    api: TestClient, settings: Settings, tokens: dict[str, str]
+) -> None:
+    gate = Driver(limits(plan_gate=PlanGate.HUMAN))
+    gate.intake()
+    gate.plan()
+    journaled(settings, gate)
+    refused = api.post(
+        "/api/runs/run-1/approve", json={"publish": "pr"}, headers=auth(tokens["approver"])
+    )
+    assert refused.status_code == 422
+    assert "only an approved release is published" in refused.json()["detail"]
 
 
 def test_a_rejected_release_goes_back_for_rework_and_returns_for_approval(

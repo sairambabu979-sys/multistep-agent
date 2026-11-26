@@ -36,7 +36,7 @@ from msa.core.events import AnyEvent
 from msa.core.graph import GLOBAL_ESCAPES
 from msa.core.ids import RUN_ID_PATTERN, Digest, RunId
 from msa.core.transitions import TABLE
-from msa.core.values import TERMINAL_PHASES, Phase
+from msa.core.values import TERMINAL_PHASES, Phase, PublishMode
 from msa.llm.anthropic_client import AnthropicMessages
 from msa.llm.store import SqliteResponseStore
 from msa.observability import tracing
@@ -146,6 +146,11 @@ class Feedback(BaseModel):
 
 class Note(BaseModel):
     note: str = Field(default="", max_length=2_000)
+
+
+class Approval(BaseModel):
+    # For a release: local, push or pr (ADR-018). None: [publish].mode, else local.
+    publish: PublishMode | None = None
 
 
 class Ruling(BaseModel):
@@ -582,14 +587,26 @@ async def unblock(run_id: RunPath, body: Note, who: Operator, svc: Svc) -> dict[
 
 
 @router.post("/runs/{run_id}/approve")
-async def approve(run_id: RunPath, who: Approver, svc: Svc) -> dict[str, Any]:
+async def approve(
+    run_id: RunPath, who: Approver, svc: Svc, body: Approval | None = None
+) -> dict[str, Any]:
     clock = svc.settings.clock
+    config = svc.settings.config
+    default = config.publish.mode if config is not None else PublishMode.LOCAL
     return await change(
         svc,
         who,
         "approve",
         run_id,
-        lambda j: control.decide(j, RunId(run_id), clock, by=who.name, decision="approve"),
+        lambda j: control.decide(
+            j,
+            RunId(run_id),
+            clock,
+            by=who.name,
+            decision="approve",
+            publish=body.publish if body is not None else None,
+            default_publish=default,
+        ),
         drive=True,
     )
 

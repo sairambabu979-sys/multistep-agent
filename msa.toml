@@ -87,10 +87,13 @@ tester = { write = ["tests/acceptance/**", "tests/repro/**"] }
 reviewer = { write = [] }
 arbiter = { write = [] }
 
-# Commands in the local worktree sandbox (ADR-009). It confines paths and scrubs the
-# environment, and on Linux takes the network away from agent commands. It is not a
-# syscall boundary: untrusted repos need a container.
+# Commands in the worktree sandbox (ADR-009). It confines paths and scrubs the environment,
+# and on Linux takes the network away from agent commands. The local backend is not a
+# syscall boundary: for a repository you do not trust, set backend = "container"
+# (ADR-019), which runs the agents' commands and the test gates in a fresh Docker or
+# Podman container each, with no network and nothing writable but the worktree.
 [sandbox]
+backend = "local"
 launcher = ["uv", "run", "--frozen", "python", "-m"]  # `<launcher> pytest ...`
 timeout_seconds = 600
 output_limit_bytes = 65536
@@ -101,6 +104,18 @@ cpu_seconds = 1800
 max_file_bytes = 1073741824
 env_passthrough = ["PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "TERM"]
 isolate_network = "auto"  # agent commands get no network at all (unshare -rn) where possible
+
+# backend = "container": the image must hold the repository's toolchain and dependencies
+# (nothing is installed in it, without network). A missing runtime stops the run.
+[sandbox.container]
+runtime = "docker"  # or "podman"
+image = ""          # e.g. "ghcr.io/you/your-repo-ci:1"
+launcher = ["python", "-m"]
+cpus = 2.0
+memory = "4g"
+pids_limit = 512
+tmp_size = "512m"
+user = ""           # uid:gid; default yours, or 65534:65534 (nobody) if you are root
 
 # STATIC_ANALYSIS: deterministic checks on the head tree, in order, over the whole worktree
 # except the Tester's directories, which UNIT_TESTING checks. The preference checks always
@@ -146,11 +161,26 @@ isolate_network = "auto"
 # SECURITY_REVIEW: secrets and insecure code in what the change adds; dependency changes.
 [security]
 forbid_new_dependencies = false
-audit_command = []  # e.g. ["pip-audit", "--strict"], run when a dependency manifest changes
+# pip-audit on the pinned Python dependencies a change adds (requirements files, == pins
+# in pyproject.toml, uv.lock, poetry.lock, Pipfile.lock); a known vulnerability blocks. It
+# needs the network; if it cannot run, the report says why, without blocking. [] turns it off.
+audit_command = ["pip-audit"]
+audit_timeout_seconds = 120
 
-# Publishing, after a person approves: a local branch, never a push.
+# Publishing, after a person approves: the approved commit on a local branch.
 [release]
 branch_prefix = "aegis/"
+
+# And then (ADR-018): "local" (nothing leaves this machine), "push" the branch, or "pr":
+# push it and open a pull request with pr.md as its body. `msa approve --publish` overrides
+# it. The push uses git's own credentials; the PR uses gh if it is logged in, otherwise the
+# REST API with the token in $token_env (never written anywhere).
+[publish]
+mode = "local"
+remote = "origin"
+# repository = "owner/name"  # default: read from the remote's URL
+# base = "main"              # default: the repository's default branch
+token_env = "GITHUB_TOKEN"
 
 # msa serve: the HTTP API, behind bearer tokens (msa tokens add) and roles.
 [service]

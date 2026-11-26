@@ -20,3 +20,9 @@ the old one.
 | [012](012-tester-and-evidence.md) | The Tester: blind tests, evidence the harness decides, an owner for every failure | Accepted, refined by 013 |
 | [013](013-evidence-integrity.md) | Evidence integrity: tests that ran, configuration the Coder cannot touch, checks on the delivered tree | Accepted |
 | [014](014-review-negotiation-arbitration.md) | Review, negotiation and arbitration: scope by lines, assent by the other side, the ladder before any person | Accepted |
+| [015](015-aegis-architecture.md) | AEGIS: eight roles, a twenty-state workflow, and the stack around a pure core | Accepted |
+| [016](016-skills-and-security-policy.md) | Skills and the security policy: versioned, narrowing, and outranked by policy | Accepted |
+| [017](017-postgres-and-temporal.md) | PostgreSQL storage and Temporal orchestration, around the same core | Accepted |
+| [018](018-push-and-pull-requests.md) | After approval, push the release and open its pull request, if asked | Accepted |
+| [019](019-container-sandbox.md) | A container backend for repository commands, for repositories you do not trust | Accepted |
+| [020](020-dependency-audit.md) | Audit the pinned Python dependencies a change adds, by default | Accepted |

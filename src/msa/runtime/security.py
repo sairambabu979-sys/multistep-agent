@@ -12,8 +12,11 @@ repository's existing debt never blocks a run, and nothing the run adds escapes:
    world-writable modes and ``debug=True`` are reported but do not block.
 3. **Dependencies.** A changed manifest (``pyproject.toml``, ``requirements*.txt``, lock
    files, ``package.json``...) is always listed, so the person approving sees it. With
-   ``[security].forbid_new_dependencies`` it blocks; with ``[security].audit_command`` the
-   audit runs, and a non-zero exit blocks.
+   ``[security].forbid_new_dependencies`` it blocks. The pinned Python dependencies the
+   change adds (``msa.runtime.dependencies``) are audited with pip-audit
+   (``[security].audit_command``, on by default): a known vulnerability in one blocks. An
+   audit that cannot run (pip-audit missing, no network, a timeout) is reported, and does
+   not block: it says nothing about the change. ``audit_command = []`` turns it off.
 
 A blocking finding never reaches negotiation: the core sends it straight to rework. It goes
 to whoever can fix all of them: the Tester when every one is in its files, which the Coder
@@ -35,10 +38,13 @@ from typing import Literal
 from msa.config import Role
 from msa.core.effects import Effect, RunSecurityReview
 from msa.core.events import AnyEvent, SecurityReviewFailed, SecurityReviewPassed
+from msa.core.ids import TreeHash
 from msa.core.values import Owner
+from msa.runtime import dependencies
 from msa.runtime.context import RunContext
 from msa.runtime.verify import removed_section
 from msa.secrets import scan_lines
+from msa.tools.errors import CommandUnavailable
 
 type Severity = Literal["critical", "high", "medium"]
 BLOCKING: frozenset[str] = frozenset({"critical", "high"})
@@ -269,7 +275,7 @@ class SecurityExecutor:
                 issues += code_issues(path, source, (n for n, _ in lines))
         changed = await ctx.worktree.changed_files(base, tree, deleted=True)
         manifests = [p for p in changed if is_manifest(p)]
-        sections, dependency_issues = await self._dependencies(manifests)
+        sections, dependency_issues = await self._dependencies(manifests, base, tree, effect.id)
         issues += dependency_issues
 
         blocking = [i for i in issues if i.blocking]
@@ -307,7 +313,9 @@ class SecurityExecutor:
             )
         return SecurityReviewPassed(at=now, effect_id=effect.id, tree=tree, report=digest)
 
-    async def _dependencies(self, manifests: Sequence[str]) -> tuple[list[str], list[Issue]]:
+    async def _dependencies(
+        self, manifests: Sequence[str], base: TreeHash, tree: TreeHash, effect_id: str
+    ) -> tuple[list[str], list[Issue]]:
         if not manifests:
             return [], []
         policy = self.context.config.security
@@ -323,12 +331,108 @@ class SecurityExecutor:
                 for p in manifests
             ]
         if not policy.audit_command:
-            sections.append("No dependency audit is configured ([security].audit_command).\n")
+            sections.append("No dependency audit is configured ([security].audit_command = []).\n")
             return sections, issues
-        sandbox = self.context.sandbox(Role.CODER)
-        argv = list(policy.audit_command)
-        done = await sandbox.execute(argv, shown=" ".join(argv), network=True)
-        sections.append(f"## Dependency audit\n\n{done.render()}\n")
-        if done.exit_code != 0:
-            issues.append(Issue(manifests[0], 1, "high", "dependency audit", f"`{argv[0]}` failed"))
-        return sections, issues
+        audit, audit_issues = await self._audit(manifests, base, tree, effect_id)
+        return [*sections, audit], issues + audit_issues
+
+    async def _audit(
+        self, manifests: Sequence[str], base: TreeHash, tree: TreeHash, effect_id: str
+    ) -> tuple[str, list[Issue]]:
+        """pip-audit on the pinned Python dependencies the change adds: the section of the
+        report, and the findings. A vulnerability is high; an audit that did not run is
+        medium, so it is seen and does not block."""
+        ctx = self.context
+        pins: list[dependencies.Pin] = []
+        unpinned: list[str] = []
+        unread: list[Issue] = []
+        other = [p for p in manifests if dependencies.kind_of(p) is None]
+        for path in manifests:
+            if dependencies.kind_of(path) is None:
+                continue
+            head = await ctx.worktree.read(tree, path) or ""
+            before = await ctx.worktree.read(base, path) or ""
+            try:
+                added = dependencies.additions(path, head, before)
+            except ValueError as exc:
+                unread.append(Issue(path, 1, "medium", "dependency audit did not run", str(exc)))
+                continue
+            pins += added.pins
+            unpinned += added.unpinned
+        lines = ["## Dependency audit", ""]
+        if other:
+            lines.append(
+                "Not audited (pip-audit covers Python dependencies only): "
+                + ", ".join(f"`{p}`" for p in other)
+                + "."
+            )
+        if unpinned:
+            lines += ["Added without an exact version, so not audited:", ""]
+            lines += [f"- `{spec}`" for spec in unpinned]
+            lines.append("")
+        if not pins:
+            lines.append("No pinned Python dependency was added: there is nothing to audit.")
+            return "\n".join(lines) + "\n", unread
+        lines += [f"Audited: {', '.join(f'`{p.name}=={p.version}`' for p in pins)}.", ""]
+        found, failure = await self._pip_audit(pins, effect_id)
+        if failure is not None:
+            lines.append(f"The audit did not run: {failure}")
+            path = pins[0].path
+            return "\n".join(lines) + "\n", [
+                *unread,
+                Issue(path, 1, "medium", "dependency audit did not run", failure),
+            ]
+        where = {(p.name, p.version): p.path for p in pins}
+        issues = [
+            Issue(
+                where.get((v.name, v.version), pins[0].path),
+                1,
+                "high",
+                "vulnerable dependency",
+                f"{v.name} {v.version}: {', '.join(v.ids)}"
+                + (f"; fixed in {', '.join(v.fixed_in)}" if v.fixed_in else "; no fixed version"),
+            )
+            for v in found
+        ]
+        lines.append(
+            f"{len(found)} of {len(where)} added dependencies have known vulnerabilities."
+            if found
+            else "No known vulnerability in the added dependencies."
+        )
+        return "\n".join(lines) + "\n", unread + issues
+
+    async def _pip_audit(
+        self, pins: Sequence[dependencies.Pin], effect_id: str
+    ) -> tuple[list[dependencies.Vulnerable], str | None]:
+        """pip-audit's findings on ``pins``, or why it did not run."""
+        ctx = self.context
+        policy = ctx.config.security
+        requirements = (
+            ctx.files.directory.resolve() / "audit" / f"{effect_id.replace(':', '-')}.txt"
+        )
+        requirements.parent.mkdir(parents=True, exist_ok=True)
+        requirements.write_text(dependencies.requirements(pins), encoding="utf-8")
+        argv = [*policy.audit_command, "--no-deps", "--disable-pip", "--progress-spinner", "off"]
+        argv += ["--format", "json", "--requirement", str(requirements)]
+        sandbox = ctx.sandbox(Role.CODER)
+        try:
+            done = await sandbox.execute(
+                argv,
+                shown=" ".join(policy.audit_command),
+                merge=False,
+                network=True,
+                timeout=policy.audit_timeout_seconds,
+            )
+        except CommandUnavailable as exc:
+            return [], str(exc)
+        if done.timed_out:
+            return (
+                [],
+                f"{policy.audit_command[0]} timed out after {policy.audit_timeout_seconds:g}s",
+            )
+        try:
+            return dependencies.vulnerable(done.stdout), None
+        except ValueError:
+            output = done.stderr.strip() or done.stdout.strip()
+            said = (output.splitlines() or ["no output"])[-1]
+            return [], f"{policy.audit_command[0]} exited {done.exit_code}: {said}"

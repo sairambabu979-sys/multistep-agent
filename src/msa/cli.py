@@ -58,7 +58,15 @@ from msa.core.events import (
 from msa.core.graph import analyze, render_markdown
 from msa.core.ids import Digest, FindingId, RunId
 from msa.core.transitions import TABLE
-from msa.core.values import Escalation, Limits, Phase, PlanGate, Resolution, Verdict
+from msa.core.values import (
+    Escalation,
+    Limits,
+    Phase,
+    PlanGate,
+    PublishMode,
+    Resolution,
+    Verdict,
+)
 from msa.evals import corpus as eval_corpus
 from msa.evals import report as eval_report
 from msa.evals import runner as eval_runner
@@ -99,7 +107,7 @@ from msa.skills.preferences.resolve import Layer, resolve
 from msa.skills.preferences.schema import FIELDS, Examples, RegexCheck, RuffCheck
 from msa.tools.errors import ToolError
 from msa.tools.paths import Root
-from msa.tools.sandbox import LocalSandbox
+from msa.tools.sandbox import LocalSandbox, container_problem, make_sandbox
 
 app = typer.Typer(no_args_is_help=True, add_completion=False, help="Multistep coding agent.")
 fsm_app = typer.Typer(no_args_is_help=True, help="Inspect the orchestrator state machine.")
@@ -728,7 +736,9 @@ def prefs_check(
 def _sandbox(ctx: typer.Context, repo: Path) -> LocalSandbox:
     settings = _settings(ctx)
     config = settings.sandbox if settings else SandboxConfig()
-    return LocalSandbox(Root.at(repo), config, role="cli")
+    if (problem := container_problem(config)) is not None:
+        raise _fail(problem)
+    return make_sandbox(Root.at(repo), config, role="cli")
 
 
 def _run_checks(
@@ -1052,6 +1062,8 @@ async def _drive_live(
     limits: Limits | None,
 ) -> RunState:
     """Start the run with ``limits``, or resume it (``limits`` is None)."""
+    if (problem := container_problem(settings.sandbox)) is not None:
+        raise _fail(problem)  # fail closed: no repository command would run
     tracing.configure(settings.observability.traces)
     client = _client(settings, environment)
     state_dir = Path(environment.state_dir)
@@ -1403,16 +1415,28 @@ def approve(
     run_id: Run,
     reject: Annotated[str | None, typer.Option(help="Send it back with this feedback.")] = None,
     abort: Annotated[str | None, typer.Option(help="Stop the run, for this reason.")] = None,
+    publish: Annotated[
+        PublishMode | None,
+        typer.Option(
+            help="For a release: local (the branch only), push, or pr (push and open a "
+            "pull request) [default: [publish].mode, else local]."
+        ),
+    ] = None,
     by: By = None,
     db: Db = None,
     quiet: Quiet = False,
     resume: Resume = True,
 ) -> None:
     """Answer a plan gate or a release: approve it, send it back, or stop the run. An
-    approved release is published to a local branch; nothing is pushed."""
+    approved release is committed to a local branch, then pushed, or pushed with a pull
+    request opened, as --publish or [publish].mode says (ADR-018)."""
     if reject is not None and abort is not None:
         raise _fail("--reject and --abort are alternatives")
+    if publish is not None and (reject is not None or abort is not None):
+        raise _fail("--publish is for an approval, not with --reject or --abort")
     person = _person(by)
+    settings = _settings(ctx)
+    mode = publish or (settings.publish.mode if settings else PublishMode.LOCAL)
 
     def answer(state: RunState, effect: Effect) -> Completion:
         at = SystemClock().stamp(state)
@@ -1422,8 +1446,11 @@ def approve(
         if reject is not None:
             rejected = ReleaseRejected if release else PlanRejected
             return rejected(at=at, effect_id=effect.id, by=person, feedback=reject)
-        approved = ReleaseApproved if release else PlanApproved
-        return approved(at=at, effect_id=effect.id, by=person)
+        if release:
+            return ReleaseApproved(at=at, effect_id=effect.id, by=person, publish=mode)
+        if publish is not None:
+            raise _fail(f"--publish is for a release: run {run_id} is waiting on its plan")
+        return PlanApproved(at=at, effect_id=effect.id, by=person)
 
     gates = (AwaitPlanApproval, AwaitReleaseApproval)
     _answer(ctx, RunId(run_id), db, gates, answer, resume=resume, quiet=quiet)

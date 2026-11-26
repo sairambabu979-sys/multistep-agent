@@ -20,11 +20,12 @@ from msa.core import RunState
 from msa.core.effects import RunIntegrationTests
 from msa.core.events import IntegrationTestsFailed
 from msa.core.ids import RunId
-from msa.core.values import FailureKind, Phase, Triage
+from msa.core.values import FailureKind, Phase, PlanGate, PublishMode, Triage
 from msa.runtime.journal import SqliteJournal
 from msa.runtime.simulation import Profile, SimulationConfig
 from tests.support.driver import Driver
 from tests.support.factory import BUILD, digest, limits
+from tests.support.scripts import ROOT
 
 runner = CliRunner()
 RUN = "run-1"
@@ -144,6 +145,54 @@ def test_approving_a_release_names_the_approver_and_publishes(db: str) -> None:
     assert [e.command.kind for e in state.pending] == ["publish_release"]
     published = msa("resume", RUN, "-q", "--db", db)
     assert published.output.startswith(f"{RUN}: COMPLETED: completed (aegis/")
+
+
+def test_approve_publish_pr_is_journaled_and_followed(db: str) -> None:
+    journaled(db, at_release())
+    result = msa("approve", RUN, "--by", "grace", "--publish", "pr", "--no-resume", "--db", db)
+    assert result.exit_code == 0, result.output
+    (publish,) = load(db).pending
+    assert publish.command.model_dump()["publish"] is PublishMode.PR
+    published = msa("resume", RUN, "-q", "--db", db)
+    assert published.exit_code == 0, published.output
+    state = load(db)
+    assert state.publication is not None
+    assert state.publication.mode is PublishMode.PR
+    assert state.publication.pr_url == "https://github.invalid/simulated/pull/" + BUILD[:7]
+
+
+def test_approve_takes_its_publish_mode_from_msa_toml(db: str, tmp_path: Path) -> None:
+    journaled(db, at_release())
+    config = tmp_path / "msa.toml"
+    toml = (ROOT / "msa.toml").read_text(encoding="utf-8")
+    local = '[publish]\nmode = "local"\n'
+    assert toml.count(local) == 1
+    config.write_text(toml.replace(local, '[publish]\nmode = "push"\n'), encoding="utf-8")
+    args = ["approve", RUN, "--by", "grace", "--no-resume", "--db", db]
+    result = msa("--config", str(config), *args)
+    assert result.exit_code == 0, result.output
+    (publish,) = load(db).pending
+    assert publish.command.model_dump()["publish"] is PublishMode.PUSH
+
+
+def test_publish_is_refused_with_a_rejection(db: str) -> None:
+    journaled(db, at_release())
+    rejected = msa("approve", RUN, "--reject", "no", "--publish", "pr", "--db", db)
+    assert rejected.exit_code == 1
+    assert "--publish is for an approval, not with --reject or --abort" in rejected.output
+    assert load(db).phase is Phase.HUMAN_APPROVAL  # nothing was journaled
+
+
+def test_publish_is_refused_at_a_plan_gate(db: str) -> None:
+    gate = Driver(limits(plan_gate=PlanGate.HUMAN, wall_clock=timedelta(days=3650)))
+    gate.intake()
+    gate.plan()
+    assert [e.command.kind for e in gate.state.pending] == ["await_plan_approval"]
+    journaled(db, gate)
+    refused = msa("approve", RUN, "--by", "grace", "--publish", "pr", "--no-resume", "--db", db)
+    assert refused.exit_code == 1
+    assert f"--publish is for a release: run {RUN} is waiting on its plan" in refused.output
+    assert [e.command.kind for e in load(db).pending] == ["await_plan_approval"]
 
 
 def test_a_rejected_release_goes_back_for_rework_with_the_feedback(db: str) -> None:

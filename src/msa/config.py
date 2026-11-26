@@ -33,7 +33,7 @@ from pydantic import (
 
 from msa import globs
 from msa.core._frozen import Frozen
-from msa.core.values import Escalation, Limits, PlanGate
+from msa.core.values import Escalation, Limits, PlanGate, PublishMode
 
 DEFAULT_CONFIG = Path("msa.toml")
 
@@ -222,6 +222,9 @@ def _env_name(name: str) -> str:
 EnvName = Annotated[
     str, StringConstraints(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$"), AfterValidator(_env_name)
 ]
+# A variable the harness itself reads, such as a token's: never passed to a command, so a
+# name that looks like a credential is expected here.
+HarnessVariable = Annotated[str, StringConstraints(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")]
 
 
 class RoleCapability(Frozen):
@@ -265,8 +268,32 @@ class CapabilitiesConfig(Frozen):
         )
 
 
+class ContainerConfig(Frozen):
+    """The container backend for repository commands (ADR-019): the ``run`` tool and the
+    test gates run in a fresh container per command, with the worktree mounted and
+    nothing else writable, no network, a non-root user, and CPU, memory and process
+    limits. ``image`` must hold the repository's toolchain (pytest, ruff, mypy, and its
+    dependencies): nothing is installed in the container, which has no network to do it."""
+
+    runtime: Literal["docker", "podman"] = "docker"
+    image: str = ""  # required with backend = "container", e.g. "ghcr.io/me/repo-ci:1"
+    # The image's interpreter, in place of [sandbox].launcher: `<launcher> pytest ...`.
+    launcher: Annotated[tuple[str, ...], Field(min_length=1)] = ("python", "-m")
+    cpus: PositiveFloat = 2.0
+    memory: Annotated[str, StringConstraints(pattern=r"^[1-9][0-9]*[kmg]$")] = "4g"
+    pids_limit: PositiveInt = 512
+    tmp_size: Annotated[str, StringConstraints(pattern=r"^[1-9][0-9]*[kmg]$")] = "512m"
+    # uid:gid inside the container; empty: yours, or 65534:65534 (nobody) if you are root.
+    user: Annotated[str, StringConstraints(pattern=r"^([1-9][0-9]*:[0-9]+)?$")] = ""
+
+
 class SandboxConfig(Frozen):
-    """How commands run in the local worktree sandbox (PLAN §8, ADR-009)."""
+    """How commands run in the worktree sandbox (PLAN §8, ADR-009, ADR-019)."""
+
+    # local: on this machine, as you (trusted repositories only). container: repository
+    # commands in a container ([sandbox.container]); fails closed if there is no runtime.
+    backend: Literal["local", "container"] = "local"
+    container: ContainerConfig = ContainerConfig()
 
     # Prefix for allowlisted Python tools: `<launcher> pytest ...`.
     launcher: Annotated[tuple[str, ...], Field(min_length=1)] = (
@@ -289,6 +316,15 @@ class SandboxConfig(Frozen):
     # auto: where the kernel allows it; always: refuse to run them where it does not;
     # never: only the dead proxy in their environment.
     isolate_network: Literal["auto", "always", "never"] = "auto"
+
+    @model_validator(mode="after")
+    def _a_container_needs_an_image(self) -> Self:
+        if self.backend == "container" and not self.container.image:
+            raise ValueError(
+                '[sandbox].backend = "container" needs [sandbox.container].image: an image '
+                "holding the repository's toolchain and dependencies"
+            )
+        return self
 
 
 # The sandbox's allowlisted commands (msa.tools.sandbox.COMMANDS; a contract test keeps the
@@ -366,15 +402,39 @@ class SecurityConfig(Frozen):
     # A change to a dependency manifest is always listed in the report and the PR. With
     # this set, it also fails the gate: a person adds dependencies, not an agent.
     forbid_new_dependencies: bool = False
-    # Run when a manifest changes, e.g. ["pip-audit", "--strict"]; it must exit 0. Empty:
-    # no audit, and the report says so.
-    audit_command: tuple[str, ...] = ()
+    # pip-audit, run when a change adds pinned Python dependencies (requirements files,
+    # == pins in pyproject.toml, uv.lock, poetry.lock, Pipfile.lock): a known vulnerability
+    # in one blocks. The harness adds pip-audit's arguments (--no-deps, so nothing is
+    # installed). If it cannot run (not installed, no network), the report says why, without
+    # blocking. []: no audit, and the report says so.
+    audit_command: tuple[str, ...] = ("pip-audit",)
+    audit_timeout_seconds: PositiveFloat = 120.0
 
 
 class ReleaseConfig(Frozen):
     """FINAL_VERIFICATION and publishing (ADR-015)."""
 
     branch_prefix: Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9/_-]*/$")] = "aegis/"
+
+
+class PublishConfig(Frozen):
+    """What happens to an approved release after it is committed to its local branch
+    (ADR-018). ``msa approve --publish`` overrides ``mode`` for one approval.
+
+    The push uses git's own credentials (a credential helper or SSH key). The pull request
+    uses ``gh`` when it is installed and logged in, otherwise the REST API with the token in
+    the variable ``token_env`` names; the token is never written anywhere."""
+
+    mode: PublishMode = PublishMode.LOCAL  # local: nothing leaves this machine
+    remote: Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9._-]+$")] = "origin"
+    # owner/name on GitHub; empty: read from the remote's URL.
+    repository: Annotated[str, StringConstraints(pattern=r"^([\w.-]+/[\w.-]+)?$")] = ""
+    base: str = ""  # the pull request's base branch; empty: the repository's default branch
+    token_env: HarnessVariable = "GITHUB_TOKEN"
+    api_url: Annotated[str, StringConstraints(pattern=r"^https?://[^\s]+$")] = (
+        "https://api.github.com"
+    )
+    timeout_seconds: PositiveFloat = 60.0  # per git push, gh or API call
 
 
 class ServiceConfig(Frozen):
@@ -427,6 +487,7 @@ class MsaConfig(Frozen):
     integration: IntegrationConfig = IntegrationConfig()
     security: SecurityConfig = SecurityConfig()
     release: ReleaseConfig = ReleaseConfig()
+    publish: PublishConfig = PublishConfig()
     service: ServiceConfig = ServiceConfig()
     observability: ObservabilityConfig = ObservabilityConfig()
     temporal: TemporalConfig = TemporalConfig()

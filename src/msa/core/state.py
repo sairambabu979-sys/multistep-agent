@@ -21,7 +21,7 @@ from msa.core.ids import (
     ValidRunId,
     ValidTreeHash,
 )
-from msa.core.values import Limits, Outcome, Phase, PlanRef, Severity, Verdict
+from msa.core.values import Limits, Outcome, Phase, PlanRef, Publication, Severity, Verdict
 
 
 class FindingStatus(StrEnum):
@@ -115,6 +115,7 @@ class RunState(Frozen):
     resume_commands: tuple[AnyCommand, ...] = ()
     release: ValidDigest | None = None  # the verified PR bundle for the head tree
     approved_by: str | None = None  # the person who approved the release
+    publication: Publication | None = None  # where the approved release went (ADR-018)
 
     @property
     def is_terminal(self) -> bool:

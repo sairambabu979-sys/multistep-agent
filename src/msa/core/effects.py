@@ -21,7 +21,7 @@ from pydantic import Field, NonNegativeInt, PositiveInt
 
 from msa.core._frozen import Frozen
 from msa.core.ids import ValidDigest, ValidEffectId, ValidFindingId, ValidTreeHash
-from msa.core.values import Outcome, Owner, Person, PlanRef
+from msa.core.values import Outcome, Owner, Person, PlanRef, PublishMode
 
 
 class Command(Frozen):
@@ -179,12 +179,14 @@ class AwaitReleaseApproval(Command):
 
 class PublishRelease(Command):
     """Commit the tree to a branch, with the bundle as its message. Only after a person
-    approved, and in their name: the commit records who approved it."""
+    approved, and in their name: the commit records who approved it. Then push it, or
+    push it and open a pull request, if the approval asked for that (ADR-018)."""
 
     kind: Literal["publish_release"] = "publish_release"
     tree: ValidTreeHash
     bundle: ValidDigest
     approved_by: Person
+    publish: PublishMode = PublishMode.LOCAL
 
 
 class AwaitUnblock(Command):

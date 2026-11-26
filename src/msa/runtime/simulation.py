@@ -90,6 +90,8 @@ from msa.core.values import (
     FindingRef,
     Owner,
     PlanRef,
+    Publication,
+    PublishMode,
     Resolution,
     Severity,
     Triage,
@@ -300,8 +302,13 @@ def outcomes(effect: Effect, at: datetime, *, rich: bool = False) -> list[AnyEve
                 ReleaseRejected(at=at, effect_id=eid, by=PERSON, feedback="rename the flag"),
                 HumanAborted(at=at, effect_id=eid, by=PERSON, reason="superseded"),
             ]
-        case PublishRelease(tree=t):
-            return [ReleasePublished(at=at, effect_id=eid, tree=t, reference=f"aegis/{t[:12]}")]
+        case PublishRelease(tree=t, publish=mode):
+            published = _publication(mode, f"aegis/{t[:12]}", t)
+            return [
+                ReleasePublished(
+                    at=at, effect_id=eid, tree=t, reference=published.branch, publication=published
+                )
+            ]
         case AwaitUnblock():
             return [
                 Unblocked(at=at, effect_id=eid, by=PERSON, note="installed the tool"),
@@ -375,3 +382,18 @@ class SimulatedEnvironment:
             # model_copy preserves the concrete event class: still an AnyEvent member.
             return cast(AnyEvent, event.model_copy(update={"spend": spend}))
         return event
+
+
+def _publication(mode: PublishMode, branch: str, commit: str) -> Publication:
+    """Where a simulated release went: nowhere outside, whatever the mode asked for, but
+    with the fields that mode records, so the API and the workbench can be exercised."""
+    if mode is PublishMode.LOCAL:
+        return Publication(mode=mode, branch=branch, commit=commit)
+    pushed = Publication(
+        mode=mode, branch=branch, commit=commit, remote="origin", remote_branch=branch
+    )
+    if mode is PublishMode.PUSH:
+        return pushed
+    return pushed.model_copy(
+        update={"pr_url": f"https://github.invalid/simulated/pull/{commit[:7]}"}
+    )

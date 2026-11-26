@@ -24,7 +24,17 @@ from msa.core.ids import (
     ValidRunId,
     ValidTreeHash,
 )
-from msa.core.values import FindingRef, Limits, Owner, Person, PlanRef, Resolution, Triage
+from msa.core.values import (
+    FindingRef,
+    Limits,
+    Owner,
+    Person,
+    PlanRef,
+    Publication,
+    PublishMode,
+    Resolution,
+    Triage,
+)
 
 
 class EventBase(Frozen):
@@ -300,6 +310,7 @@ class ReleaseApproved(Completion):
     completes: ClassVar[frozenset[str]] = frozenset({"await_release_approval"})
     kind: Literal["release_approved"] = "release_approved"
     by: Person
+    publish: PublishMode = PublishMode.LOCAL  # what the approver asked for (ADR-018)
 
 
 class ReleaseRejected(Completion):
@@ -314,6 +325,7 @@ class ReleasePublished(Completion):
     kind: Literal["release_published"] = "release_published"
     tree: ValidTreeHash
     reference: str  # the branch, commit and PR that hold it
+    publication: Publication | None = None  # None in journals written before ADR-018
 
 
 class Unblocked(Completion):

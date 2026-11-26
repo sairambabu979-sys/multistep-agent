@@ -199,6 +199,70 @@
       "title": "CapabilitiesConfig",
       "type": "object"
     },
+    "ContainerConfig": {
+      "additionalProperties": false,
+      "description": "The container backend for repository commands (ADR-019): the ``run`` tool and the\ntest gates run in a fresh container per command, with the worktree mounted and\nnothing else writable, no network, a non-root user, and CPU, memory and process\nlimits. ``image`` must hold the repository's toolchain (pytest, ruff, mypy, and its\ndependencies): nothing is installed in the container, which has no network to do it.",
+      "properties": {
+        "cpus": {
+          "default": 2.0,
+          "exclusiveMinimum": 0,
+          "title": "Cpus",
+          "type": "number"
+        },
+        "image": {
+          "default": "",
+          "title": "Image",
+          "type": "string"
+        },
+        "launcher": {
+          "default": [
+            "python",
+            "-m"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Launcher",
+          "type": "array"
+        },
+        "memory": {
+          "default": "4g",
+          "pattern": "^[1-9][0-9]*[kmg]$",
+          "title": "Memory",
+          "type": "string"
+        },
+        "pids_limit": {
+          "default": 512,
+          "exclusiveMinimum": 0,
+          "title": "Pids Limit",
+          "type": "integer"
+        },
+        "runtime": {
+          "default": "docker",
+          "enum": [
+            "docker",
+            "podman"
+          ],
+          "title": "Runtime",
+          "type": "string"
+        },
+        "tmp_size": {
+          "default": "512m",
+          "pattern": "^[1-9][0-9]*[kmg]$",
+          "title": "Tmp Size",
+          "type": "string"
+        },
+        "user": {
+          "default": "",
+          "pattern": "^([1-9][0-9]*:[0-9]+)?$",
+          "title": "User",
+          "type": "string"
+        }
+      },
+      "title": "ContainerConfig",
+      "type": "object"
+    },
     "Effort": {
       "enum": [
         "low",
@@ -457,6 +521,63 @@
       "title": "Pricing",
       "type": "object"
     },
+    "PublishConfig": {
+      "additionalProperties": false,
+      "description": "What happens to an approved release after it is committed to its local branch\n(ADR-018). ``msa approve --publish`` overrides ``mode`` for one approval.\n\nThe push uses git's own credentials (a credential helper or SSH key). The pull request\nuses ``gh`` when it is installed and logged in, otherwise the REST API with the token in\nthe variable ``token_env`` names; the token is never written anywhere.",
+      "properties": {
+        "api_url": {
+          "default": "https://api.github.com",
+          "pattern": "^https?://[^\\s]+$",
+          "title": "Api Url",
+          "type": "string"
+        },
+        "base": {
+          "default": "",
+          "title": "Base",
+          "type": "string"
+        },
+        "mode": {
+          "$ref": "#/$defs/PublishMode",
+          "default": "local"
+        },
+        "remote": {
+          "default": "origin",
+          "pattern": "^[A-Za-z0-9._-]+$",
+          "title": "Remote",
+          "type": "string"
+        },
+        "repository": {
+          "default": "",
+          "pattern": "^([\\w.-]+/[\\w.-]+)?$",
+          "title": "Repository",
+          "type": "string"
+        },
+        "timeout_seconds": {
+          "default": 60.0,
+          "exclusiveMinimum": 0,
+          "title": "Timeout Seconds",
+          "type": "number"
+        },
+        "token_env": {
+          "default": "GITHUB_TOKEN",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "title": "Token Env",
+          "type": "string"
+        }
+      },
+      "title": "PublishConfig",
+      "type": "object"
+    },
+    "PublishMode": {
+      "description": "What happens to an approved release once it is committed to its local branch\n(ADR-018). Chosen by the person who approves, and recorded with the approval.",
+      "enum": [
+        "local",
+        "push",
+        "pr"
+      ],
+      "title": "PublishMode",
+      "type": "string"
+    },
     "ReleaseConfig": {
       "additionalProperties": false,
       "description": "FINAL_VERIFICATION and publishing (ADR-015).",
@@ -549,8 +670,33 @@
     },
     "SandboxConfig": {
       "additionalProperties": false,
-      "description": "How commands run in the local worktree sandbox (PLAN \u00a78, ADR-009).",
+      "description": "How commands run in the worktree sandbox (PLAN \u00a78, ADR-009, ADR-019).",
       "properties": {
+        "backend": {
+          "default": "local",
+          "enum": [
+            "local",
+            "container"
+          ],
+          "title": "Backend",
+          "type": "string"
+        },
+        "container": {
+          "$ref": "#/$defs/ContainerConfig",
+          "default": {
+            "cpus": 2.0,
+            "image": "",
+            "launcher": [
+              "python",
+              "-m"
+            ],
+            "memory": "4g",
+            "pids_limit": 512,
+            "runtime": "docker",
+            "tmp_size": "512m",
+            "user": ""
+          }
+        },
         "cpu_seconds": {
           "default": 1800,
           "exclusiveMinimum": 0,
@@ -643,12 +789,20 @@
       "description": "SECURITY_REVIEW (ADR-015): deterministic rules over what the change adds.",
       "properties": {
         "audit_command": {
-          "default": [],
+          "default": [
+            "pip-audit"
+          ],
           "items": {
             "type": "string"
           },
           "title": "Audit Command",
           "type": "array"
+        },
+        "audit_timeout_seconds": {
+          "default": 120.0,
+          "exclusiveMinimum": 0,
+          "title": "Audit Timeout Seconds",
+          "type": "number"
         },
         "forbid_new_dependencies": {
           "default": false,
@@ -884,6 +1038,18 @@
       "title": "Pricing",
       "type": "object"
     },
+    "publish": {
+      "$ref": "#/$defs/PublishConfig",
+      "default": {
+        "api_url": "https://api.github.com",
+        "base": "",
+        "mode": "local",
+        "remote": "origin",
+        "repository": "",
+        "timeout_seconds": 60.0,
+        "token_env": "GITHUB_TOKEN"
+      }
+    },
     "release": {
       "$ref": "#/$defs/ReleaseConfig",
       "default": {
@@ -899,6 +1065,20 @@
     "sandbox": {
       "$ref": "#/$defs/SandboxConfig",
       "default": {
+        "backend": "local",
+        "container": {
+          "cpus": 2.0,
+          "image": "",
+          "launcher": [
+            "python",
+            "-m"
+          ],
+          "memory": "4g",
+          "pids_limit": 512,
+          "runtime": "docker",
+          "tmp_size": "512m",
+          "user": ""
+        },
         "cpu_seconds": 1800,
         "env_passthrough": [
           "PATH",
@@ -927,7 +1107,10 @@
     "security": {
       "$ref": "#/$defs/SecurityConfig",
       "default": {
-        "audit_command": [],
+        "audit_command": [
+          "pip-audit"
+        ],
+        "audit_timeout_seconds": 120.0,
         "forbid_new_dependencies": false
       }
     },

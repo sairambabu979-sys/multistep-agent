@@ -6,17 +6,23 @@ request into a reviewed, tested, security-checked pull request that a person app
 admission → validation → context → planner → coder ∥ blind tester → static analysis →
 unit tests → integration tests (no network) → security review → reviewer ⇄ author
 negotiation with executable arbitration → release verification → a person approves →
-a local branch, all shaped by a layered preferences skill.
+a local branch, pushed and opened as a pull request if you ask, all shaped by a layered
+preferences skill.
 
 **Status.** The core workflow, every stage's executor, the human gates (plan, ruling,
 release, unblock, pause), the skills registry and security policy, the CLI, and the HTTP
 API with roles, a live event stream, an audit log and traces, and the web workbench are
 built and tested end to end, with only the model scripted. The journal runs on SQLite or
 PostgreSQL, and runs can be driven in-process or by Temporal
-([ADR-017](docs/adr/017-postgres-and-temporal.md)).
+([ADR-017](docs/adr/017-postgres-and-temporal.md)). After approval, a release can be pushed
+and opened as a pull request ([ADR-018](docs/adr/018-push-and-pull-requests.md)).
+Repository commands can run in a container for a repository you do not trust
+([ADR-019](docs/adr/019-container-sandbox.md)). The security review audits the pinned
+Python dependencies a change adds ([ADR-020](docs/adr/020-dependency-audit.md)). Milestone
+status is in [docs/PLAN.md §13](docs/PLAN.md#13-milestones).
 
-**With the real model** it has run four times, from the manual `live run` workflow
-(`.github/workflows/live-run.yml`), each run stopping at the release approval:
+**With the real model** it has run ten times (recorded below), from the manual `live run`
+workflow (`.github/workflows/live-run.yml`), each run stopping at the release approval:
 
 - **live-1** cost $0.53 of a $5 cap. Unit tests caught a bug in the Tester's own acceptance
   test, and the Tester fixed it. Its integration suite had network: the runner refused the
@@ -41,9 +47,10 @@ log.
   Tester's in-flight effect started again. The Coder put a private lock around every read
   and write and took `items()`'s snapshot under it. The Reviewer raised nothing.
 
-No live run has raised a review finding: four runs, the last two on tasks chosen to give
-review something real to find. So negotiation has not yet run with the real model, and the
-scripted demo is still its only evidence.
+Up to live-4, no live run had raised a review finding: four runs, the last two on tasks
+chosen to give review something real to find. So negotiation had not yet run with the real
+model, and the scripted demo was still its only evidence (live-9 to live-11 below changed
+that).
 
 The workflow's `seeded` mode is for that gap. It plants one known bug in the Coder's first
 implementation (`scripts/live_run_seeded.py`): `receive()` applies a delivery note line by
@@ -190,7 +197,7 @@ Twenty states, every transition validated by code (`src/msa/core/transitions.py`
 | STATIC_ANALYSIS | ruff, the format check, mypy, preference checks, the pytest-config guard | yes |
 | UNIT_TESTING | the repository's tests; acceptance tests must fail before and pass after | triage only |
 | INTEGRATION_TESTING | the integration suite, without network (`unshare -rn`) where possible | yes |
-| SECURITY_REVIEW | secrets and insecure calls in added lines; dependency changes listed | yes |
+| SECURITY_REVIEW | secrets and insecure calls in added lines; dependency changes listed; vulnerable pinned additions (pip-audit) | yes |
 | CODE_REVIEW, NEGOTIATION | the Reviewer, the author's moves, the arbitration ladder | |
 | REWORK | the Coder or the Tester revises; every gate runs again on the new tree | |
 | FINAL_VERIFICATION | the patch again: non-empty, in scope, no secret, every gate's record; the PR | yes |
@@ -239,11 +246,23 @@ When every gate has passed, the run writes the pull request to `.msa/runs/<run>/
 (with `patch.diff` beside it) and waits for you. It lists any risks the Planner named, such
 as an ambiguity in the task it had to resolve by guessing: no gate checks those, so you are
 the one who judges them. Approve it, and it is committed onto the base commit as the
-branch `aegis/<run>`, with `Approved-by:` naming you. Nothing is pushed:
+branch `aegis/<run>`, with `Approved-by:` naming you. By default nothing is pushed:
 
 ```bash
 uv run msa approve <run>
 ```
+
+To push the branch, or push it and open the pull request with `pr.md` as its body, set
+`[publish].mode` to `"push"` or `"pr"` in `msa.toml`, or ask for it once (ADR-018):
+
+```bash
+uv run msa approve <run> --publish pr
+```
+
+The push uses your git credentials. The pull request uses `gh` if it is logged in,
+otherwise the GitHub API with the token in `$GITHUB_TOKEN` (`[publish].token_env`); the
+token is never written anywhere. A push or pull request that fails is recorded in the run
+(`msa inspect <run>`, the API, the workbench's run view) and the release stays committed.
 
 ```bash
 uv run msa approve <run> --reject "rename the flag to --debug"
@@ -420,7 +439,10 @@ ANTHROPIC_API_KEY=... uv run msa llm ping
   test that fails on the base tree too is not blamed on the change, and blocks for a person;
 - **SECURITY_REVIEW** finds secrets and insecure calls (`eval`, shell commands, unpickling,
   unsafe YAML, TLS verification off) in the syntax tree of what the change adds, and lists
-  every dependency manifest it touched;
+  every dependency manifest it touched. It audits the pinned Python dependencies the
+  change adds with pip-audit, and a known vulnerability blocks; an audit that cannot run
+  says why without blocking, and `[security].audit_command = []` turns it off
+  ([ADR-020](docs/adr/020-dependency-audit.md));
 - the **Release Verifier** rebuilds the patch, checks it once more, and writes the PR;
   a person approves it ([ADR-015](docs/adr/015-aegis-architecture.md)).
 
@@ -440,7 +462,23 @@ is what agents act through: `read_file`, `search`, `edit`, `create_file`, `run` 
   the operator.
 
 The local sandbox is for trusted repositories: it confines paths, but it is not a network
-or syscall boundary.
+or syscall boundary. For a repository you do not trust, set `[sandbox].backend =
+"container"` ([ADR-019](docs/adr/019-container-sandbox.md)). The agents' commands and the
+test gates then run in a fresh Docker or Podman container each:
+- the worktree is mounted, and nothing else is writable;
+- `--network none`, a non-root user, every capability dropped;
+- CPU, memory, process and time limits.
+
+`[sandbox.container].image` must hold the repository's toolchain and dependencies, since
+nothing is installed in a container without network. For example:
+
+```dockerfile
+FROM python:3.13-slim
+COPY requirements.txt /tmp/
+RUN pip install --no-cache-dir -r /tmp/requirements.txt pytest ruff mypy
+```
+
+With no usable runtime, a run stops before it starts.
 
 **Preferences** (`src/msa/skills/preferences`, [ADR-010](docs/adr/010-preferences.md)) are
 your coding rules. Each one has a scope, an enforcement level (hard, soft, info or off) and,
@@ -599,3 +637,7 @@ Settings (model ids, efforts, beta flags, prices, limits, journal path) live in
 [`msa.toml`](msa.toml); check them with `uv run msa config check`. Commit subjects follow
 [Conventional Commits](https://www.conventionalcommits.org/), checked by a `commit-msg`
 hook (`uv run --with pre-commit pre-commit install`) and in CI.
+
+## License
+
+[MIT](LICENSE).

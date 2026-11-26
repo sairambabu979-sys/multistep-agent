@@ -2,6 +2,7 @@
   "name": "aegis-workbench",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "description": "The AEGIS workbench: Mission Control, runs, reviews, tests and approvals over the msa HTTP API.",
   "scripts": {
     "dev": "next dev",

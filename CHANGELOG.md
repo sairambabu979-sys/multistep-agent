@@ -38,6 +38,9 @@ by [git-cliff](https://git-cliff.org). Regenerate with `make changelog`; do not 
 - **evals:** the decision rule also requires the paired test, over three repeats ([`cbacf5b`](https://github.com/sairambabu979-sys/multistep-agent/commit/cbacf5b554ecfdf0f8e743c913a2a438012961fa))
 - **evals:** try a run that errors once more, and keep what it spent ([`42c95d7`](https://github.com/sairambabu979-sys/multistep-agent/commit/42c95d73a1f36ea6c588e0dbb85d527aa6934d94))
 - **release:** the PR names the risks the plan named, for the person who approves ([`9b25891`](https://github.com/sairambabu979-sys/multistep-agent/commit/9b258912d8e1c2ea7f9856abb7e338ee5257110b))
+- **release:** push an approved release and open its pull request, if asked (M10) ([`b5da208`](https://github.com/sairambabu979-sys/multistep-agent/commit/b5da2089efc881833116aeb9d9154280ac223929))
+- **sandbox:** an optional container backend for repositories you do not trust ([`099311f`](https://github.com/sairambabu979-sys/multistep-agent/commit/099311ff12bc124d480f70659709308539ff3125))
+- **security:** audit the pinned Python dependencies a change adds, by default ([`8f08abd`](https://github.com/sairambabu979-sys/multistep-agent/commit/8f08abd03070dd44a185a9b08733978b11afd7e3))
 
 ### Bug fixes
 
@@ -102,6 +105,7 @@ by [git-cliff](https://git-cliff.org). Regenerate with `make changelog`; do not 
 - live-10, the repro test and the Arbiter with the real model ([`eed7ad3`](https://github.com/sairambabu979-sys/multistep-agent/commit/eed7ad3a5743ae05821e79cf9ed7b908e3ae10c6))
 - live-11, a true finding upheld by the repro test and fixed ([`ae9112e`](https://github.com/sairambabu979-sys/multistep-agent/commit/ae9112e4ce1581ed496dd8b673aed4641fe33105))
 - live-11's release was approved by a person and published ([`5e76378`](https://github.com/sairambabu979-sys/multistep-agent/commit/5e76378ab64aad4884b5048bbfd8e814e3207fc4))
+- **changelog:** regenerate for the live runs, the eval and the release risks ([`a4ccd03`](https://github.com/sairambabu979-sys/multistep-agent/commit/a4ccd034cf52f8f95a6401ae9f91482db37358b8))
 
 ### Tests
 
