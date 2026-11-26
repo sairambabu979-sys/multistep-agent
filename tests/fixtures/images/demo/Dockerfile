@@ -7,7 +7,11 @@
 #     docker build --tag msa-demo-sandbox tests/fixtures/images/demo
 #     MSA_DEMO_IMAGE=msa-demo-sandbox uv run pytest tests/integration/test_demo.py
 #
-# tests/unit/test_demo_image.py keeps these versions equal to uv.lock's.
-FROM python:3.13-slim
+# requirements.txt is generated from uv.lock, with every dependency and its hashes, and
+# tests/unit/test_demo_image.py keeps it so. The base is pinned by digest, so a rebuilt tag
+# changes nothing; to move it, `docker buildx imagetools inspect python:3.13-slim`.
+FROM python:3.13-slim@sha256:7249d5587b78209a006dc4a3b5340678f84ea729239193aa559962cd8c1fce50
 
-RUN pip install --no-cache-dir --only-binary=:all: pytest==9.2.0 ruff==0.17.3
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir --only-binary=:all: --require-hashes -r /tmp/requirements.txt \
+    && rm /tmp/requirements.txt
