@@ -789,12 +789,20 @@
       "description": "SECURITY_REVIEW (ADR-015): deterministic rules over what the change adds.",
       "properties": {
         "audit_command": {
-          "default": [],
+          "default": [
+            "pip-audit"
+          ],
           "items": {
             "type": "string"
           },
           "title": "Audit Command",
           "type": "array"
+        },
+        "audit_timeout_seconds": {
+          "default": 120.0,
+          "exclusiveMinimum": 0,
+          "title": "Audit Timeout Seconds",
+          "type": "number"
         },
         "forbid_new_dependencies": {
           "default": false,
@@ -1099,7 +1107,10 @@
     "security": {
       "$ref": "#/$defs/SecurityConfig",
       "default": {
-        "audit_command": [],
+        "audit_command": [
+          "pip-audit"
+        ],
+        "audit_timeout_seconds": 120.0,
         "forbid_new_dependencies": false
       }
     },

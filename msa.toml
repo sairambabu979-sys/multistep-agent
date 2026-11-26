@@ -161,7 +161,11 @@ isolate_network = "auto"
 # SECURITY_REVIEW: secrets and insecure code in what the change adds; dependency changes.
 [security]
 forbid_new_dependencies = false
-audit_command = []  # e.g. ["pip-audit", "--strict"], run when a dependency manifest changes
+# pip-audit on the pinned Python dependencies a change adds (requirements files, == pins
+# in pyproject.toml, uv.lock, poetry.lock, Pipfile.lock); a known vulnerability blocks. It
+# needs the network; if it cannot run, the report says why, without blocking. [] turns it off.
+audit_command = ["pip-audit"]
+audit_timeout_seconds = 120
 
 # Publishing, after a person approves: the approved commit on a local branch.
 [release]

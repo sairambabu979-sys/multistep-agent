@@ -39,6 +39,7 @@ dev = [
     "import-linter>=2.3",
     "mutmut>=3.8",
     "mypy>=1.15",
+    "pip-audit==2.9.0",
     "pytest>=8.3",
     "pytest-cov>=6.0",
     "ruff>=0.11",

@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 
 from msa.agents.schemas import Plan, PlanStep
-from msa.config import MsaConfig, Role
+from msa.config import MsaConfig, Role, SecurityConfig
 from msa.core import start
 from msa.core.effects import (
     AdmitRun,
@@ -27,6 +27,7 @@ from msa.core.effects import (
     VerifyRelease,
 )
 from msa.core.events import (
+    AnyEvent,
     ContextLoaded,
     IntegrationTestsFailed,
     IntegrationTestsPassed,
@@ -314,7 +315,7 @@ def test_dependency_changes_are_listed_and_can_be_forbidden(
         report = ctx.files.text(answer.report)
         assert "## Dependency manifests changed" in report
         assert "- `pyproject.toml`" in report
-        assert "No dependency audit is configured" in report
+        assert "No pinned Python dependency was added: there is nothing to audit." in report
 
 
 INTEGRATION_TEST = (
@@ -770,23 +771,140 @@ def test_an_integration_suite_that_cannot_run_blocks(run: RunContext) -> None:
     assert "cannot run" in run.files.text(answer.report)
 
 
-@pytest.mark.parametrize(("command", "expected"), [("true", True), ("false", False)])
-def test_a_dependency_audit_gates_a_manifest_change(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: str, expected: bool
-) -> None:
-    monkeypatch.setenv("MSA_USER_PREFERENCES", str(tmp_path / "none.yaml"))
-    audited = base_config().security.model_copy(update={"audit_command": (command,)})
-    ctx = _context(tmp_path, security=audited)
-    pyproject = (ctx.worktree.path / "pyproject.toml").read_text(encoding="utf-8")
-    tree = change(ctx, {"pyproject.toml": pyproject + "\n# a new dependency\n"})
+def fake_pip_audit(directory: Path, *, sleep: float = 0, output: str | None = None) -> Path:
+    """A pip-audit that flags every package named bad*, and logs how it was run and what
+    it was asked to audit."""
+    directory.mkdir(parents=True, exist_ok=True)
+    script = directory / "pip-audit"
+    script.write_text(
+        f"""#!{sys.executable}
+import json, sys, time
+args = sys.argv[1:]
+requirements = open(args[args.index("--requirement") + 1]).read()
+with open({str(directory / "calls.jsonl")!r}, "a") as log:
+    log.write(json.dumps({{"args": args, "requirements": requirements}}) + "\\n")
+time.sleep({sleep})
+output = {output!r}
+if output is not None:
+    print(output)
+    sys.exit(2)
+found = []
+for line in requirements.split():
+    name, version = line.split("==")
+    bad = [{{"id": "PYSEC-0000-1", "fix_versions": ["9.9"], "aliases": []}}]
+    vulns = bad if name.startswith("bad") else []
+    found.append({{"name": name, "version": version, "vulns": vulns}})
+print(json.dumps({{"dependencies": found, "fixes": []}}))
+sys.exit(1 if any(d["vulns"] for d in found) else 0)
+"""
+    )
+    script.chmod(0o755)
+    return script
+
+
+def _audited(tmp_path: Path, files: dict[str, str], **security: Any) -> tuple[AnyEvent, str]:
+    policy = base_config().security.model_copy(update=security)
+    ctx = _context(tmp_path, security=policy)
+    tree = change(ctx, files)
     answer = asyncio.run(
         SecurityExecutor(ctx).execute(effect(RunSecurityReview(tree=tree)), now=T0)
     )
-    assert isinstance(answer, SecurityReviewPassed if expected else SecurityReviewFailed)
-    report = ctx.files.text(answer.report)
-    assert "## Dependency audit" in report
-    if not expected:
-        assert "dependency audit: `false` failed" in report
+    assert isinstance(answer, SecurityReviewPassed | SecurityReviewFailed)
+    return answer, ctx.files.text(answer.report)
+
+
+def test_a_vulnerable_dependency_the_change_adds_blocks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MSA_USER_PREFERENCES", str(tmp_path / "none.yaml"))
+    audit = fake_pip_audit(tmp_path / "bin")
+    answer, report = _audited(
+        tmp_path,
+        {"requirements.txt": "badlib==1.0\ngoodlib==2.0\nloose>=1\n"},
+        audit_command=(str(audit),),
+    )
+    assert isinstance(answer, SecurityReviewFailed)
+    assert answer.owner is Owner.CODER
+    assert "vulnerable dependency" in report
+    assert "badlib 1.0: PYSEC-0000-1; fixed in 9.9" in report
+    assert "Audited: `badlib==1.0`, `goodlib==2.0`." in report
+    assert "- `requirements.txt: loose>=1`" in report  # listed, not audited
+    assert "1 of 2 added dependencies have known vulnerabilities." in report
+    (call,) = [
+        json.loads(line) for line in (tmp_path / "bin" / "calls.jsonl").read_text().splitlines()
+    ]
+    assert call["requirements"] == "badlib==1.0\ngoodlib==2.0\n"
+    assert call["args"][:7] == [
+        "--no-deps", "--disable-pip", "--progress-spinner", "off",
+        "--format", "json", "--requirement",
+    ]  # fmt: skip
+
+
+def test_a_clean_addition_passes_and_says_so(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MSA_USER_PREFERENCES", str(tmp_path / "none.yaml"))
+    audit = fake_pip_audit(tmp_path / "bin")
+    answer, report = _audited(
+        tmp_path, {"requirements.txt": "goodlib==2.0\n"}, audit_command=(str(audit),)
+    )
+    assert isinstance(answer, SecurityReviewPassed)
+    assert "No known vulnerability in the added dependencies." in report
+
+
+@pytest.mark.parametrize(
+    ("how", "reason"),
+    [
+        ("missing", "is not installed on the sandbox PATH"),
+        ("slow", "timed out after 0.5s"),
+        ("garbled", "exited 2: Traceback: boom"),
+    ],
+)
+def test_an_audit_that_cannot_run_is_reported_without_blocking(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, how: str, reason: str
+) -> None:
+    monkeypatch.setenv("MSA_USER_PREFERENCES", str(tmp_path / "none.yaml"))
+    if how == "missing":
+        command = str(tmp_path / "no-such-pip-audit")
+    elif how == "slow":
+        command = str(fake_pip_audit(tmp_path / "bin", sleep=30))
+    else:
+        command = str(fake_pip_audit(tmp_path / "bin", output="Traceback: boom"))
+    answer, report = _audited(
+        tmp_path,
+        {"requirements.txt": "badlib==1.0\n"},
+        audit_command=(command,),
+        audit_timeout_seconds=0.5,
+    )
+    assert isinstance(answer, SecurityReviewPassed)  # it says nothing about the change
+    assert "dependency audit did not run" in report
+    assert reason in report
+
+
+def test_the_audit_can_be_turned_off(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MSA_USER_PREFERENCES", str(tmp_path / "none.yaml"))
+    answer, report = _audited(tmp_path, {"requirements.txt": "badlib==1.0\n"}, audit_command=())
+    assert isinstance(answer, SecurityReviewPassed)
+    assert "No dependency audit is configured ([security].audit_command = [])." in report
+
+
+def test_a_non_python_manifest_is_listed_and_not_audited(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MSA_USER_PREFERENCES", str(tmp_path / "none.yaml"))
+    audit = fake_pip_audit(tmp_path / "bin")
+    answer, report = _audited(
+        tmp_path, {"package.json": '{"dependencies": {"left-pad": "1.0.0"}}\n'},
+        audit_command=(str(audit),),
+    )  # fmt: skip
+    assert isinstance(answer, SecurityReviewPassed)
+    assert "Not audited (pip-audit covers Python dependencies only): `package.json`." in report
+    assert not (tmp_path / "bin" / "calls.jsonl").exists()
+
+
+def test_pip_audit_is_the_default_audit() -> None:
+    assert SecurityConfig().audit_command == ("pip-audit",)
+    assert SecurityConfig().audit_timeout_seconds == 120.0
 
 
 def test_a_path_no_role_may_write_is_never_released(run: RunContext) -> None:

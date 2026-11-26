@@ -252,13 +252,26 @@ class LocalSandbox:
     # ---------- execution
 
     async def execute(
-        self, argv: Sequence[str], *, shown: str, merge: bool = True, network: bool = False
+        self,
+        argv: Sequence[str],
+        *,
+        shown: str,
+        merge: bool = True,
+        network: bool = False,
+        timeout: float | None = None,
     ) -> Completed:
-        """Run ``argv``, a repository command or a harness tool, in this sandbox."""
-        return await self._spawn(argv, shown=shown, merge=merge, network=network)
+        """Run ``argv``, a repository command or a harness tool, in this sandbox, for
+        ``timeout`` seconds (default ``[sandbox].timeout_seconds``)."""
+        return await self._spawn(argv, shown=shown, merge=merge, network=network, timeout=timeout)
 
     async def _spawn(
-        self, argv: Sequence[str], *, shown: str, merge: bool = True, network: bool = False
+        self,
+        argv: Sequence[str],
+        *,
+        shown: str,
+        merge: bool = True,
+        network: bool = False,
+        timeout: float | None = None,
     ) -> Completed:
         """Run ``argv`` on this machine, bounded. Searching and diffing always run here:
         they read the worktree and run none of its code."""
@@ -290,7 +303,7 @@ class LocalSandbox:
         if not merge:
             readers.append(_drain(process.stderr, err))
         try:
-            async with asyncio.timeout(self.config.timeout_seconds):
+            async with asyncio.timeout(timeout or self.config.timeout_seconds):
                 await asyncio.gather(*readers)
                 exit_code: int | None = await process.wait()
         except TimeoutError:
@@ -318,6 +331,9 @@ class LocalSandbox:
             "GIT_OPTIONAL_LOCKS": "0",
             "NO_COLOR": "1",
         }
+        if network:  # a harness tool that needs it: this machine's proxy and CA settings
+            reach = ("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE")
+            env |= {k: os.environ[k] for k in os.environ if k.upper() in reach}
         if not network:
             proxies = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY")
             env |= dict.fromkeys(proxies, DEAD_PROXY)
@@ -371,15 +387,24 @@ class ContainerSandbox(LocalSandbox):
         return ()
 
     async def execute(
-        self, argv: Sequence[str], *, shown: str, merge: bool = True, network: bool = False
+        self,
+        argv: Sequence[str],
+        *,
+        shown: str,
+        merge: bool = True,
+        network: bool = False,
+        timeout: float | None = None,
     ) -> Completed:
         if network:  # a harness tool, such as the dependency audit: see the class docstring
-            return await self._spawn(argv, shown=shown, merge=merge, network=True)
+            return await self._spawn(argv, shown=shown, merge=merge, network=True, timeout=timeout)
         runtime = _runtime(self.config.container.runtime)
         name = f"msa-{secrets.token_hex(6)}"
         try:
             return await self._spawn(
-                [runtime, *self.container_args(argv, name)], shown=shown, merge=merge
+                [runtime, *self.container_args(argv, name)],
+                shown=shown,
+                merge=merge,
+                timeout=timeout,
             )
         finally:
             # A client killed for the timeout leaves its container running: remove it.

@@ -190,7 +190,7 @@ Twenty states, every transition validated by code (`src/msa/core/transitions.py`
 | STATIC_ANALYSIS | ruff, the format check, mypy, preference checks, the pytest-config guard | yes |
 | UNIT_TESTING | the repository's tests; acceptance tests must fail before and pass after | triage only |
 | INTEGRATION_TESTING | the integration suite, without network (`unshare -rn`) where possible | yes |
-| SECURITY_REVIEW | secrets and insecure calls in added lines; dependency changes listed | yes |
+| SECURITY_REVIEW | secrets and insecure calls in added lines; dependency changes listed; vulnerable pinned additions (pip-audit) | yes |
 | CODE_REVIEW, NEGOTIATION | the Reviewer, the author's moves, the arbitration ladder | |
 | REWORK | the Coder or the Tester revises; every gate runs again on the new tree | |
 | FINAL_VERIFICATION | the patch again: non-empty, in scope, no secret, every gate's record; the PR | yes |
@@ -432,7 +432,10 @@ ANTHROPIC_API_KEY=... uv run msa llm ping
   test that fails on the base tree too is not blamed on the change, and blocks for a person;
 - **SECURITY_REVIEW** finds secrets and insecure calls (`eval`, shell commands, unpickling,
   unsafe YAML, TLS verification off) in the syntax tree of what the change adds, and lists
-  every dependency manifest it touched;
+  every dependency manifest it touched. It audits the pinned Python dependencies the
+  change adds with pip-audit, and a known vulnerability blocks; an audit that cannot run
+  says why without blocking, and `[security].audit_command = []` turns it off
+  ([ADR-020](docs/adr/020-dependency-audit.md));
 - the **Release Verifier** rebuilds the patch, checks it once more, and writes the PR;
   a person approves it ([ADR-015](docs/adr/015-aegis-architecture.md)).
 

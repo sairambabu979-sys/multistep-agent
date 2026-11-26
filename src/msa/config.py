@@ -402,9 +402,13 @@ class SecurityConfig(Frozen):
     # A change to a dependency manifest is always listed in the report and the PR. With
     # this set, it also fails the gate: a person adds dependencies, not an agent.
     forbid_new_dependencies: bool = False
-    # Run when a manifest changes, e.g. ["pip-audit", "--strict"]; it must exit 0. Empty:
-    # no audit, and the report says so.
-    audit_command: tuple[str, ...] = ()
+    # pip-audit, run when a change adds pinned Python dependencies (requirements files,
+    # == pins in pyproject.toml, uv.lock, poetry.lock, Pipfile.lock): a known vulnerability
+    # in one blocks. The harness adds pip-audit's arguments (--no-deps, so nothing is
+    # installed). If it cannot run (not installed, no network), the report says why, without
+    # blocking. []: no audit, and the report says so.
+    audit_command: tuple[str, ...] = ("pip-audit",)
+    audit_timeout_seconds: PositiveFloat = 120.0
 
 
 class ReleaseConfig(Frozen):
