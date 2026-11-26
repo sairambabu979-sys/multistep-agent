@@ -20,6 +20,7 @@ from pydantic import BaseModel, PositiveInt, TypeAdapter, ValidationError
 
 from msa.skills.preferences import Preference, Resolved
 from msa.skills.preferences.schema import RegexCheck, RuffCheck
+from msa.tools.errors import ToolError
 from msa.tools.sandbox import LocalSandbox
 
 
@@ -125,6 +126,16 @@ async def _regex(
     sandbox: LocalSandbox, preference: Preference, check: RegexCheck, paths: Sequence[str]
 ) -> list[CheckFinding]:
     targets = [f for f in paths if preference.scope.applies_to(f)]  # non-empty: selected
+    # ripgrep runs on this machine and follows a symlink it is named. run_checks confined
+    # these paths, but repository code may have run since (``python -m ruff`` in a container
+    # imports from the worktree), so confine each again: a link out of it is never read.
+    for target in targets:
+        try:
+            moved = sandbox.root.resolve(target).as_posix() != target
+        except ToolError:
+            moved = True
+        if moved:
+            raise CheckError(f"{target} changed while it was being checked: it was not read")
     argv = ["rg", "--json", "--no-config", "--regexp", check.pattern, "--", *targets]
     done = await sandbox.scan(argv, shown="rg")  # on this machine: an image need not have rg
     if done.exit_code not in {0, 1}:  # 1: no match

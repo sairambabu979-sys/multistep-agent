@@ -37,7 +37,7 @@ accepted.
 | Control | Evidence |
 |---|---|
 | Paths are resolved once and confined, then opened by descriptor without following symlinks. Fuzzed against a reference model. | `tests/property/test_path_confinement.py::test_resolution_agrees_with_the_reference_model`, `tests/property/test_path_confinement.py::test_a_read_never_returns_anything_from_outside`, `tests/property/test_path_confinement.py::test_a_write_never_reaches_outside_the_tree` |
-| A symlink swapped in mid-call is never crossed. | `tests/chaos/test_symlink_race.py::test_tools_never_cross_a_symlink_swapped_in_mid_call`, `tests/unit/tools/test_paths.py::test_a_symlink_that_appears_after_resolving_is_refused` |
+| A symlink swapped in mid-call is never crossed. | `tests/chaos/test_symlink_race.py::test_tools_never_cross_a_symlink_swapped_in_mid_call`, `tests/unit/tools/test_paths.py::test_a_symlink_that_appears_after_resolving_is_refused`, `tests/unit/tools/test_container_sandbox.py::test_a_regex_check_never_reads_a_symlink_out_of_the_worktree` |
 | Writes are atomic and break hard links instead of writing through them. | `tests/unit/tools/test_workspace.py::test_an_edit_breaks_a_hard_link_instead_of_writing_through_it` |
 | Each role writes only its own paths, checked on the resolved path. Control paths (settings, CI, the git pointer) are protected for every role. The Coder never changes the Tester's files. | `tests/unit/tools/test_workspace.py::test_capability_is_checked_on_the_resolved_path`, `tests/unit/tools/test_capabilities.py::test_control_paths_are_protected_for_every_role`, `tests/unit/tools/test_workspace.py::test_a_linked_worktrees_git_pointer_cannot_be_edited`, `tests/property/test_path_confinement.py::test_the_coder_never_changes_a_tester_file` |
 

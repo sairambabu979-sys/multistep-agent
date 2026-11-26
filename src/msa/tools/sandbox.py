@@ -252,7 +252,9 @@ class LocalSandbox:
     async def scan(self, argv: Sequence[str], *, shown: str) -> Completed:
         """A harness tool that only reads the worktree and runs none of its code, such as
         ripgrep for a preference's regex check. Like ``search`` and ``git_diff``, it runs on
-        this machine whichever the backend (ADR-019), so an image need not carry it."""
+        this machine whichever the backend (ADR-019), so an image need not carry it. The
+        caller confines the paths it names (``Root.resolve``) just before: a tool here
+        follows a symlink it is named, and the container no longer stands in the way."""
         return await self._spawn(argv, shown=shown, merge=False)
 
     # ---------- execution
