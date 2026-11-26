@@ -637,3 +637,7 @@ Settings (model ids, efforts, beta flags, prices, limits, journal path) live in
 [`msa.toml`](msa.toml); check them with `uv run msa config check`. Commit subjects follow
 [Conventional Commits](https://www.conventionalcommits.org/), checked by a `commit-msg`
 hook (`uv run --with pre-commit pre-commit install`) and in CI.
+
+## License
+
+[MIT](LICENSE).
