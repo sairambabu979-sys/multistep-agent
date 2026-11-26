@@ -1548,6 +1548,10 @@ def inspect(
             state = journal.load(RunId(run_id), upto=at)
         except JournalError as exc:
             raise _fail(str(exc)) from exc
+    # The journal clamps ``upto`` to the head, so an overshoot comes back as the final state.
+    if at is not None and at > state.seq:
+        events = f"{state.seq} event{'' if state.seq == 1 else 's'}"
+        raise _fail(f"{run_id} has {events}; --at {at} is past the end")
     if as_json:
         typer.echo(state.model_dump_json(indent=2))
         return

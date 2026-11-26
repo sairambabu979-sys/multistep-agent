@@ -12,6 +12,7 @@ from msa import __version__, cli
 from msa.config import json_schema
 from msa.core import start
 from msa.core.graph import render_markdown
+from msa.core.ids import RunId
 from msa.core.table import TransitionTable
 from msa.core.transitions import TABLE
 from msa.runtime.journal import SqliteJournal
@@ -115,6 +116,26 @@ def test_inspect_shows_the_state_at_any_point_in_time(db: str) -> None:
     final = msa("inspect", "r1", "--json", "--db", db)
     assert '"phase": "completed"' in final.output
     assert msa("inspect", "nope", "--db", db).exit_code == 1
+
+
+def test_inspect_refuses_a_seq_past_the_end_of_the_run(db: str) -> None:
+    msa("simulate", "--profile", "happy", "--run-id", "r1", "-q", "--db", db)
+    with SqliteJournal(db) as journal:
+        last = journal.load(RunId("r1")).seq
+    at_end = msa("inspect", "r1", "--at", str(last), "--db", db)
+    assert at_end.exit_code == 0, at_end.output
+    assert f"seq       {last}" in at_end.output
+    past = msa("inspect", "r1", "--at", str(last + 1), "--db", db)
+    assert past.exit_code == 1
+    assert f"error: r1 has {last} events; --at {last + 1} is past the end" in past.output
+    assert "seq " not in past.output
+
+
+def test_inspect_names_a_single_event_in_the_singular(db: str) -> None:
+    _live_run(db)
+    past = msa("inspect", "live", "--at", "2", "--db", db)
+    assert past.exit_code == 1
+    assert "error: live has 1 event; --at 2 is past the end" in past.output
 
 
 def test_replay_verifies_a_journal_and_flags_tampering(db: str) -> None:
