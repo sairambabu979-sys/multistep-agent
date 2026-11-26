@@ -16,12 +16,14 @@ import os
 import shutil
 import subprocess
 import sys
+from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from msa.config import ContainerConfig, SandboxConfig
-from msa.tools.sandbox import container_problem
+from msa.tools.sandbox import Completed, LocalSandbox, container_problem
 
 REQUIRED = os.environ.get("MSA_REQUIRE_CONTAINER") == "1"
 IMAGE = "python:3.13-slim"  # nothing but Python, which the tests run
@@ -52,11 +54,18 @@ def needs_the_demo_image() -> str:
         why = "MSA_DEMO_IMAGE names no image: build it from tests/fixtures/images/demo"
     else:
         docker = shutil.which("docker") or "docker"
-        done = subprocess.run(  # a fixed argv, no shell
-            [docker, "image", "inspect", DEMO_IMAGE], capture_output=True, timeout=60, check=False
-        )
-        if done.returncode != 0:
-            why = f"there is no image {DEMO_IMAGE!r}: build tests/fixtures/images/demo"
+        try:
+            done = subprocess.run(  # a fixed argv, no shell
+                [docker, "image", "inspect", DEMO_IMAGE],
+                capture_output=True,
+                timeout=60,
+                check=False,
+            )
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            why = f"docker image inspect {DEMO_IMAGE!r} did not answer: {exc}"
+        else:
+            if done.returncode != 0:
+                why = f"there is no image {DEMO_IMAGE!r}: build tests/fixtures/images/demo"
     if why is None:
         return DEMO_IMAGE
     if REQUIRED:
@@ -88,7 +97,22 @@ os.execv({real!r}, [{real!r}, *sys.argv[1:]])
     return log
 
 
+def recording_host_spawns(log: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Log each argv a sandbox starts on this machine (``LocalSandbox._spawn``), the
+    container runtime included, so a test can show what bypassed the containers. A forked
+    child inherits the patch, and each call is appended and closed before the spawn."""
+    spawn = LocalSandbox._spawn
+
+    async def logged(self: LocalSandbox, argv: Sequence[str], **kwargs: Any) -> Completed:
+        with log.open("a", encoding="utf-8") as spawns:
+            spawns.write(json.dumps(list(argv)) + "\n")
+        return await spawn(self, argv, **kwargs)
+
+    log.parent.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(LocalSandbox, "_spawn", logged)
+
+
 def calls(log: Path) -> list[list[str]]:
-    """What :func:`recording_runtime` logged."""
+    """What :func:`recording_runtime` or :func:`recording_host_spawns` logged."""
     text = log.read_text(encoding="utf-8") if log.exists() else ""
     return [json.loads(line) for line in text.splitlines()]

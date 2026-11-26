@@ -20,10 +20,11 @@ import pytest
 from pydantic import ValidationError
 
 from msa.config import ContainerConfig, SandboxConfig
-from msa.runtime import live
-from msa.runtime.checks import run_checks
+from msa.runtime import checks, live
+from msa.runtime.checks import CheckError, run_checks
 from msa.runtime.integration import isolation
 from msa.skills.preferences import resolve, store
+from msa.skills.preferences.schema import RegexCheck
 from msa.tools.errors import CommandRejected, CommandUnavailable
 from msa.tools.paths import Root
 from msa.tools.sandbox import ContainerSandbox, LocalSandbox, container_problem, make_sandbox
@@ -276,6 +277,31 @@ def test_a_preferences_regex_check_runs_on_this_machine(
         (1, "general.no-merge-markers"),
         (5, "general.no-merge-markers"),
     ]
+    assert not log.exists()  # the runtime was never called
+
+
+def test_a_regex_check_never_reads_a_symlink_out_of_the_worktree(
+    root: Root, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """That ripgrep runs here, and follows a symlink it is named. run_checks confines its
+    paths first, but code in a container can swap one for a link afterwards (``python -m
+    ruff`` imports from the worktree): the check confines it again, so the file the link
+    points to, outside the worktree, is never read, and nothing of it is reported."""
+    if shutil.which("rg") is None:
+        pytest.skip("ripgrep is not installed")
+    log = fake_runtime(tmp_path / "bin")
+    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}:{os.environ['PATH']}")
+    secret = tmp_path / "outside" / "credentials"
+    secret.parent.mkdir()
+    secret.write_text("<<<<<<< HEAD\naws_secret_access_key = hunter2\n")
+    (root.path / "notes.md").symlink_to(secret)  # what run_checks confined as notes.md
+    resolved = resolve([store.builtin_layer()])
+    (preference,) = [p for p in resolved.select(["notes.md"]) if p.id == "general.no-merge-markers"]
+    assert isinstance(preference.check, RegexCheck)
+    box = ContainerSandbox(root, config())
+    with pytest.raises(CheckError, match=r"notes\.md changed while it was being checked") as error:
+        asyncio.run(checks._regex(box, preference, preference.check, ["notes.md"]))
+    assert "hunter2" not in str(error.value)
     assert not log.exists()  # the runtime was never called
 
 

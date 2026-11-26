@@ -60,7 +60,12 @@ from msa.observability.report import timeline
 from msa.runtime.journal import SqliteJournal
 from msa.tools.sandbox import network_namespace
 from tests.support import netns
-from tests.support.containers import calls, needs_the_demo_image, recording_runtime
+from tests.support.containers import (
+    calls,
+    needs_the_demo_image,
+    recording_host_spawns,
+    recording_runtime,
+)
 from tests.support.runs import (
     APPROVER,
     RELEASE,
@@ -410,6 +415,7 @@ def harness(
     if request.param == "container":
         image = needs_the_demo_image()
         recording_runtime(tmp_path / "runtime", monkeypatch)
+        recording_host_spawns(tmp_path / "runtime" / "host.jsonl", monkeypatch)
         sandbox = harness.config.sandbox.model_copy(
             update={"backend": "container", "container": ContainerConfig(image=image)}
         )
@@ -545,15 +551,26 @@ def test_the_definition_of_done_run(harness: Harness) -> None:
     assert "## Risks the plan named" in pr
     assert "- A delivery note with a malformed line." in pr
 
-    if os.environ.get("MSA_UPDATE_DEMO") == "1":
+    # docs/demo is the local run's snapshot (docs/demo/README.md): the container run, which
+    # comes second, must not overwrite it.
+    if os.environ.get("MSA_UPDATE_DEMO") == "1" and not in_containers:
         _export(harness, pr, timeline_lines)
 
 
 def _ran_in_containers(harness: Harness, integration: list[dict[str, Any]]) -> None:
     """Every repository command went through ``docker run``, locked down, in the demo image:
-    the runtime's own log of its calls says so, not only the run's settings."""
+    the runtime's own log of its calls says so, not only the run's settings. And nothing
+    else ran here: everything a sandbox started on this machine was the runtime or one of
+    the harness's own tools, which run none of the repository's code (ADR-019)."""
     for suite in integration:
         assert "without network (in a container with none)" in harness.artifact(suite["report"])
+    runtime = Path(harness.config.sandbox.container.runtime).name
+    audit = Path(harness.config.security.audit_command[0]).name
+    host = {
+        Path(argv[0]).name for argv in calls(harness.state_dir.parent / "runtime" / "host.jsonl")
+    }
+    assert runtime in host, host
+    assert host <= {runtime, "git", "rg", audit}, host  # no python, and no unshare running it
     log = harness.state_dir.parent / "runtime" / "calls.jsonl"
     runs = [argv for argv in calls(log) if argv[:1] == ["run"]]
     image = harness.config.sandbox.container.image
