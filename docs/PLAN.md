@@ -1,6 +1,6 @@
 # Multistep Agent: Engineering Plan
 
-> Status: **M0–M2, M4, M5, M7 and M8 complete; M3 and M6 await a live recording** · Owner: sairambabu979-sys · Last updated: 2026-11-22
+> Status: **M0–M2 and M4–M8 complete, and the AEGIS milestones A1–A6; M3 awaits a recorded cassette; M9's harness is built but its paid eval has not run; M10 is partly done** (§13) · Owner: sairambabu979-sys · Last updated: 2026-11-26
 >
 > This document is the build contract. Every milestone below has exit criteria a CI job can check.
 > If a section here and the code disagree later, one of them is a bug.
@@ -15,9 +15,9 @@
 | A2 | "Code negotiator" means a **structured, bounded negotiation between the author agent and the reviewer agent**, not a free-form chat between them. | Likely | If you meant a human-in-the-loop negotiator, the `AWAITING_HUMAN` path becomes the main path rather than the exception. |
 | A3 | "State machine" refers to two things: the orchestrator *is* a state machine, and the state machine *is tested as a first-class artifact* (property-based and model-based tests). | Likely | — |
 | A4 | Python 3.12+, Anthropic Python SDK, models called through the Messages API. | Decision, see §14 | TypeScript works too. We would lose Hypothesis's `RuleBasedStateMachine`, which is the best available tool for A3. |
-| A5 | Local-first: runs on a developer machine or in CI, against a local clone. It does not push branches or open PRs unless explicitly enabled. | Certain (by design) | Opening PRs is an outward-facing action. It is behind a flag and comes in a later milestone. |
+| A5 | Local-first: runs on a developer machine or in CI, against a local clone. It does not push branches or open PRs unless explicitly enabled. | Certain (by design) | Opening PRs is an outward-facing action. It is behind a flag: `[publish].mode` or `msa approve --publish`, default `local` (ADR-018). |
 
-**Non-goals for v1:** web UI, multi-repo changes, auto-merge, running untrusted repos without a container sandbox, and fine-tuning.
+**Non-goals for v1:** multi-repo changes, auto-merge, running untrusted repos without the container backend (`[sandbox].backend = "container"`, ADR-019), and fine-tuning. A web UI was a non-goal here; the AEGIS architecture added one, the workbench (A4 in §13).
 
 **What "world-class" means in this plan.** More moving parts is not the goal. Each item below is something you can verify:
 
@@ -564,11 +564,22 @@ Each milestone is a vertical slice that merges green. The sizes are relative [Gu
 | **M3** 🟡 | **LLM gateway:** streaming, structured outputs, retries, refusal fallback, budget ledger, FakeLLM, cassettes, append-only `Transcript` | Contract tests green ✅. One cassette recorded and replayed offline: the replay is wired, and the recording needs an API key (`msa llm ping --record`, tests/cassettes/README.md). | M |
 | **M4** ✅ | **Sandbox + tools + capabilities** | I-12 and I-13 green. Fuzzed path-confinement property test. | M |
 | **M5** ✅ | **Preferences skill:** schema, layered store, conflict detection, checkers, rendering, CLI | Merge-law properties. I-16 green. `msa prefs` commands work. | M |
-| **M6** 🟡 | **Planner + Coder + VERIFYING:** first end-to-end slice | I-01 and I-02 green against a FakeLLM, with the real sandbox ✅ (I-14 too). One live run resolves a fixture task: wired (`msa run --record`), and it needs an API key, like M3's cassette. | L |
+| **M6** ✅ | **Planner + Coder + VERIFYING:** first end-to-end slice | I-01 and I-02 green against a FakeLLM, with the real sandbox ✅ (I-14 too). Live runs resolve fixture tasks ✅: ten with the real model, through the `live run` workflow (README); live-3 and live-11 were approved by a person and published. | L |
 | **M7** ✅ | **Tester:** blind authoring, fail-before/pass-after, flakes, triage, weakened-test guard, parallel BUILDING | I-03, I-04, I-15 and I-17 green ✅, with triage, the guard and blindness, against a FakeLLM and the real sandbox (ADR-012, ADR-013). | L |
 | **M8** ✅ | **Reviewer + negotiation + arbitration** | I-05 to I-10 green ✅, with the ladder's rungs, the plan gate (`msa approve`) and rulings (`msa rule`). Negotiation invariants hold under property tests ✅ (ADR-014). | L |
-| **M9** | **Eval harness + ablations + run report** | Arms A–D run on the corpus. Report published. Decision rule applied. | M |
-| **M10** | **Hardening:** container sandbox, security review, docs, optional `publish` | Security checklist closed. README quickstart works from a clean machine. | M |
+| **M9** 🟡 | **Eval harness + ablations + run report** | Built ✅: the 20-task corpus with hidden tests (`msa eval check`: all fit), arms B and D, scoring, the report, and the pre-registered rule (`evals/decision.toml`). Not done: arms A and C (each needs a runtime change), and the paid eval itself, so no report is published and the rule has not been applied. | M |
+| **M10** 🟡 | **Hardening:** container sandbox, docs, optional `publish` | Done ✅: the container backend (ADR-019), push and pull requests after approval (ADR-018), and the docs brought up to date. Not done: there is no security checklist to close yet, and the README quickstart has not been checked on a clean machine. | M |
+
+The AEGIS architecture (ADR-015) added milestones the plan above did not have:
+
+| M | Deliverable | Exit criteria (CI-checkable) | Size |
+|---|---|---|---|
+| **A1** ✅ | **The AEGIS workflow:** twenty phases, an executor for every stage, the human gates (plan, ruling, release, unblock, pause) | The exhaustive model check and the invariants hold on the twenty phases; the definition-of-done run (`docs/demo`) passes every stage with a real crash. | L |
+| **A2** ✅ | **Security review** (SECURITY_REVIEW, moved here from M10): secrets and insecure calls in what a change adds, dependency changes listed, and pip-audit on the pinned Python dependencies it adds (ADR-020) | The stage's tests, and the demo's planted `eval()` caught by it. | M |
+| **A3** ✅ | **HTTP API:** roles, bearer tokens, a live event stream, an audit log and traces (ADR-015 §3) | The API tests, on SQLite and PostgreSQL. | M |
+| **A4** ✅ | **The workbench:** Mission Control, runs, reviews, tests and approvals over the API | CI's `web` job: types, unit tests, and end to end against the real API with axe. | M |
+| **A5** ✅ | **PostgreSQL journal** beside SQLite (ADR-017) | The journal contract, crash-recovery and API tests on PostgreSQL in CI (`MSA_REQUIRE_POSTGRES=1`). | M |
+| **A6** ✅ | **Temporal orchestration** (ADR-017) | CI's `backends` job runs the workflow against Temporal's test server, worker loss included. | M |
 
 The order is deliberate. The FSM, durability, and sandbox come before any prompt is written, so every later agent is built on a foundation that has already been tested. M6 delivers end-to-end value before the reviewer exists, which also gives arm A of the ablation for free.
 
@@ -582,9 +593,9 @@ The order is deliberate. The FSM, durability, and sandbox come before any prompt
 | D2 | Language | **Python** | Hypothesis stateful testing, Pydantic structured outputs, and a mature SDK |
 | D3 | Plan gate default | `auto`, with `human` available | A human gate on every run kills throughput. Use it for risky repos. |
 | D4 | Escalation default | `human` | An LLM arbiter ruling on its own peers' disputes is the weakest link. Default to human until evals show the arbiter can be trusted. |
-| D5 | Default sandbox | Local worktree for your own repos. Container required for anything else. | Docker as a hard dependency raises friction. Running untrusted code without it is not acceptable. |
+| D5 | Default sandbox | Local worktree for your own repos. Container required for anything else. | Docker as a hard dependency raises friction. Running untrusted code without it is not acceptable. **Done:** `[sandbox].backend`, default `local`, `container` fails closed without a runtime (ADR-019). |
 | D6 | Default budget per run | $5 and 45 min wall-clock [Guessing] | Re-set after M9 from the measured cost per resolved task |
-| D7 | Publishing (push/PR) | Out of scope until M10, behind a flag | It is an outward-facing action |
+| D7 | Publishing (push/PR) | Out of scope until M10, behind a flag | It is an outward-facing action. **Done:** `[publish].mode` and `msa approve --publish`, default `local` (ADR-018). |
 
 ---
 

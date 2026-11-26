@@ -6,17 +6,23 @@ request into a reviewed, tested, security-checked pull request that a person app
 admission → validation → context → planner → coder ∥ blind tester → static analysis →
 unit tests → integration tests (no network) → security review → reviewer ⇄ author
 negotiation with executable arbitration → release verification → a person approves →
-a local branch, all shaped by a layered preferences skill.
+a local branch, pushed and opened as a pull request if you ask, all shaped by a layered
+preferences skill.
 
 **Status.** The core workflow, every stage's executor, the human gates (plan, ruling,
 release, unblock, pause), the skills registry and security policy, the CLI, and the HTTP
 API with roles, a live event stream, an audit log and traces, and the web workbench are
 built and tested end to end, with only the model scripted. The journal runs on SQLite or
 PostgreSQL, and runs can be driven in-process or by Temporal
-([ADR-017](docs/adr/017-postgres-and-temporal.md)).
+([ADR-017](docs/adr/017-postgres-and-temporal.md)). After approval, a release can be pushed
+and opened as a pull request ([ADR-018](docs/adr/018-push-and-pull-requests.md)).
+Repository commands can run in a container for a repository you do not trust
+([ADR-019](docs/adr/019-container-sandbox.md)). The security review audits the pinned
+Python dependencies a change adds ([ADR-020](docs/adr/020-dependency-audit.md)). Milestone
+status is in [docs/PLAN.md §13](docs/PLAN.md#13-milestones).
 
-**With the real model** it has run four times, from the manual `live run` workflow
-(`.github/workflows/live-run.yml`), each run stopping at the release approval:
+**With the real model** it has run ten times (recorded below), from the manual `live run`
+workflow (`.github/workflows/live-run.yml`), each run stopping at the release approval:
 
 - **live-1** cost $0.53 of a $5 cap. Unit tests caught a bug in the Tester's own acceptance
   test, and the Tester fixed it. Its integration suite had network: the runner refused the
@@ -41,9 +47,10 @@ log.
   Tester's in-flight effect started again. The Coder put a private lock around every read
   and write and took `items()`'s snapshot under it. The Reviewer raised nothing.
 
-No live run has raised a review finding: four runs, the last two on tasks chosen to give
-review something real to find. So negotiation has not yet run with the real model, and the
-scripted demo is still its only evidence.
+Up to live-4, no live run had raised a review finding: four runs, the last two on tasks
+chosen to give review something real to find. So negotiation had not yet run with the real
+model, and the scripted demo was still its only evidence (live-9 to live-11 below changed
+that).
 
 The workflow's `seeded` mode is for that gap. It plants one known bug in the Coder's first
 implementation (`scripts/live_run_seeded.py`): `receive()` applies a delivery note line by
