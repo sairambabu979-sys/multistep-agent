@@ -219,7 +219,7 @@ uv sync
 ```
 
 ```bash
-uv run msa simulate --seed 11 --run-id demo
+uv run msa simulate --seed 21 --run-id demo
 ```
 
 ```bash
@@ -230,8 +230,10 @@ uv run msa inspect demo --at 9
 uv run msa replay demo
 ```
 
-`simulate` prints one line per committed transition. `inspect --at` shows the state as of any
-past event. `replay` re-folds the whole journal from scratch and checks every snapshot
+`simulate` prints one line per committed transition. With this seed the change fails static
+analysis, unit tests and integration tests once each, gets blocked and unblocked, and is then
+approved and published. `inspect --at` shows the state as of any past event (event 9 is the
+first rework). `replay` re-folds the whole journal from scratch and checks every snapshot
 against it. Interrupt a run with Ctrl-C and `msa resume <run>` continues it: completed
 effects are never executed again.
 
@@ -552,6 +554,8 @@ uv run msa policy show
 | Dependency audit | Every locked Python dependency, dev tools and extras included, is checked against PyPI's advisory data (`make audit`, CI's `audit` job), and the workbench's production npm dependencies with `npm audit` |
 | Network isolation | CI lets unprivileged users create network namespaces, which Ubuntu 24.04 refuses by default, and then requires them (`MSA_REQUIRE_NETNS=1`): an agent command and an integration suite must each fail to reach the network, and a runner that cannot isolate fails those tests instead of skipping them. Before this, CI skipped both. |
 | Live crash | The `live run` workflow SIGKILLs the real-model run's whole process tree once its journal reaches a given seq, then resumes it with `msa resume`. Its summary fails the job if any effect the journal had answered before the kill started again, model call or not: every effect start is logged durably before it runs (`effects.jsonl`). It lists the turns the resumed invocations replayed instead of buying them again. The same kill, from outside, lands while the unit-test stage's pytest runs in the sandbox, and the resumed run completes (`tests/integration/test_crash_mid_command.py`). A kill that missed the sandboxed pytest was shown to fail that test. |
+| Security checklist | [SECURITY.md](SECURITY.md) maps each threat to its control and the test that proves it, and names what is still open. A unit test fails if any test it cites stops existing, or if a row without one is not labelled a gap or an accepted risk. |
+| README quickstart | CI's `quickstart` job runs every keyless command of [Try it](#try-it) as written, on a fresh runner with no cache. A unit test runs the same commands in process and requires the simulated run to complete. |
 | Contracts | Core purity (AST allowlist), schema completeness, `docs/fsm.md` freshness, layering (`import-linter`), only `msa.llm` imports the SDK, no credential in any cassette |
 
 ## The eval (PLAN §11)
@@ -637,6 +641,11 @@ Settings (model ids, efforts, beta flags, prices, limits, journal path) live in
 [`msa.toml`](msa.toml); check them with `uv run msa config check`. Commit subjects follow
 [Conventional Commits](https://www.conventionalcommits.org/), checked by a `commit-msg`
 hook (`uv run --with pre-commit pre-commit install`) and in CI.
+
+## Security
+
+Report a vulnerability privately; see [SECURITY.md](SECURITY.md), which also holds the
+security checklist.
 
 ## License
 

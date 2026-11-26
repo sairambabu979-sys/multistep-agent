@@ -132,6 +132,22 @@ jobs:
           tests/unit/runtime/test_journal.py
           tests/chaos
 
+  quickstart:
+    # PLAN M10: the README's quickstart works from a clean machine. A fresh runner and
+    # checkout, uv and nothing else (no cache, no ripgrep, no API key), then every command
+    # of the README's "Try it" that needs no key, exactly as written there.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: false
+
+      - name: The README quickstart, as written
+        run: python3 scripts/quickstart_check.py
+
   audit:
     # Known vulnerabilities in every locked Python dependency (dev tools and extras too),
     # from PyPI's advisory data. The workbench's npm dependencies are audited in `web`.

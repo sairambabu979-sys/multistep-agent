@@ -13,6 +13,7 @@ from msa.config import (
     LimitsConfig,
     Pricing,
     Role,
+    ServiceConfig,
     json_schema,
     load_config,
 )
@@ -174,3 +175,9 @@ def test_a_journal_schema_must_be_a_plain_identifier(tmp_path: Path) -> None:
     old = "[journal]\n"
     with pytest.raises(ConfigError, match="schema_name"):
         load_config(write(tmp_path, text.replace(old, f'{old}schema_name = "a; DROP"\n', 1)))
+
+
+def test_the_api_listens_on_loopback_unless_told_otherwise() -> None:
+    """SECURITY.md (the HTTP API): exposing it is a deliberate setting."""
+    assert ServiceConfig().host == "127.0.0.1"
+    assert ServiceConfig().cors_origins == ()
