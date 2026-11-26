@@ -70,6 +70,7 @@ by [git-cliff](https://git-cliff.org). Regenerate with `make changelog`; do not 
 - **test:** the parked-run Temporal test waits for the park it asserts on ([`f2fd34d`](https://github.com/sairambabu979-sys/multistep-agent/commit/f2fd34dedfccbe6e2e25dac2c9e747bc2049c675))
 - **ci:** mutmut copies evals/ whole, so the nightly mutation run starts ([`6a7cd58`](https://github.com/sairambabu979-sys/multistep-agent/commit/6a7cd580e0f87cc7ef4d11a3600dd78127356c81))
 - **sandbox:** a preference's ripgrep check runs on this machine ([`743d73f`](https://github.com/sairambabu979-sys/multistep-agent/commit/743d73f7ea1dbf45345cb6082354fbdb56566f9f))
+- **sandbox:** only ripgrep may skip the container ([`6267165`](https://github.com/sairambabu979-sys/multistep-agent/commit/6267165aa026a81ce16db18e8e944579f8d7ea70))
 
 ### Refactoring
 
@@ -109,6 +110,7 @@ by [git-cliff](https://git-cliff.org). Regenerate with `make changelog`; do not 
 - **changelog:** regenerate for the live runs, the eval and the release risks ([`a4ccd03`](https://github.com/sairambabu979-sys/multistep-agent/commit/a4ccd034cf52f8f95a6401ae9f91482db37358b8))
 - PLAN, README and CHANGELOG say what is actually done ([`8fe6b35`](https://github.com/sairambabu979-sys/multistep-agent/commit/8fe6b35bde0ba7f46356e9f95d7722a1ab536860))
 - **security:** the M10 security checklist, and the README quickstart checked in CI ([`1515504`](https://github.com/sairambabu979-sys/multistep-agent/commit/1515504599723f8b1252696c77a6e38ce53d8f45))
+- **changelog:** regenerate ([`7a66566`](https://github.com/sairambabu979-sys/multistep-agent/commit/7a66566488576d73b9f5957e3b43b9525e05fe9a))
 
 ### Tests
 
@@ -143,4 +145,6 @@ by [git-cliff](https://git-cliff.org). Regenerate with `make changelog`; do not 
 - **live-run:** seeded=code-dispute, a planted true finding for the ladder to uphold ([`460f54c`](https://github.com/sairambabu979-sys/multistep-agent/commit/460f54c059539a138cffc0b48a19f3d1eb44de34))
 - run ci and nightly on the actions that moved to Node 24 ([`f89e493`](https://github.com/sairambabu979-sys/multistep-agent/commit/f89e493b1a01f7fe8362a291dd57b0b7969bffa3))
 - license the project under MIT ([`029bf9b`](https://github.com/sairambabu979-sys/multistep-agent/commit/029bf9bd19f5abc948175249f1d9e6a34aa9803f))
+- **mutmut:** copy README.md and SECURITY.md into the mutation workspace ([`b2af4ad`](https://github.com/sairambabu979-sys/multistep-agent/commit/b2af4adc8a205685a66ce37ef90338cf77e16724))
+- **quickstart:** run the README's commands with no stdin ([`67d1a67`](https://github.com/sairambabu979-sys/multistep-agent/commit/67d1a67f1f1d57a46025fc2f1a737dd5b1316b99))
 
