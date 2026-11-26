@@ -52,6 +52,7 @@ jobs:
       MSA_TEST_POSTGRES_URL: postgresql://postgres@localhost:5432/msa
       MSA_REQUIRE_POSTGRES: "1"  # a missing server fails those tests instead of skipping
       MSA_REQUIRE_NETNS: "1"  # so does a runner that cannot take the network away
+      MSA_REQUIRE_CONTAINER: "1"  # and one that cannot run the container sandbox's tests
     steps:
       - uses: actions/checkout@v5
 

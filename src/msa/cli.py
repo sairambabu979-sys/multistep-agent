@@ -107,7 +107,7 @@ from msa.skills.preferences.resolve import Layer, resolve
 from msa.skills.preferences.schema import FIELDS, Examples, RegexCheck, RuffCheck
 from msa.tools.errors import ToolError
 from msa.tools.paths import Root
-from msa.tools.sandbox import LocalSandbox
+from msa.tools.sandbox import LocalSandbox, container_problem, make_sandbox
 
 app = typer.Typer(no_args_is_help=True, add_completion=False, help="Multistep coding agent.")
 fsm_app = typer.Typer(no_args_is_help=True, help="Inspect the orchestrator state machine.")
@@ -736,7 +736,9 @@ def prefs_check(
 def _sandbox(ctx: typer.Context, repo: Path) -> LocalSandbox:
     settings = _settings(ctx)
     config = settings.sandbox if settings else SandboxConfig()
-    return LocalSandbox(Root.at(repo), config, role="cli")
+    if (problem := container_problem(config)) is not None:
+        raise _fail(problem)
+    return make_sandbox(Root.at(repo), config, role="cli")
 
 
 def _run_checks(
@@ -1060,6 +1062,8 @@ async def _drive_live(
     limits: Limits | None,
 ) -> RunState:
     """Start the run with ``limits``, or resume it (``limits`` is None)."""
+    if (problem := container_problem(settings.sandbox)) is not None:
+        raise _fail(problem)  # fail closed: no repository command would run
     tracing.configure(settings.observability.traces)
     client = _client(settings, environment)
     state_dir = Path(environment.state_dir)

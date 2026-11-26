@@ -268,8 +268,32 @@ class CapabilitiesConfig(Frozen):
         )
 
 
+class ContainerConfig(Frozen):
+    """The container backend for repository commands (ADR-019): the ``run`` tool and the
+    test gates run in a fresh container per command, with the worktree mounted and
+    nothing else writable, no network, a non-root user, and CPU, memory and process
+    limits. ``image`` must hold the repository's toolchain (pytest, ruff, mypy, and its
+    dependencies): nothing is installed in the container, which has no network to do it."""
+
+    runtime: Literal["docker", "podman"] = "docker"
+    image: str = ""  # required with backend = "container", e.g. "ghcr.io/me/repo-ci:1"
+    # The image's interpreter, in place of [sandbox].launcher: `<launcher> pytest ...`.
+    launcher: Annotated[tuple[str, ...], Field(min_length=1)] = ("python", "-m")
+    cpus: PositiveFloat = 2.0
+    memory: Annotated[str, StringConstraints(pattern=r"^[1-9][0-9]*[kmg]$")] = "4g"
+    pids_limit: PositiveInt = 512
+    tmp_size: Annotated[str, StringConstraints(pattern=r"^[1-9][0-9]*[kmg]$")] = "512m"
+    # uid:gid inside the container; empty: yours, or 65534:65534 (nobody) if you are root.
+    user: Annotated[str, StringConstraints(pattern=r"^([1-9][0-9]*:[0-9]+)?$")] = ""
+
+
 class SandboxConfig(Frozen):
-    """How commands run in the local worktree sandbox (PLAN §8, ADR-009)."""
+    """How commands run in the worktree sandbox (PLAN §8, ADR-009, ADR-019)."""
+
+    # local: on this machine, as you (trusted repositories only). container: repository
+    # commands in a container ([sandbox.container]); fails closed if there is no runtime.
+    backend: Literal["local", "container"] = "local"
+    container: ContainerConfig = ContainerConfig()
 
     # Prefix for allowlisted Python tools: `<launcher> pytest ...`.
     launcher: Annotated[tuple[str, ...], Field(min_length=1)] = (
@@ -292,6 +316,15 @@ class SandboxConfig(Frozen):
     # auto: where the kernel allows it; always: refuse to run them where it does not;
     # never: only the dead proxy in their environment.
     isolate_network: Literal["auto", "always", "never"] = "auto"
+
+    @model_validator(mode="after")
+    def _a_container_needs_an_image(self) -> Self:
+        if self.backend == "container" and not self.container.image:
+            raise ValueError(
+                '[sandbox].backend = "container" needs [sandbox.container].image: an image '
+                "holding the repository's toolchain and dependencies"
+            )
+        return self
 
 
 # The sandbox's allowlisted commands (msa.tools.sandbox.COMMANDS; a contract test keeps the

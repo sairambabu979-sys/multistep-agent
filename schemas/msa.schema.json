@@ -199,6 +199,70 @@
       "title": "CapabilitiesConfig",
       "type": "object"
     },
+    "ContainerConfig": {
+      "additionalProperties": false,
+      "description": "The container backend for repository commands (ADR-019): the ``run`` tool and the\ntest gates run in a fresh container per command, with the worktree mounted and\nnothing else writable, no network, a non-root user, and CPU, memory and process\nlimits. ``image`` must hold the repository's toolchain (pytest, ruff, mypy, and its\ndependencies): nothing is installed in the container, which has no network to do it.",
+      "properties": {
+        "cpus": {
+          "default": 2.0,
+          "exclusiveMinimum": 0,
+          "title": "Cpus",
+          "type": "number"
+        },
+        "image": {
+          "default": "",
+          "title": "Image",
+          "type": "string"
+        },
+        "launcher": {
+          "default": [
+            "python",
+            "-m"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Launcher",
+          "type": "array"
+        },
+        "memory": {
+          "default": "4g",
+          "pattern": "^[1-9][0-9]*[kmg]$",
+          "title": "Memory",
+          "type": "string"
+        },
+        "pids_limit": {
+          "default": 512,
+          "exclusiveMinimum": 0,
+          "title": "Pids Limit",
+          "type": "integer"
+        },
+        "runtime": {
+          "default": "docker",
+          "enum": [
+            "docker",
+            "podman"
+          ],
+          "title": "Runtime",
+          "type": "string"
+        },
+        "tmp_size": {
+          "default": "512m",
+          "pattern": "^[1-9][0-9]*[kmg]$",
+          "title": "Tmp Size",
+          "type": "string"
+        },
+        "user": {
+          "default": "",
+          "pattern": "^([1-9][0-9]*:[0-9]+)?$",
+          "title": "User",
+          "type": "string"
+        }
+      },
+      "title": "ContainerConfig",
+      "type": "object"
+    },
     "Effort": {
       "enum": [
         "low",
@@ -606,8 +670,33 @@
     },
     "SandboxConfig": {
       "additionalProperties": false,
-      "description": "How commands run in the local worktree sandbox (PLAN \u00a78, ADR-009).",
+      "description": "How commands run in the worktree sandbox (PLAN \u00a78, ADR-009, ADR-019).",
       "properties": {
+        "backend": {
+          "default": "local",
+          "enum": [
+            "local",
+            "container"
+          ],
+          "title": "Backend",
+          "type": "string"
+        },
+        "container": {
+          "$ref": "#/$defs/ContainerConfig",
+          "default": {
+            "cpus": 2.0,
+            "image": "",
+            "launcher": [
+              "python",
+              "-m"
+            ],
+            "memory": "4g",
+            "pids_limit": 512,
+            "runtime": "docker",
+            "tmp_size": "512m",
+            "user": ""
+          }
+        },
         "cpu_seconds": {
           "default": 1800,
           "exclusiveMinimum": 0,
@@ -968,6 +1057,20 @@
     "sandbox": {
       "$ref": "#/$defs/SandboxConfig",
       "default": {
+        "backend": "local",
+        "container": {
+          "cpus": 2.0,
+          "image": "",
+          "launcher": [
+            "python",
+            "-m"
+          ],
+          "memory": "4g",
+          "pids_limit": 512,
+          "runtime": "docker",
+          "tmp_size": "512m",
+          "user": ""
+        },
         "cpu_seconds": 1800,
         "env_passthrough": [
           "PATH",

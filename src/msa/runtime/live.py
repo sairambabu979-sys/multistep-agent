@@ -92,8 +92,9 @@ from msa.skills.policy import Policy
 from msa.skills.preferences import Resolved
 from msa.skills.registry import Registry
 from msa.tools.audit import Violation, log_violation
+from msa.tools.errors import CommandUnavailable
 from msa.tools.paths import Root
-from msa.tools.sandbox import LocalSandbox
+from msa.tools.sandbox import LocalSandbox, container_problem
 
 STAND_INS: dict[str, str] = {
     "request_review": "Reviewer (M8): no review; no findings",
@@ -382,7 +383,10 @@ def interpreter(
     on_violation: Callable[[Violation], None] = log_violation,
     on_report: Callable[[Path], None] | None = None,
 ) -> Interpreter:
-    """The interpreter that drives (or resumes) a live run, writing its report at the end."""
+    """The interpreter that drives (or resumes) a live run, writing its report at the end.
+    With the container backend and no usable runtime, it refuses: nothing would run."""
+    if (problem := container_problem(config.sandbox)) is not None:
+        raise CommandUnavailable(problem)
     repo = Path(environment.repo)
     sandbox = LocalSandbox(Root.at(repo), config.sandbox, role="intake", on_violation=on_violation)
     validation = ValidationExecutor(

@@ -39,7 +39,7 @@ from msa.skills.registry import render as render_skills
 from msa.tools.audit import Violation, log_violation
 from msa.tools.capabilities import WritePolicy
 from msa.tools.paths import Root
-from msa.tools.sandbox import LocalSandbox
+from msa.tools.sandbox import LocalSandbox, make_sandbox
 from msa.tools.workspace import Workspace
 
 
@@ -67,7 +67,7 @@ class RunContext:
 
     def sandbox(self, role: Role, *, worktree: RunWorktree | None = None) -> LocalSandbox:
         root = Root.at((worktree or self.worktree).path)
-        return LocalSandbox(
+        return make_sandbox(
             root, self.config.sandbox, role=role.value, on_violation=self.on_violation
         )
 

@@ -33,7 +33,6 @@ from msa.core.values import FailureKind, Owner, Triage
 from msa.runtime.context import RunContext
 from msa.runtime.testing import Case, Run, SuiteUnrunnable, run_pytest
 from msa.runtime.verify import removed_section
-from msa.tools.errors import CommandUnavailable
 from msa.tools.sandbox import NETWORK_NAMESPACE, LocalSandbox
 
 ISOLATION = NETWORK_NAMESPACE
@@ -41,13 +40,9 @@ RECORDS = "integrations.jsonl"
 
 
 async def isolation(sandbox: LocalSandbox) -> tuple[str, ...] | None:
-    """The wrapper that takes the network away, if this kernel lets an unprivileged user
-    create the namespace; None otherwise."""
-    try:
-        done = await sandbox.execute([*ISOLATION, "true"], shown="unshare -rn true")
-    except CommandUnavailable:
-        return None
-    return ISOLATION if done.exit_code == 0 else None
+    """What takes the network away: ``unshare -rn`` where this kernel lets an unprivileged
+    user create the namespace, () in a container (it has none), None where neither."""
+    return await sandbox.network_wrapper()
 
 
 class IntegrationExecutor:
@@ -90,7 +85,13 @@ class IntegrationExecutor:
             )
             return self._blocked(effect, tree, now, report)
         isolated = wrapper is not None
-        how = "without network (`unshare -rn`)" if isolated else "with the sandbox's network"
+        how = (
+            "with the sandbox's network"
+            if not isolated
+            else "without network (`unshare -rn`)"
+            if wrapper
+            else "without network (in a container with none)"
+        )
         junit = ctx.files.directory.resolve() / "junit" / effect.id.replace(":", "-")
         try:
             head = await run_pytest(sandbox, suites, junit / "head.xml", wrapper=wrapper or ())

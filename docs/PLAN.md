@@ -412,10 +412,10 @@ When a dispute is decided by a human ruling, or the same `style` finding is dism
 |---|---|
 | Destructive or unexpected commands | Command allowlist with typed arguments. No raw shell. Timeouts, an output cap, and `RLIMIT_*` limits. |
 | Filesystem escape | Paths are resolved once and confined, then opened by descriptor without following symlinks, so the check and the use cannot be raced apart. Writes are atomic renames, which also break hard links. Fuzzed and race-tested (ADR-009). |
-| Network exfiltration | `ContainerSandbox` runs with `--network none`. `LocalSandbox` only steers HTTP clients to a dead proxy and sets package tools offline: that stops well-behaved clients, not a hostile one, so it is no boundary (ADR-009). |
+| Network exfiltration | `ContainerSandbox` (`[sandbox].backend = "container"`, ADR-019) runs every repository command with `--network none`. `LocalSandbox` takes the network away with `unshare -rn` where the kernel allows, and otherwise only steers HTTP clients to a dead proxy and sets package tools offline: that stops well-behaved clients, not a hostile one, so it is no boundary (ADR-009). |
 | Secrets in prompts | The environment is scrubbed before any subprocess runs. A secret scanner runs over outgoing prompt payloads in debug builds. |
 | Prompt injection from repo content | Capabilities are enforced by the harness (§3). Tool results are wrapped as data. The agent cannot change its own permissions, budget, or phase. |
-| Untrusted repos | The `SandboxPort` has two adapters: `LocalWorktreeSandbox` (default, trusted repos) and `ContainerSandbox` (Docker or Podman, required for untrusted repos). |
+| Untrusted repos | Two backends (`[sandbox].backend`): `LocalSandbox` (default, trusted repos) and `ContainerSandbox` (Docker or Podman: a fresh container per command, worktree-only writes, no network, non-root, resource limits; required for untrusted repos, and fails closed without a runtime; ADR-019). |
 | Outward actions (push, PR) | Disabled by default. A separate `publish` effect that requires `--allow-publish` and a confirmation. |
 
 ---

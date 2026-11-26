@@ -87,10 +87,13 @@ tester = { write = ["tests/acceptance/**", "tests/repro/**"] }
 reviewer = { write = [] }
 arbiter = { write = [] }
 
-# Commands in the local worktree sandbox (ADR-009). It confines paths and scrubs the
-# environment, and on Linux takes the network away from agent commands. It is not a
-# syscall boundary: untrusted repos need a container.
+# Commands in the worktree sandbox (ADR-009). It confines paths and scrubs the environment,
+# and on Linux takes the network away from agent commands. The local backend is not a
+# syscall boundary: for a repository you do not trust, set backend = "container"
+# (ADR-019), which runs the agents' commands and the test gates in a fresh Docker or
+# Podman container each, with no network and nothing writable but the worktree.
 [sandbox]
+backend = "local"
 launcher = ["uv", "run", "--frozen", "python", "-m"]  # `<launcher> pytest ...`
 timeout_seconds = 600
 output_limit_bytes = 65536
@@ -101,6 +104,18 @@ cpu_seconds = 1800
 max_file_bytes = 1073741824
 env_passthrough = ["PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "TERM"]
 isolate_network = "auto"  # agent commands get no network at all (unshare -rn) where possible
+
+# backend = "container": the image must hold the repository's toolchain and dependencies
+# (nothing is installed in it, without network). A missing runtime stops the run.
+[sandbox.container]
+runtime = "docker"  # or "podman"
+image = ""          # e.g. "ghcr.io/you/your-repo-ci:1"
+launcher = ["python", "-m"]
+cpus = 2.0
+memory = "4g"
+pids_limit = 512
+tmp_size = "512m"
+user = ""           # uid:gid; default yours, or 65534:65534 (nobody) if you are root
 
 # STATIC_ANALYSIS: deterministic checks on the head tree, in order, over the whole worktree
 # except the Tester's directories, which UNIT_TESTING checks. The preference checks always

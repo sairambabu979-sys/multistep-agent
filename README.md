@@ -452,7 +452,23 @@ is what agents act through: `read_file`, `search`, `edit`, `create_file`, `run` 
   the operator.
 
 The local sandbox is for trusted repositories: it confines paths, but it is not a network
-or syscall boundary.
+or syscall boundary. For a repository you do not trust, set `[sandbox].backend =
+"container"` ([ADR-019](docs/adr/019-container-sandbox.md)). The agents' commands and the
+test gates then run in a fresh Docker or Podman container each:
+- the worktree is mounted, and nothing else is writable;
+- `--network none`, a non-root user, every capability dropped;
+- CPU, memory, process and time limits.
+
+`[sandbox.container].image` must hold the repository's toolchain and dependencies, since
+nothing is installed in a container without network. For example:
+
+```dockerfile
+FROM python:3.13-slim
+COPY requirements.txt /tmp/
+RUN pip install --no-cache-dir -r /tmp/requirements.txt pytest ruff mypy
+```
+
+With no usable runtime, a run stops before it starts.
 
 **Preferences** (`src/msa/skills/preferences`, [ADR-010](docs/adr/010-preferences.md)) are
 your coding rules. Each one has a scope, an enforcement level (hard, soft, info or off) and,

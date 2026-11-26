@@ -24,3 +24,4 @@ the old one.
 | [016](016-skills-and-security-policy.md) | Skills and the security policy: versioned, narrowing, and outranked by policy | Accepted |
 | [017](017-postgres-and-temporal.md) | PostgreSQL storage and Temporal orchestration, around the same core | Accepted |
 | [018](018-push-and-pull-requests.md) | After approval, push the release and open its pull request, if asked | Accepted |
+| [019](019-container-sandbox.md) | A container backend for repository commands, for repositories you do not trust | Accepted |
