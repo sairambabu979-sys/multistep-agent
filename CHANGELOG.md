@@ -71,6 +71,8 @@ by [git-cliff](https://git-cliff.org). Regenerate with `make changelog`; do not 
 - **ci:** mutmut copies evals/ whole, so the nightly mutation run starts ([`6a7cd58`](https://github.com/sairambabu979-sys/multistep-agent/commit/6a7cd580e0f87cc7ef4d11a3600dd78127356c81))
 - **sandbox:** a preference's ripgrep check runs on this machine ([`743d73f`](https://github.com/sairambabu979-sys/multistep-agent/commit/743d73f7ea1dbf45345cb6082354fbdb56566f9f))
 - **sandbox:** only ripgrep may skip the container ([`6267165`](https://github.com/sairambabu979-sys/multistep-agent/commit/6267165aa026a81ce16db18e8e944579f8d7ea70))
+- **sandbox:** a regex check confines its paths again before ripgrep runs here ([`b9cd7d1`](https://github.com/sairambabu979-sys/multistep-agent/commit/b9cd7d1cf38c17d082c1a7c2a81366762b5dc08b))
+- **ci:** the quickstart check runs against a journal of its own ([`90ad671`](https://github.com/sairambabu979-sys/multistep-agent/commit/90ad6714f8e52afb64d86e60358fc5b2ff43bb92))
 
 ### Refactoring
 
@@ -111,6 +113,7 @@ by [git-cliff](https://git-cliff.org). Regenerate with `make changelog`; do not 
 - PLAN, README and CHANGELOG say what is actually done ([`8fe6b35`](https://github.com/sairambabu979-sys/multistep-agent/commit/8fe6b35bde0ba7f46356e9f95d7722a1ab536860))
 - **security:** the M10 security checklist, and the README quickstart checked in CI ([`1515504`](https://github.com/sairambabu979-sys/multistep-agent/commit/1515504599723f8b1252696c77a6e38ce53d8f45))
 - **changelog:** regenerate ([`7a66566`](https://github.com/sairambabu979-sys/multistep-agent/commit/7a66566488576d73b9f5957e3b43b9525e05fe9a))
+- **changelog:** regenerate ([`07c7424`](https://github.com/sairambabu979-sys/multistep-agent/commit/07c7424e391051b3713ba477c6398d004dd0b707))
 
 ### Tests
 
@@ -125,6 +128,9 @@ by [git-cliff](https://git-cliff.org). Regenerate with `make changelog`; do not 
 - SIGKILL a run while its sandboxed pytest runs, then resume it ([`730b4ea`](https://github.com/sairambabu979-sys/multistep-agent/commit/730b4eac5e7eba2f488fd4d65d8f711dbc504af0))
 - **evals:** read the eval CLI's usage error without its colour codes ([`2448ad6`](https://github.com/sairambabu979-sys/multistep-agent/commit/2448ad6e1bc21d45027f051d00f9b03853fcb581))
 - **sandbox:** the definition-of-done run through every gate in containers ([`0737db9`](https://github.com/sairambabu979-sys/multistep-agent/commit/0737db9728ce17a6f1aa9fd09e483c3b8256bcf2))
+- **sandbox:** the container demo shows nothing else ran on this machine ([`d0e7741`](https://github.com/sairambabu979-sys/multistep-agent/commit/d0e77410e4dc566d53132e900c04fc40172d5d64))
+- **agents:** the never-instructions sentence must be one sentence ([`8df0d74`](https://github.com/sairambabu979-sys/multistep-agent/commit/8df0d74454c24b1510263b6817b5b712c6c8b40a))
+- **sandbox:** the demo image installs uv.lock's versions and hashes on a pinned base ([`20459a7`](https://github.com/sairambabu979-sys/multistep-agent/commit/20459a748e5437eb06c20834856cd9560a9a5016))
 
 ### Build and tooling
 
