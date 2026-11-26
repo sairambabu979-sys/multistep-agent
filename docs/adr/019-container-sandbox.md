@@ -41,8 +41,8 @@ container sandbox that did not exist.
    exit with the reason, and the service records it as the run's driver error. A command
    that finds the runtime gone mid-run is refused, not run locally.
 5. **What stays on this machine:**
-   - searching (`rg`) and diffing (`git`): they read the worktree, and run none of its
-     code;
+   - searching (`rg`), a preference's regex check (`rg` too) and diffing (`git`): they
+     read the worktree, and run none of its code. The image needs none of them;
    - a harness tool that needs the network, the dependency audit: it reads the
      repository's dependency files, and runs none of its code.
 6. **Network isolation is the container's.** The gates' `unshare -rn` wrapper is empty in a

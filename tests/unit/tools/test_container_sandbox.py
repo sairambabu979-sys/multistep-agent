@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import stat
 import sys
 from pathlib import Path
@@ -20,7 +21,9 @@ from pydantic import ValidationError
 
 from msa.config import ContainerConfig, SandboxConfig
 from msa.runtime import live
+from msa.runtime.checks import run_checks
 from msa.runtime.integration import isolation
+from msa.skills.preferences import resolve, store
 from msa.tools.errors import CommandUnavailable
 from msa.tools.paths import Root
 from msa.tools.sandbox import ContainerSandbox, LocalSandbox, container_problem, make_sandbox
@@ -253,6 +256,26 @@ def test_a_harness_tool_that_needs_the_network_runs_on_this_machine(
         ContainerSandbox(root, config()).execute(["echo", "audit"], shown="echo", network=True)
     )
     assert done.stdout.strip() == "audit"
+    assert not log.exists()  # the runtime was never called
+
+
+def test_a_preferences_regex_check_runs_on_this_machine(
+    root: Root, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ripgrep reads the worktree and runs none of its code: like search, it stays here, so
+    the image need not carry it. It used to go into the container, where an image without
+    rg made every regex preference fail to check."""
+    if shutil.which("rg") is None:
+        pytest.skip("ripgrep is not installed")
+    log = fake_runtime(tmp_path / "bin")
+    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}:{os.environ['PATH']}")
+    (root.path / "notes.md").write_text("<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> b\n")
+    box = ContainerSandbox(root, config())
+    found = asyncio.run(run_checks(box, resolve([store.builtin_layer()]), ["notes.md"]))
+    assert [(f.line, f.preference) for f in found] == [
+        (1, "general.no-merge-markers"),
+        (5, "general.no-merge-markers"),
+    ]
     assert not log.exists()  # the runtime was never called
 
 

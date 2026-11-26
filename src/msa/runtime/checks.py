@@ -126,7 +126,7 @@ async def _regex(
 ) -> list[CheckFinding]:
     targets = [f for f in paths if preference.scope.applies_to(f)]  # non-empty: selected
     argv = ["rg", "--json", "--no-config", "--regexp", check.pattern, "--", *targets]
-    done = await sandbox.execute(argv, shown="rg", merge=False)
+    done = await sandbox.scan(argv, shown="rg")  # on this machine: an image need not have rg
     if done.exit_code not in {0, 1}:  # 1: no match
         raise CheckError(f"rg failed: {done.stderr.strip() or done.render()}")
     if done.elided_bytes:
