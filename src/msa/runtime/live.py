@@ -21,7 +21,7 @@ the same executors. ``executors`` wires one executor per effect kind:
 | run_negotiation_round | the Coder as author, then the Reviewer replying |
 | request_arbitration | the ladder: repro test, preference, style, then the Arbiter |
 | verify_release | the Release Verifier and the PR bundle (``msa.runtime.release``) |
-| publish_release | a local branch holding the approved commit |
+| publish_release | the approved commit on a local branch; pushed, with a PR, if asked |
 | await_* (plan, ruling, release, unblock, resume) | a person, from outside (below) |
 
 A person's question is written to ``question.md`` in the run directory, and the run parks

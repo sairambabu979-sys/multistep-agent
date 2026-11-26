@@ -34,6 +34,19 @@ export interface Finding {
   raised_on: string;
 }
 
+// Where an approved release went (ADR-018): its local branch, and the remote branch and
+// pull request when the approval asked for them. A push or pull request that failed has
+// its error here; the release is committed either way.
+export interface Publication {
+  mode: "local" | "push" | "pr";
+  branch: string;
+  commit: string;
+  remote: string | null;
+  remote_branch: string | null;
+  pr_url: string | null;
+  error: string | null;
+}
+
 export interface RunState {
   run_id: string;
   seq: number;
@@ -52,6 +65,7 @@ export interface RunState {
   resume_phase: string | null;
   release: string | null;
   approved_by: string | null;
+  publication: Publication | null;
   limits: { budget_usd_micros: number; max_revisions: number; plan_gate: string };
   ledger: { limit_usd_micros: number; spent: { usd_micros: number } };
   evidence: Record<"static" | "unit" | "integration" | "security", string | null>;

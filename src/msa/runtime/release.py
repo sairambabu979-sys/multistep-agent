@@ -20,15 +20,20 @@ refuses any ``agent:`` principal.
 
 ``publish_release`` runs only after a person approved. It commits the tree onto the base
 commit, with the description as its message and ``Approved-by:`` naming the person, to a
-local branch ``<[release].branch_prefix><run>``. Nothing is pushed: the person who approved
-pushes, and opens the PR from ``pr.md``. Published again after a crash, it finds the branch
-already holding this tree on this base and reuses that commit.
+local branch ``<[release].branch_prefix><run>``. Then, if the approval asked for it
+(``[publish].mode`` or ``msa approve --publish``), it pushes the branch, or pushes it and
+opens a pull request with ``pr.md`` as its body (``msa.runtime.publishing``, ADR-018). By
+default nothing is pushed: the person who approved pushes. Where the release went is
+journaled with ``ReleasePublished``. Published again after a crash, it finds the branch
+already holding this tree on this base and reuses that commit, and the push and the pull
+request are found again, not repeated.
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+import os
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import datetime
 from typing import Any
 
@@ -42,8 +47,8 @@ from msa.core.events import (
     ReleaseVerified,
 )
 from msa.core.ids import TreeHash
-from msa.core.values import Severity
-from msa.runtime import integration, security
+from msa.core.values import Publication, Severity
+from msa.runtime import integration, publishing, security
 from msa.runtime.artifacts import PLAN_FILE, SUMMARIES, RunFiles
 from msa.runtime.context import RunContext
 from msa.runtime.intake import base_commit
@@ -364,9 +369,20 @@ class ReleaseExecutor:
         return "\n".join(lines)
 
 
+# How a pull request is opened for a run; tests replace it with a fake.
+type PullRequestsFor = Callable[[RunContext], Awaitable[publishing.PullRequests]]
+
+
+async def _pull_requests(ctx: RunContext) -> publishing.PullRequests:
+    return await publishing.pull_requests(ctx.config.publish, ctx.worktree.repo)
+
+
 class PublishExecutor:
-    def __init__(self, context: RunContext) -> None:
+    def __init__(
+        self, context: RunContext, pull_requests: PullRequestsFor = _pull_requests
+    ) -> None:
         self.context = context
+        self.pull_requests = pull_requests
 
     async def execute(self, effect: Effect, *, now: datetime) -> AnyEvent:
         command = effect.command
@@ -393,7 +409,16 @@ class PublishExecutor:
             ).strip()
             # Create only: never move a branch someone else owns.
             await git(repo, "update-ref", ref, commit, "0" * 40)
-        reference = f"{branch} at {commit}"
+        config = ctx.config.publish
+        publication = await publishing.publish(
+            Publication(mode=command.publish, branch=branch, commit=commit),
+            repo=repo,
+            config=config,
+            title=bundle["title"],
+            body=ctx.files.read(PR_FILE) or bundle["body"],
+            opener=lambda: self.pull_requests(ctx),
+            secrets=[os.environ.get(config.token_env, "")],
+        )
         ctx.files.record(
             "releases.jsonl",
             {
@@ -403,9 +428,16 @@ class PublishExecutor:
                 "branch": branch,
                 "commit": commit,
                 "approved_by": command.approved_by,
+                "publication": publication.model_dump(mode="json"),
             },
         )
-        return ReleasePublished(at=now, effect_id=effect.id, tree=command.tree, reference=reference)
+        return ReleasePublished(
+            at=now,
+            effect_id=effect.id,
+            tree=command.tree,
+            reference=publishing.describe(publication),
+            publication=publication,
+        )
 
     async def _existing(self, ref: str, tree: TreeHash, parent: str) -> str | None:
         """The commit ``ref`` already holds, if it is this release; raise if it is another."""

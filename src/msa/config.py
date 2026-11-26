@@ -33,7 +33,7 @@ from pydantic import (
 
 from msa import globs
 from msa.core._frozen import Frozen
-from msa.core.values import Escalation, Limits, PlanGate
+from msa.core.values import Escalation, Limits, PlanGate, PublishMode
 
 DEFAULT_CONFIG = Path("msa.toml")
 
@@ -222,6 +222,9 @@ def _env_name(name: str) -> str:
 EnvName = Annotated[
     str, StringConstraints(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$"), AfterValidator(_env_name)
 ]
+# A variable the harness itself reads, such as a token's: never passed to a command, so a
+# name that looks like a credential is expected here.
+HarnessVariable = Annotated[str, StringConstraints(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")]
 
 
 class RoleCapability(Frozen):
@@ -377,6 +380,26 @@ class ReleaseConfig(Frozen):
     branch_prefix: Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9/_-]*/$")] = "aegis/"
 
 
+class PublishConfig(Frozen):
+    """What happens to an approved release after it is committed to its local branch
+    (ADR-018). ``msa approve --publish`` overrides ``mode`` for one approval.
+
+    The push uses git's own credentials (a credential helper or SSH key). The pull request
+    uses ``gh`` when it is installed and logged in, otherwise the REST API with the token in
+    the variable ``token_env`` names; the token is never written anywhere."""
+
+    mode: PublishMode = PublishMode.LOCAL  # local: nothing leaves this machine
+    remote: Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9._-]+$")] = "origin"
+    # owner/name on GitHub; empty: read from the remote's URL.
+    repository: Annotated[str, StringConstraints(pattern=r"^([\w.-]+/[\w.-]+)?$")] = ""
+    base: str = ""  # the pull request's base branch; empty: the repository's default branch
+    token_env: HarnessVariable = "GITHUB_TOKEN"
+    api_url: Annotated[str, StringConstraints(pattern=r"^https?://[^\s]+$")] = (
+        "https://api.github.com"
+    )
+    timeout_seconds: PositiveFloat = 60.0  # per git push, gh or API call
+
+
 class ServiceConfig(Frozen):
     """``msa serve`` (ADR-015 §3): the HTTP API."""
 
@@ -427,6 +450,7 @@ class MsaConfig(Frozen):
     integration: IntegrationConfig = IntegrationConfig()
     security: SecurityConfig = SecurityConfig()
     release: ReleaseConfig = ReleaseConfig()
+    publish: PublishConfig = PublishConfig()
     service: ServiceConfig = ServiceConfig()
     observability: ObservabilityConfig = ObservabilityConfig()
     temporal: TemporalConfig = TemporalConfig()

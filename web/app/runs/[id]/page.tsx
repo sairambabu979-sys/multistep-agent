@@ -7,7 +7,7 @@ import { ApprovalPanel } from "@/components/approval-panel";
 import { useSession } from "@/components/auth";
 import { DiffView } from "@/components/diff-view";
 import { ReviewCenter } from "@/components/review-center";
-import { PhaseBadge, Problem, RunProgress, usd } from "@/components/run-parts";
+import { PhaseBadge, Problem, PublicationFacts, RunProgress, usd } from "@/components/run-parts";
 import { TestDashboard } from "@/components/test-dashboard";
 import { Timeline } from "@/components/timeline";
 import { WorkflowGraph } from "@/components/workflow-graph";
@@ -121,6 +121,11 @@ export default function RunPage() {
                     <dd>{state.approved_by ?? "-"}</dd>
                   </dl>
                 </Card>
+                {state.publication && (
+                  <Card title="Release">
+                    <PublicationFacts publication={state.publication} />
+                  </Card>
+                )}
               </div>
             ),
           },

@@ -148,9 +148,20 @@ isolate_network = "auto"
 forbid_new_dependencies = false
 audit_command = []  # e.g. ["pip-audit", "--strict"], run when a dependency manifest changes
 
-# Publishing, after a person approves: a local branch, never a push.
+# Publishing, after a person approves: the approved commit on a local branch.
 [release]
 branch_prefix = "aegis/"
+
+# And then (ADR-018): "local" (nothing leaves this machine), "push" the branch, or "pr":
+# push it and open a pull request with pr.md as its body. `msa approve --publish` overrides
+# it. The push uses git's own credentials; the PR uses gh if it is logged in, otherwise the
+# REST API with the token in $token_env (never written anywhere).
+[publish]
+mode = "local"
+remote = "origin"
+# repository = "owner/name"  # default: read from the remote's URL
+# base = "main"              # default: the repository's default branch
+token_env = "GITHUB_TOKEN"
 
 # msa serve: the HTTP API, behind bearer tokens (msa tokens add) and roles.
 [service]

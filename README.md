@@ -239,11 +239,23 @@ When every gate has passed, the run writes the pull request to `.msa/runs/<run>/
 (with `patch.diff` beside it) and waits for you. It lists any risks the Planner named, such
 as an ambiguity in the task it had to resolve by guessing: no gate checks those, so you are
 the one who judges them. Approve it, and it is committed onto the base commit as the
-branch `aegis/<run>`, with `Approved-by:` naming you. Nothing is pushed:
+branch `aegis/<run>`, with `Approved-by:` naming you. By default nothing is pushed:
 
 ```bash
 uv run msa approve <run>
 ```
+
+To push the branch, or push it and open the pull request with `pr.md` as its body, set
+`[publish].mode` to `"push"` or `"pr"` in `msa.toml`, or ask for it once (ADR-018):
+
+```bash
+uv run msa approve <run> --publish pr
+```
+
+The push uses your git credentials. The pull request uses `gh` if it is logged in,
+otherwise the GitHub API with the token in `$GITHUB_TOKEN` (`[publish].token_env`); the
+token is never written anywhere. A push or pull request that fails is recorded in the run
+(`msa inspect <run>`, the API, the workbench's run view) and the release stays committed.
 
 ```bash
 uv run msa approve <run> --reject "rename the flag to --debug"

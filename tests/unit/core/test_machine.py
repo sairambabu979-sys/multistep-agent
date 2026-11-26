@@ -94,6 +94,8 @@ from msa.core.values import (
     Owner,
     Phase,
     PlanGate,
+    Publication,
+    PublishMode,
     Resolution,
     Severity,
     Triage,
@@ -878,6 +880,82 @@ def test_a_publication_for_another_tree_is_rejected() -> None:
     d.approve_release()
     wrong = d.answer(PublishRelease, ReleasePublished, tree=BASE, reference="x")
     assert d.reject(wrong).reason is Rejection.STALE_EVIDENCE
+
+
+# ---------- where an approved release goes (ADR-018)
+
+
+def test_the_publish_modes_are_local_push_and_pr() -> None:
+    assert [m.value for m in PublishMode] == ["local", "push", "pr"]
+
+
+def test_an_approval_that_names_no_mode_publishes_locally() -> None:
+    d = Driver()
+    _to_release(d)
+    d.verify_release()
+    approval = d.answer(AwaitReleaseApproval, ReleaseApproved, by=PERSON)
+    assert approval.model_dump()["publish"] is PublishMode.LOCAL
+    d.send(approval)
+    command = d.effect(PublishRelease).command
+    assert isinstance(command, PublishRelease)
+    assert command.publish is PublishMode.LOCAL
+
+
+@pytest.mark.parametrize("mode", list(PublishMode))
+def test_the_approved_mode_is_the_one_publishing_follows(mode: PublishMode) -> None:
+    d = Driver()
+    _to_release(d)
+    d.verify_release()
+    d.complete(AwaitReleaseApproval, ReleaseApproved, by=PERSON, publish=mode)
+    assert d.effect(PublishRelease).command == PublishRelease(
+        tree=d.head, bundle=bundle(d.head), approved_by=PERSON, publish=mode
+    )
+
+
+def test_where_the_release_went_is_kept_in_the_state_and_the_outcome() -> None:
+    d = Driver()
+    _to_release(d)
+    d.verify_release()
+    d.complete(AwaitReleaseApproval, ReleaseApproved, by=PERSON, publish=PublishMode.PR)
+    went = Publication(
+        mode=PublishMode.PR,
+        branch="aegis/run-1",
+        commit="c0ffee",
+        remote="origin",
+        remote_branch="aegis/run-1",
+        pr_url="https://github.com/o/r/pull/1",
+    )
+    d.complete(
+        PublishRelease, ReleasePublished, tree=d.head, reference="aegis/run-1, pull request 1",
+        publication=went,
+    )  # fmt: skip
+    d.expect(P.COMPLETED)
+    assert d.state.publication == went
+    assert d.state.outcome is not None
+    assert d.state.outcome.detail == "aegis/run-1, pull request 1"
+
+
+def test_a_publication_journaled_before_adr_018_has_none() -> None:
+    d = Driver()
+    _to_release(d)
+    d.release()  # ReleasePublished with a reference only
+    assert d.state.publication is None
+
+
+@pytest.mark.parametrize(
+    "remote", [{"remote": "origin"}, {"remote_branch": "aegis/r"}, {"pr_url": "https://x/1"}]
+)
+def test_a_local_publication_names_nothing_remote(remote: dict[str, str]) -> None:
+    with pytest.raises(ValidationError, match="a local release names no remote"):
+        Publication(mode=PublishMode.LOCAL, branch="aegis/r", commit="c0ffee", **remote)
+
+
+def test_a_pushed_publication_may_name_its_remote_and_a_local_one_its_error() -> None:
+    pushed = Publication(
+        mode=PublishMode.PUSH, branch="aegis/r", commit="c0ffee", remote="o", remote_branch="r"
+    )
+    assert (pushed.remote, pushed.remote_branch) == ("o", "r")
+    assert Publication(mode=PublishMode.LOCAL, branch="b", commit="c", error="e").error == "e"
 
 
 # ---------- pausing

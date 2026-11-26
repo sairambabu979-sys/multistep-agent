@@ -457,6 +457,63 @@
       "title": "Pricing",
       "type": "object"
     },
+    "PublishConfig": {
+      "additionalProperties": false,
+      "description": "What happens to an approved release after it is committed to its local branch\n(ADR-018). ``msa approve --publish`` overrides ``mode`` for one approval.\n\nThe push uses git's own credentials (a credential helper or SSH key). The pull request\nuses ``gh`` when it is installed and logged in, otherwise the REST API with the token in\nthe variable ``token_env`` names; the token is never written anywhere.",
+      "properties": {
+        "api_url": {
+          "default": "https://api.github.com",
+          "pattern": "^https?://[^\\s]+$",
+          "title": "Api Url",
+          "type": "string"
+        },
+        "base": {
+          "default": "",
+          "title": "Base",
+          "type": "string"
+        },
+        "mode": {
+          "$ref": "#/$defs/PublishMode",
+          "default": "local"
+        },
+        "remote": {
+          "default": "origin",
+          "pattern": "^[A-Za-z0-9._-]+$",
+          "title": "Remote",
+          "type": "string"
+        },
+        "repository": {
+          "default": "",
+          "pattern": "^([\\w.-]+/[\\w.-]+)?$",
+          "title": "Repository",
+          "type": "string"
+        },
+        "timeout_seconds": {
+          "default": 60.0,
+          "exclusiveMinimum": 0,
+          "title": "Timeout Seconds",
+          "type": "number"
+        },
+        "token_env": {
+          "default": "GITHUB_TOKEN",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "title": "Token Env",
+          "type": "string"
+        }
+      },
+      "title": "PublishConfig",
+      "type": "object"
+    },
+    "PublishMode": {
+      "description": "What happens to an approved release once it is committed to its local branch\n(ADR-018). Chosen by the person who approves, and recorded with the approval.",
+      "enum": [
+        "local",
+        "push",
+        "pr"
+      ],
+      "title": "PublishMode",
+      "type": "string"
+    },
     "ReleaseConfig": {
       "additionalProperties": false,
       "description": "FINAL_VERIFICATION and publishing (ADR-015).",
@@ -883,6 +940,18 @@
       },
       "title": "Pricing",
       "type": "object"
+    },
+    "publish": {
+      "$ref": "#/$defs/PublishConfig",
+      "default": {
+        "api_url": "https://api.github.com",
+        "base": "",
+        "mode": "local",
+        "remote": "origin",
+        "repository": "",
+        "timeout_seconds": 60.0,
+        "token_env": "GITHUB_TOKEN"
+      }
     },
     "release": {
       "$ref": "#/$defs/ReleaseConfig",

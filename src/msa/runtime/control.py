@@ -49,7 +49,7 @@ from msa.core.events import (
     Unblocked,
 )
 from msa.core.ids import FindingId, RunId
-from msa.core.values import Resolution, Verdict
+from msa.core.values import PublishMode, Resolution, Verdict
 from msa.runtime.clock import Clock
 from msa.runtime.journal import SqlJournal
 
@@ -170,14 +170,24 @@ def decide(
     by: str,
     decision: Decision,
     feedback: str = "",
+    publish: PublishMode | None = None,
+    default_publish: PublishMode = PublishMode.LOCAL,
 ) -> Done:
-    """Approve or send back whichever gate is pending: the plan, or the release."""
+    """Approve or send back whichever gate is pending: the plan, or the release. An
+    approved release is published as ``publish`` says, else as ``default_publish``
+    (ADR-018). Only a release has anything to publish, so naming a mode for a plan, or
+    for a rejection, is refused."""
 
     def make(effect: Effect, at: datetime) -> Completion:
         release = isinstance(effect.command, AwaitReleaseApproval)
+        if publish is not None and not (release and decision == "approve"):
+            raise ValueError("only an approved release is published: this is not one")
         if decision == "approve":
-            approved = ReleaseApproved if release else PlanApproved
-            return approved(at=at, effect_id=effect.id, by=by)
+            if release:
+                return ReleaseApproved(
+                    at=at, effect_id=effect.id, by=by, publish=publish or default_publish
+                )
+            return PlanApproved(at=at, effect_id=effect.id, by=by)
         rejected = ReleaseRejected if release else PlanRejected
         return rejected(at=at, effect_id=effect.id, by=by, feedback=feedback or "sent back")
 

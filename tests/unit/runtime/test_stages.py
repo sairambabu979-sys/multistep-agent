@@ -40,11 +40,11 @@ from msa.core.events import (
     SecurityReviewPassed,
 )
 from msa.core.ids import RunId, TreeHash
-from msa.core.values import FailureKind, Owner
+from msa.core.values import FailureKind, Owner, PublishMode
 from msa.llm import fake
 from msa.llm.gateway import Gateway
 from msa.llm.store import MemoryResponseStore
-from msa.runtime import integration, live, release, security
+from msa.runtime import integration, live, publishing, release, security
 from msa.runtime.artifacts import PLAN_FILE
 from msa.runtime.context import RunContext
 from msa.runtime.intake import (
@@ -636,6 +636,85 @@ def test_a_plan_that_named_no_risk_adds_no_risk_section(run: RunContext) -> None
     pr = (run.files.directory / release.PR_FILE).read_text(encoding="utf-8")
     assert "Add farewell next to greet." in pr  # the plan was read
     assert "## Risks" not in pr
+
+
+class OpenedOnce:
+    """Pull requests in memory, as GitHub would hold them."""
+
+    def __init__(self) -> None:
+        self.open: dict[str, str] = {}
+        self.created: list[dict[str, str]] = []
+
+    async def find(self, head: str) -> str | None:
+        return self.open.get(head)
+
+    async def create(self, *, title: str, body: str, head: str, base: str) -> str:
+        self.created.append({"title": title, "body": body, "head": head, "base": base})
+        self.open[head] = "https://github.com/octo/demo/pull/1"
+        return self.open[head]
+
+
+def test_an_approval_that_asks_for_a_pr_pushes_and_opens_it_once(
+    run: RunContext, tmp_path: Path
+) -> None:
+    _with_context(run)
+    tree = change(run, {"src/farewell.py": "def farewell(n: str) -> str:\n    return n\n"})
+    _passed_gates(run, tree)
+    answer = _verify(run, tree)
+    assert isinstance(answer, ReleaseVerified)
+    remote = tmp_path / "remote.git"
+    git(tmp_path, "init", "-q", "--bare", str(remote))
+    git(run.worktree.repo, "remote", "add", "origin", str(remote))
+    github = OpenedOnce()
+
+    async def pull_requests(_: RunContext) -> OpenedOnce:
+        return github
+
+    executor = PublishExecutor(run, pull_requests)
+    command = PublishRelease(
+        tree=tree, bundle=answer.bundle, approved_by="grace", publish=PublishMode.PR
+    )
+    first = asyncio.run(executor.execute(effect(command), now=T0))
+    again = asyncio.run(executor.execute(effect(command), now=T0))  # after a crash
+    assert isinstance(first, ReleasePublished)
+    assert isinstance(again, ReleasePublished)
+    assert first.publication == again.publication
+    assert first.publication is not None
+    commit = git(run.worktree.repo, "rev-parse", "refs/heads/aegis/run-1")
+    assert (first.publication.commit, first.publication.remote_branch) == (commit, "aegis/run-1")
+    assert first.publication.pr_url == "https://github.com/octo/demo/pull/1"
+    assert first.publication.error is None
+    assert git(remote, "rev-parse", "refs/heads/aegis/run-1") == commit
+    (opened,) = github.created  # one pull request, however often it ran
+    pr = (run.files.directory / release.PR_FILE).read_text(encoding="utf-8")
+    assert opened["title"] == "Add farewell(name) to the greeter."
+    assert opened["body"] == publishing.pr_body(pr)
+    assert opened["body"].startswith("## Summary")
+    assert first.reference == (
+        f"aegis/run-1 at {commit}, pushed to origin/aegis/run-1, "
+        "pull request https://github.com/octo/demo/pull/1"
+    )
+    recorded = run.files.records("releases.jsonl")[-1]
+    assert recorded["publication"]["pr_url"] == "https://github.com/octo/demo/pull/1"
+
+
+def test_an_approval_that_asks_for_a_push_with_no_remote_is_still_committed(
+    run: RunContext,
+) -> None:
+    _with_context(run)
+    tree = change(run, {"src/farewell.py": "X = 1\n"})
+    _passed_gates(run, tree)
+    answer = _verify(run, tree)
+    assert isinstance(answer, ReleaseVerified)
+    command = PublishRelease(
+        tree=tree, bundle=answer.bundle, approved_by="grace", publish=PublishMode.PUSH
+    )
+    published = asyncio.run(PublishExecutor(run).execute(effect(command), now=T0))
+    assert isinstance(published, ReleasePublished)
+    assert published.publication is not None
+    assert published.publication.remote_branch is None
+    assert (published.publication.error or "").startswith("git push to origin failed")
+    assert git(run.worktree.repo, "rev-parse", "refs/heads/aegis/run-1")  # committed anyway
 
 
 def test_publishing_never_moves_a_branch_that_holds_something_else(run: RunContext) -> None:

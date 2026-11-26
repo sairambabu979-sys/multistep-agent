@@ -102,9 +102,9 @@ def _go(state: RunState, phase: Phase, *commands: AnyCommand, **updates: Any) ->
     return Decision(state.model_copy(update={"phase": phase, **updates}), commands)
 
 
-def _stop(state: RunState, reason: OutcomeReason, detail: str) -> Decision:
+def _stop(state: RunState, reason: OutcomeReason, detail: str, **updates: Any) -> Decision:
     outcome = Outcome(reason=reason, detail=detail)
-    return _go(state, outcome.phase, outcome=outcome)
+    return _go(state, outcome.phase, outcome=outcome, **updates)
 
 
 def _require_current(state: RunState, tree: TreeHash, what: str) -> None:
@@ -470,7 +470,10 @@ def _release_verification_failed(state: RunState, event: ReleaseVerificationFail
 def _release_approved(state: RunState, event: ReleaseApproved) -> Decision:
     """Only now, with a person's approval on record, is the release published."""
     publish = PublishRelease(
-        tree=state.require_head(), bundle=state.require_release(), approved_by=event.by
+        tree=state.require_head(),
+        bundle=state.require_release(),
+        approved_by=event.by,
+        publish=event.publish,
     )
     return _go(state, Phase.HUMAN_APPROVAL, publish, approved_by=event.by)
 
@@ -481,7 +484,7 @@ def _release_rejected(state: RunState, event: ReleaseRejected) -> Decision:
 
 def _release_published(state: RunState, event: ReleasePublished) -> Decision:
     _require_current(state, event.tree, "published release")
-    return _stop(state, OutcomeReason.COMPLETED, event.reference)
+    return _stop(state, OutcomeReason.COMPLETED, event.reference, publication=event.publication)
 
 
 # ---------- the table
