@@ -106,8 +106,11 @@ class PastTheEnd(JournalError):
     """A state was asked for after an event the run has not reached."""
 
     def __init__(self, run_id: RunId, seq: int, head: int) -> None:
-        super().__init__(f"run {run_id}: seq {seq} is past the end (head is {head})")
+        super().__init__(run_id, seq, head)  # its args rebuild it: it pickles
         self.run_id, self.seq, self.head = run_id, seq, head
+
+    def __str__(self) -> str:
+        return f"run {self.run_id}: seq {self.seq} is past the end (head is {self.head})"
 
 
 @dataclass(frozen=True, slots=True)

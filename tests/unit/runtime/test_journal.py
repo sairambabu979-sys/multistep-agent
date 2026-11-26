@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import pickle
 import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
@@ -94,6 +95,8 @@ def test_time_travel_loads_any_past_state(journal: SqlJournal) -> None:
     with pytest.raises(PastTheEnd, match=f"seq {final.seq + 1} is past the end") as past:
         journal.load(RUN, upto=final.seq + 1)
     assert (past.value.seq, past.value.head) == (final.seq + 1, final.seq)
+    copy = pickle.loads(pickle.dumps(past.value))  # it can cross a process boundary
+    assert (type(copy), str(copy)) == (PastTheEnd, str(past.value))
     # events() still clamps: Temporal's commit recovery reads one seq that may not exist yet.
     assert journal.events(RUN, upto=10_000) == events
     with pytest.raises(JournalError, match="start at 1"):
