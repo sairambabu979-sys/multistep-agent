@@ -69,6 +69,7 @@ by [git-cliff](https://git-cliff.org). Regenerate with `make changelog`; do not 
 - **release:** a revised run's PR says its summary is the plan's, and lists each revision ([`8c2d470`](https://github.com/sairambabu979-sys/multistep-agent/commit/8c2d4700b3de2c45593ac719b6672462478b1336))
 - **test:** the parked-run Temporal test waits for the park it asserts on ([`f2fd34d`](https://github.com/sairambabu979-sys/multistep-agent/commit/f2fd34dedfccbe6e2e25dac2c9e747bc2049c675))
 - **ci:** mutmut copies evals/ whole, so the nightly mutation run starts ([`6a7cd58`](https://github.com/sairambabu979-sys/multistep-agent/commit/6a7cd580e0f87cc7ef4d11a3600dd78127356c81))
+- **sandbox:** a preference's ripgrep check runs on this machine ([`743d73f`](https://github.com/sairambabu979-sys/multistep-agent/commit/743d73f7ea1dbf45345cb6082354fbdb56566f9f))
 
 ### Refactoring
 
@@ -106,6 +107,8 @@ by [git-cliff](https://git-cliff.org). Regenerate with `make changelog`; do not 
 - live-11, a true finding upheld by the repro test and fixed ([`ae9112e`](https://github.com/sairambabu979-sys/multistep-agent/commit/ae9112e4ce1581ed496dd8b673aed4641fe33105))
 - live-11's release was approved by a person and published ([`5e76378`](https://github.com/sairambabu979-sys/multistep-agent/commit/5e76378ab64aad4884b5048bbfd8e814e3207fc4))
 - **changelog:** regenerate for the live runs, the eval and the release risks ([`a4ccd03`](https://github.com/sairambabu979-sys/multistep-agent/commit/a4ccd034cf52f8f95a6401ae9f91482db37358b8))
+- PLAN, README and CHANGELOG say what is actually done ([`8fe6b35`](https://github.com/sairambabu979-sys/multistep-agent/commit/8fe6b35bde0ba7f46356e9f95d7722a1ab536860))
+- **security:** the M10 security checklist, and the README quickstart checked in CI ([`1515504`](https://github.com/sairambabu979-sys/multistep-agent/commit/1515504599723f8b1252696c77a6e38ce53d8f45))
 
 ### Tests
 
@@ -119,6 +122,7 @@ by [git-cliff](https://git-cliff.org). Regenerate with `make changelog`; do not 
 - **control:** the Deferred ledger validates and holds, never journals ([`ad02b40`](https://github.com/sairambabu979-sys/multistep-agent/commit/ad02b4005b920ab45fd46cfc5825b4724088d61c))
 - SIGKILL a run while its sandboxed pytest runs, then resume it ([`730b4ea`](https://github.com/sairambabu979-sys/multistep-agent/commit/730b4eac5e7eba2f488fd4d65d8f711dbc504af0))
 - **evals:** read the eval CLI's usage error without its colour codes ([`2448ad6`](https://github.com/sairambabu979-sys/multistep-agent/commit/2448ad6e1bc21d45027f051d00f9b03853fcb581))
+- **sandbox:** the definition-of-done run through every gate in containers ([`0737db9`](https://github.com/sairambabu979-sys/multistep-agent/commit/0737db9728ce17a6f1aa9fd09e483c3b8256bcf2))
 
 ### Build and tooling
 
@@ -138,4 +142,5 @@ by [git-cliff](https://git-cliff.org). Regenerate with `make changelog`; do not 
 - **live-run:** seeded=dispute, a planted Reviewer that never yields ([`27a87bd`](https://github.com/sairambabu979-sys/multistep-agent/commit/27a87bd055f9041c593ad886755a566ae92e3926))
 - **live-run:** seeded=code-dispute, a planted true finding for the ladder to uphold ([`460f54c`](https://github.com/sairambabu979-sys/multistep-agent/commit/460f54c059539a138cffc0b48a19f3d1eb44de34))
 - run ci and nightly on the actions that moved to Node 24 ([`f89e493`](https://github.com/sairambabu979-sys/multistep-agent/commit/f89e493b1a01f7fe8362a291dd57b0b7969bffa3))
+- license the project under MIT ([`029bf9b`](https://github.com/sairambabu979-sys/multistep-agent/commit/029bf9bd19f5abc948175249f1d9e6a34aa9803f))
 
