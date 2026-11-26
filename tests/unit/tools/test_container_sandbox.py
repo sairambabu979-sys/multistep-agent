@@ -25,7 +25,7 @@ from msa.runtime.checks import CheckError, run_checks
 from msa.runtime.integration import isolation
 from msa.skills.preferences import resolve, store
 from msa.skills.preferences.schema import RegexCheck
-from msa.tools.errors import CommandUnavailable
+from msa.tools.errors import CommandRejected, CommandUnavailable
 from msa.tools.paths import Root
 from msa.tools.sandbox import ContainerSandbox, LocalSandbox, container_problem, make_sandbox
 from tests.support.containers import IMAGE, needs_containers
@@ -303,6 +303,20 @@ def test_a_regex_check_never_reads_a_symlink_out_of_the_worktree(
         asyncio.run(checks._regex(box, preference, preference.check, ["notes.md"]))
     assert "hunter2" not in str(error.value)
     assert not log.exists()  # the runtime was never called
+
+
+def test_nothing_but_ripgrep_can_skip_the_container(
+    root: Root, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``scan`` runs on this machine with either backend, so it takes ripgrep alone: a
+    repository command sent through it would run here, outside the container."""
+    log = fake_runtime(tmp_path / "bin")
+    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}:{os.environ['PATH']}")
+    box = ContainerSandbox(root, config())
+    for argv in (["python", "-m", "pytest"], ["sh", "-c", "rg x"], []):
+        with pytest.raises(CommandRejected, match="only ripgrep"):
+            asyncio.run(box.scan(argv, shown="scan"))
+    assert not log.exists()
 
 
 # ---------- running, in real containers
