@@ -250,9 +250,12 @@ class LocalSandbox:
         return Completed(diff.command, 0, diff.seconds, body, "", diff.elided_bytes)
 
     async def scan(self, argv: Sequence[str], *, shown: str) -> Completed:
-        """A harness tool that only reads the worktree and runs none of its code, such as
-        ripgrep for a preference's regex check. Like ``search`` and ``git_diff``, it runs on
-        this machine whichever the backend (ADR-019), so an image need not carry it."""
+        """ripgrep, for search and a preference's regex check: it reads the worktree and runs
+        none of its code. Like ``git_diff``, it runs on this machine whichever the backend
+        (ADR-019), so an image need not carry it. Nothing else may: anything else that runs
+        here would skip the container."""
+        if argv[:1] != ["rg"]:
+            raise CommandRejected(f"only ripgrep runs on this machine, not {list(argv[:1])}")
         return await self._spawn(argv, shown=shown, merge=False)
 
     # ---------- execution

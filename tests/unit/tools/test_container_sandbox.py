@@ -24,7 +24,7 @@ from msa.runtime import live
 from msa.runtime.checks import run_checks
 from msa.runtime.integration import isolation
 from msa.skills.preferences import resolve, store
-from msa.tools.errors import CommandUnavailable
+from msa.tools.errors import CommandRejected, CommandUnavailable
 from msa.tools.paths import Root
 from msa.tools.sandbox import ContainerSandbox, LocalSandbox, container_problem, make_sandbox
 from tests.support.containers import IMAGE, needs_containers
@@ -277,6 +277,20 @@ def test_a_preferences_regex_check_runs_on_this_machine(
         (5, "general.no-merge-markers"),
     ]
     assert not log.exists()  # the runtime was never called
+
+
+def test_nothing_but_ripgrep_can_skip_the_container(
+    root: Root, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``scan`` runs on this machine with either backend, so it takes ripgrep alone: a
+    repository command sent through it would run here, outside the container."""
+    log = fake_runtime(tmp_path / "bin")
+    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}:{os.environ['PATH']}")
+    box = ContainerSandbox(root, config())
+    for argv in (["python", "-m", "pytest"], ["sh", "-c", "rg x"], []):
+        with pytest.raises(CommandRejected, match="only ripgrep"):
+            asyncio.run(box.scan(argv, shown="scan"))
+    assert not log.exists()
 
 
 # ---------- running, in real containers
