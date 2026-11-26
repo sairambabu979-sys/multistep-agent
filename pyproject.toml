@@ -200,6 +200,8 @@ also_copy = [  # read by the selected tests
   "scripts/", "docs/", "schemas/", "msa.toml",
   ".github/workflows/", ".github/live-run/",  # tests/unit/test_live_run_workflow.py
   "evals/",  # tests/unit/test_eval_report.py reads evals/decision.toml
+  "README.md",  # tests/unit/test_quickstart.py
+  "SECURITY.md",  # tests/unit/test_security_checklist.py
 ]
 pytest_add_cli_args = ["-p", "no:cacheprovider", "-q"]
 pytest_add_cli_args_test_selection = [
