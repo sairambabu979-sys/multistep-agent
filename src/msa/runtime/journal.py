@@ -102,6 +102,17 @@ class JournalCorrupt(JournalError):
     pass
 
 
+class PastTheEnd(JournalError):
+    """A state was asked for after an event the run has not reached."""
+
+    def __init__(self, run_id: RunId, seq: int, head: int) -> None:
+        super().__init__(run_id, seq, head)  # its args rebuild it: it pickles
+        self.run_id, self.seq, self.head = run_id, seq, head
+
+    def __str__(self) -> str:
+        return f"run {self.run_id}: seq {self.seq} is past the end (head is {self.head})"
+
+
 @dataclass(frozen=True, slots=True)
 class RunSummary:
     run_id: RunId
@@ -276,9 +287,15 @@ class SqlJournal(ABC):
             yield int(seq), decode_state(payload)
 
     def load(self, run_id: RunId, *, upto: int | None = None) -> RunState:
-        """The state after event ``upto`` (default: the head), via the nearest snapshot."""
+        """The state after event ``upto`` (default: the head), via the nearest snapshot.
+
+        Unlike ``events``, which clamps ``upto`` to the head, a seq past the head raises
+        ``PastTheEnd``: silently answering with the final state hides a wrong seq.
+        """
         head = self._head(run_id)
-        target = head if upto is None else min(upto, head)
+        if upto is not None and upto > head:
+            raise PastTheEnd(run_id, upto, head)
+        target = head if upto is None else upto
         if target < 1:
             raise JournalError("sequence numbers start at 1")
         row = self._run(
