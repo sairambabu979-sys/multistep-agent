@@ -5,6 +5,7 @@ quietly checking fewer commands, or none."""
 
 from __future__ import annotations
 
+import json
 import shlex
 from pathlib import Path
 
@@ -68,3 +69,14 @@ def test_ci_runs_it_on_a_clean_runner() -> None:
     runs = [s.get("run", "") for s in job["steps"]]
     assert "python3 scripts/quickstart_check.py" in runs
     assert not any("ripgrep" in r or "apt-get" in r for r in runs)  # the README says it needs none
+
+
+def test_ci_gives_the_readme_commands_no_more_than_a_test_gets() -> None:
+    """The job runs the README's shell blocks, which a pull request can edit. That is safe
+    while it holds nothing the ``check`` job lacks, which runs a pull request's own tests
+    anyway: a ``pull_request`` trigger, so a fork gets a read-only token and no secrets, and
+    no secret in the job. ``pull_request_target`` would run it with this repository's."""
+    workflow = YAML(typ="safe").load((ROOT / ".github/workflows/ci.yml").read_text())
+    assert "pull_request" in workflow["on"]
+    assert "pull_request_target" not in workflow["on"]
+    assert "secrets." not in json.dumps([workflow.get("env"), workflow["jobs"]["quickstart"]])
