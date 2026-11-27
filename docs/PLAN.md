@@ -408,15 +408,17 @@ When a dispute is decided by a human ruling, or the same `style` finding is dism
 
 ## 8. Sandbox and security
 
+Each control's proof, and every gap, is in the checklist in [SECURITY.md](../SECURITY.md); a unit test keeps every test it names real.
+
 | Threat | Control |
 |---|---|
 | Destructive or unexpected commands | Command allowlist with typed arguments. No raw shell. Timeouts, an output cap, and `RLIMIT_*` limits. |
 | Filesystem escape | Paths are resolved once and confined, then opened by descriptor without following symlinks, so the check and the use cannot be raced apart. Writes are atomic renames, which also break hard links. Fuzzed and race-tested (ADR-009). |
 | Network exfiltration | `ContainerSandbox` (`[sandbox].backend = "container"`, ADR-019) runs every repository command with `--network none`. `LocalSandbox` takes the network away with `unshare -rn` where the kernel allows, and otherwise only steers HTTP clients to a dead proxy and sets package tools offline: that stops well-behaved clients, not a hostile one, so it is no boundary (ADR-009). |
-| Secrets in prompts | The environment is scrubbed before any subprocess runs. A secret scanner runs over outgoing prompt payloads in debug builds. |
-| Prompt injection from repo content | Capabilities are enforced by the harness (§3). Tool results are wrapped as data. The agent cannot change its own permissions, budget, or phase. |
+| Secrets in prompts | The environment is scrubbed before any subprocess runs, and a task, skill or preference holding a secret is refused before it is stored. **Open:** what an agent reads (files, command output) goes to the model unscanned; no scanner checks outgoing prompts, although this row used to say one did ([SECURITY.md](../SECURITY.md)). |
+| Prompt injection from repo content | Capabilities are enforced by the harness (§3). Tool results go back as `tool_result` blocks, and every role is told repository text is never instructions (a mitigation, not a boundary). The agent cannot change its own permissions, budget, or phase. |
 | Untrusted repos | Two backends (`[sandbox].backend`): `LocalSandbox` (default, trusted repos) and `ContainerSandbox` (Docker or Podman: a fresh container per command, worktree-only writes, no network, non-root, resource limits; required for untrusted repos, and fails closed without a runtime; ADR-019). |
-| Outward actions (push, PR) | Disabled by default. A separate `publish` effect that requires `--allow-publish` and a confirmation. |
+| Outward actions (push, PR) | Off by default (`[publish].mode = "local"`). The person approving the release chooses the mode (`msa approve --publish`, or the API); it is journaled on the approval and refused at any other gate. A push is never forced and runs no repository hook, and the token never reaches a log or the journal (ADR-018). |
 
 ---
 
@@ -568,7 +570,7 @@ Each milestone is a vertical slice that merges green. The sizes are relative [Gu
 | **M7** ✅ | **Tester:** blind authoring, fail-before/pass-after, flakes, triage, weakened-test guard, parallel BUILDING | I-03, I-04, I-15 and I-17 green ✅, with triage, the guard and blindness, against a FakeLLM and the real sandbox (ADR-012, ADR-013). | L |
 | **M8** ✅ | **Reviewer + negotiation + arbitration** | I-05 to I-10 green ✅, with the ladder's rungs, the plan gate (`msa approve`) and rulings (`msa rule`). Negotiation invariants hold under property tests ✅ (ADR-014). | L |
 | **M9** 🟡 | **Eval harness + ablations + run report** | Built ✅: the 20-task corpus with hidden tests (`msa eval check`: all fit), arms B and D, scoring, the report, and the pre-registered rule (`evals/decision.toml`). Not done: arms A and C (each needs a runtime change), and the paid eval itself, so no report is published and the rule has not been applied. | M |
-| **M10** 🟡 | **Hardening:** container sandbox, docs, optional `publish` | Done ✅: the container backend (ADR-019), push and pull requests after approval (ADR-018), and the docs brought up to date. Not done: there is no security checklist to close yet, and the README quickstart has not been checked on a clean machine. | M |
+| **M10** 🟡 | **Hardening:** container sandbox, docs, optional `publish` | Done ✅: the container backend (ADR-019), with the definition-of-done run passing every gate in containers in CI, push and pull requests after approval (ADR-018), the docs brought up to date, the security checklist ([SECURITY.md](../SECURITY.md): every control names its test), and the README quickstart run on a fresh runner in CI (the `quickstart` job). Not done: two checklist items are open (agents' reads reach the model unscanned; Actions are pinned by tag, not SHA). | M |
 
 The AEGIS architecture (ADR-015) added milestones the plan above did not have:
 

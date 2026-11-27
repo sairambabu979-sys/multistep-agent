@@ -219,7 +219,7 @@ uv sync
 ```
 
 ```bash
-uv run msa simulate --seed 11 --run-id demo
+uv run msa simulate --seed 21 --run-id demo
 ```
 
 ```bash
@@ -230,8 +230,10 @@ uv run msa inspect demo --at 9
 uv run msa replay demo
 ```
 
-`simulate` prints one line per committed transition. `inspect --at` shows the state as of any
-past event. `replay` re-folds the whole journal from scratch and checks every snapshot
+`simulate` prints one line per committed transition. With this seed the change fails static
+analysis, unit tests and integration tests once each, gets blocked and unblocked, and is then
+approved and published. `inspect --at` shows the state as of any past event (event 9 is the
+first rework). `replay` re-folds the whole journal from scratch and checks every snapshot
 against it. Interrupt a run with Ctrl-C and `msa resume <run>` continues it: completed
 effects are never executed again.
 
@@ -543,7 +545,7 @@ uv run msa policy show
 | Preference merge laws | Associativity, identity, idempotence and right bias of the layer merge (Hypothesis) |
 | Conflict soundness | Scope overlap never misses a path both scopes apply to. The test fails when the overlap rule is weakened. |
 | End-to-end runs | I-01–I-10 and I-14–I-17 on a fixture repository: real admission, validation, worktrees, tool layer, ruff and pytest in the sandbox, every gate, repro tests, parking and `msa rule`, release approval and publishing to a branch, with only the model scripted. I-01's event sequence must match a golden file. |
-| Definition-of-done run | One multi-file task through every stage ([docs/demo](docs/demo/README.md)). The scripted Coder makes four deliberate mistakes, and each is caught by its own stage: a hard repository preference, a triaged acceptance test, `eval()` in security review, and a Reviewer finding accepted in negotiation. A real `SIGKILL` lands mid-revision; the resumed run re-executes nothing already journaled, replays the revision's paid turns, and ends on an approved branch whose PR lists every gate's evidence and what was caught. |
+| Definition-of-done run | One multi-file task through every stage ([docs/demo](docs/demo/README.md)). The scripted Coder makes four deliberate mistakes, and each is caught by its own stage: a hard repository preference, a triaged acceptance test, `eval()` in security review, and a Reviewer finding accepted in negotiation. A real `SIGKILL` lands mid-revision; the resumed run re-executes nothing already journaled, replays the revision's paid turns, and ends on an approved branch whose PR lists every gate's evidence and what was caught. CI runs it again with the container sandbox: every ruff and pytest command in a fresh container with no network, and the same verdict at every gate. |
 | PostgreSQL journal | The journal contract tests, the crash-recovery suite and the API tests run on PostgreSQL too (CI's `backends` and `check` jobs, against `postgres:17`), plus a race between two connections in which exactly one append must win |
 | Temporal driver | Tested against Temporal's test server (CI's `backends` job). A Temporal-driven run must end in exactly the interpreter's state (three seeds, both journals), and its history must replay deterministically. It must park on signals and honor a cancel. A worker SIGKILLed mid-effect must hand the run to another without re-running anything journaled. The API and the CLI start, answer and complete runs on it. |
 | Stages without a model | Each on a real worktree: a suite the change broke goes to the Coder, one broken before the run blocks; an isolated suite cannot reach the network; secrets block without being repeated; publishing is idempotent and never moves someone else's branch. Hand mutants of each rule were shown to fail these tests. |
@@ -552,6 +554,8 @@ uv run msa policy show
 | Dependency audit | Every locked Python dependency, dev tools and extras included, is checked against PyPI's advisory data (`make audit`, CI's `audit` job), and the workbench's production npm dependencies with `npm audit` |
 | Network isolation | CI lets unprivileged users create network namespaces, which Ubuntu 24.04 refuses by default, and then requires them (`MSA_REQUIRE_NETNS=1`): an agent command and an integration suite must each fail to reach the network, and a runner that cannot isolate fails those tests instead of skipping them. Before this, CI skipped both. |
 | Live crash | The `live run` workflow SIGKILLs the real-model run's whole process tree once its journal reaches a given seq, then resumes it with `msa resume`. Its summary fails the job if any effect the journal had answered before the kill started again, model call or not: every effect start is logged durably before it runs (`effects.jsonl`). It lists the turns the resumed invocations replayed instead of buying them again. The same kill, from outside, lands while the unit-test stage's pytest runs in the sandbox, and the resumed run completes (`tests/integration/test_crash_mid_command.py`). A kill that missed the sandboxed pytest was shown to fail that test. |
+| Security checklist | [SECURITY.md](SECURITY.md) maps each threat to its control and the test that proves it, and names what is still open. A unit test fails if any test it cites stops existing, or if a row without one is not labelled a gap or an accepted risk. |
+| README quickstart | CI's `quickstart` job runs every keyless command of [Try it](#try-it) as written, on a fresh runner with no cache. A unit test runs the same commands in process and requires the simulated run to complete. |
 | Contracts | Core purity (AST allowlist), schema completeness, `docs/fsm.md` freshness, layering (`import-linter`), only `msa.llm` imports the SDK, no credential in any cassette |
 
 ## The eval (PLAN §11)
@@ -637,6 +641,11 @@ Settings (model ids, efforts, beta flags, prices, limits, journal path) live in
 [`msa.toml`](msa.toml); check them with `uv run msa config check`. Commit subjects follow
 [Conventional Commits](https://www.conventionalcommits.org/), checked by a `commit-msg`
 hook (`uv run --with pre-commit pre-commit install`) and in CI.
+
+## Security
+
+Report a vulnerability privately; see [SECURITY.md](SECURITY.md), which also holds the
+security checklist.
 
 ## License
 

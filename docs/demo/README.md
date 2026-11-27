@@ -13,7 +13,9 @@ one. Each role's answers (Planner, Coder, Tester, Reviewer) come from a script i
 Everything else ran for real: git and the worktrees, the sandbox, ruff, pytest (the integration
 suite inside a network namespace), the security rules, the journal and the response store on
 disk, the crash, and the published branch. The test passes only if each stage reacts to the
-scripted answers as asserted. A live run shows what a model actually writes; this run shows
+scripted answers as asserted. CI runs it twice: with the local sandbox (this snapshot), and with
+the container sandbox, where every ruff and pytest command runs in a fresh container with no
+network (`tests/fixtures/images/demo`), and every gate must reach the same verdict. A live run shows what a model actually writes; this run shows
 what the platform does with it. The `live run` workflow (`.github/workflows/live-run.yml`)
 runs the same task with the real model, crashes it, and resumes it. Its results are the
 workflow's own, in its job summary and artifact, not this snapshot.
