@@ -970,6 +970,12 @@
           },
           "title": "Commands",
           "type": "array"
+        },
+        "concurrency": {
+          "default": 3,
+          "exclusiveMinimum": 0,
+          "title": "Concurrency",
+          "type": "integer"
         }
       },
       "title": "VerifyConfig",
@@ -1199,7 +1205,8 @@
           "ruff_check",
           "ruff_format_check",
           "mypy"
-        ]
+        ],
+        "concurrency": 3
       }
     }
   },

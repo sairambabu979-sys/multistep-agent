@@ -18,9 +18,11 @@ here is the Coder's to fix, and the Coder may not edit those paths: UNIT_TESTING
 them instead, and sends their failures to the Tester. No test runs here: UNIT_TESTING and
 INTEGRATION_TESTING run them, where fail-before/pass-after and flakes are judged.
 
-Every check runs even after one fails, so a single revision can fix them all. The report
-is stored as an artifact either way: ``StaticAnalysisFailed`` names it, and the Coder's
-revision reads it.
+Every check runs even after one fails, so a single revision can fix them all. The commands
+run at once, up to ``[verify].concurrency``: they only read the worktree. Each keeps its own
+timeout, and the report lists them in ``[verify].commands`` order whatever order they finish
+in (``msa.runtime.parallel``). The report is stored as an artifact either way:
+``StaticAnalysisFailed`` names it, and the Coder's revision reads it.
 
 A check that cannot run at all (the program is missing, a checker crashes) is not the
 code's fault and no revision can fix it. It raises, and the interpreter turns that into
@@ -33,6 +35,7 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from functools import partial
 from typing import assert_never
 
 from msa.config import Role, VerifyCommand
@@ -42,6 +45,7 @@ from msa.core.ids import TreeHash
 from msa.runtime.checks import CheckFinding, run_checks
 from msa.runtime.context import RunContext
 from msa.runtime.guard import pytest_controls, reconfigured
+from msa.runtime.parallel import gather_bounded
 from msa.runtime.worktree import RunWorktree
 from msa.tools.sandbox import Completed
 
@@ -149,11 +153,16 @@ class VerifyExecutor:
         # The Tester's directories are checked in UNIT_TESTING, where a failure goes to the
         # Tester: here it would go to the Coder, who may not edit them.
         tester = ctx.config.capabilities.owned_directories(Role.TESTER)
-        results: list[CheckResult] = []
-        for name in ctx.config.verify.commands:
+
+        async def check(name: VerifyCommand) -> CheckResult:
             argv = check_argv(name, tester)
             done = await sandbox.execute([*sandbox.config.launcher, *argv], shown=" ".join(argv))
-            results.append(CheckResult(name, passed(name, done), done.render()))
+            return CheckResult(name, passed(name, done), done.render())
+
+        results = await gather_bounded(
+            [partial(check, name) for name in ctx.config.verify.commands],
+            ctx.config.verify.concurrency,
+        )
         base = await ctx.worktree.base_tree()
         changed = outside(await ctx.worktree.changed_files(base, command.tree), tester)
         if changed:

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
@@ -19,7 +20,12 @@ from msa.core.effects import (
     RunUnitTests,
     VerifyRelease,
 )
-from msa.core.events import ReviewProduced, UnitTestsFailed
+from msa.core.events import (
+    ReviewProduced,
+    StaticAnalysisFailed,
+    StaticAnalysisPassed,
+    UnitTestsFailed,
+)
 from msa.core.ids import EffectId, FindingId, RunId, TreeHash
 from msa.core.values import FailureKind, Owner
 from msa.llm import fake
@@ -33,7 +39,7 @@ from msa.runtime.testing import TestSuiteExecutor, parse_junit
 from msa.runtime.verify import VerifyExecutor, check_argv, outside, pytest_configuration
 from msa.tools.errors import CommandUnavailable
 from msa.tools.paths import Root
-from msa.tools.sandbox import LocalSandbox
+from msa.tools.sandbox import Completed, LocalSandbox
 from tests.support.factory import BASE, T0, digest, plan_ref
 from tests.support.llm import config as base_config
 from tests.support.repos import git, make_repo
@@ -179,6 +185,61 @@ def test_testing_refuses_a_tree_the_worktree_does_not_hold(run: RunContext) -> N
     command = RunUnitTests(tree=other, base_tree=BASE)
     with pytest.raises(RuntimeError, match=f"tests were asked for {other}"):
         asyncio.run(TestSuiteExecutor(run).execute(effect(command, 1_000), now=T0))
+
+
+def test_static_checks_run_at_once_and_report_every_failure_in_config_order(
+    run: RunContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The first command is the slowest and the last the fastest, so they finish in reverse.
+    Two fail. The report still lists them in [verify].commands order and names both."""
+    timing = {"check": 0.06, "format": 0.03, "mypy": 0.0}
+    failing = {"check", "mypy"}
+    running = {"now": 0, "most": 0}
+
+    async def execute(self: LocalSandbox, argv: Sequence[str], **_: object) -> Completed:
+        name = next(word for word in ("check", "format", "mypy") if word in argv)
+        running["now"] += 1
+        running["most"] = max(running["most"], running["now"])
+        await asyncio.sleep(timing[name])
+        running["now"] -= 1
+        code = 1 if name in failing else 0
+        return Completed(" ".join(argv), code, timing[name], f"{name} output", "", 0)
+
+    monkeypatch.setattr(LocalSandbox, "execute", execute)
+    tree = asyncio.run(run.worktree.snapshot())
+    answer = asyncio.run(VerifyExecutor(run).execute(effect(RunStaticAnalysis(tree=tree)), now=T0))
+    assert isinstance(answer, StaticAnalysisFailed)
+    report = run.files.text(answer.report)
+    assert "FAILED (ruff_check, mypy)" in report
+    sections = [line for line in report.splitlines() if line.startswith("## ")]
+    assert sections[:3] == [
+        "## ruff_check: FAILED",
+        "## ruff_format_check: passed",
+        "## mypy: FAILED",
+    ]
+    assert running["most"] == 3  # all three at once: [verify].concurrency is 3
+
+
+def test_static_checks_run_one_at_a_time_with_a_concurrency_of_one(
+    run: RunContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    running = {"now": 0, "most": 0}
+
+    async def execute(self: LocalSandbox, argv: Sequence[str], **_: object) -> Completed:
+        running["now"] += 1
+        running["most"] = max(running["most"], running["now"])
+        await asyncio.sleep(0.01)
+        running["now"] -= 1
+        return Completed(" ".join(argv), 0, 0.01, "", "", 0)
+
+    monkeypatch.setattr(LocalSandbox, "execute", execute)
+    run.config = run.config.model_copy(
+        update={"verify": run.config.verify.model_copy(update={"concurrency": 1})}
+    )
+    tree = asyncio.run(run.worktree.snapshot())
+    answer = asyncio.run(VerifyExecutor(run).execute(effect(RunStaticAnalysis(tree=tree)), now=T0))
+    assert isinstance(answer, StaticAnalysisPassed)
+    assert running["most"] == 1
 
 
 def test_a_check_that_cannot_run_fails_the_effect_not_the_code(run: RunContext) -> None:

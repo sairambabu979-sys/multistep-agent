@@ -390,6 +390,9 @@ class VerifyConfig(Frozen):
     run here: UNIT_TESTING and INTEGRATION_TESTING run them, and judge their failures."""
 
     commands: tuple[VerifyCommand, ...] = ("ruff_check", "ruff_format_check", "mypy")
+    # How many of them run at once. They only read the worktree, so they are independent;
+    # the report lists them in the order above whatever order they finish in.
+    concurrency: PositiveInt = 3
 
     @model_validator(mode="after")
     def _unique(self) -> Self:

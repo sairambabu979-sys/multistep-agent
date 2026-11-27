@@ -41,10 +41,11 @@ errors, a timeout) is an environment failure.
 
 from __future__ import annotations
 
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from fnmatch import fnmatchcase
+from functools import partial
 from pathlib import Path, PurePosixPath
 from typing import Literal
 from xml.etree import ElementTree
@@ -61,6 +62,7 @@ from msa.runtime.artifacts import PLAN_FILE
 from msa.runtime.checks import run_checks
 from msa.runtime.context import RunContext, reservation
 from msa.runtime.guard import find_tests
+from msa.runtime.parallel import gather_bounded
 from msa.runtime.verify import PYTEST_NO_TESTS, removed_section
 from msa.runtime.worktree import RunWorktree
 from msa.tools.sandbox import Completed, LocalSandbox
@@ -403,20 +405,30 @@ class TestSuiteExecutor:
         return found
 
     async def _lint(self, sandbox: LocalSandbox, files: list[str], found: Findings) -> None:
+        """ruff, ruff format and the hard preferences over the Tester's files, at once: they
+        only read them. The problems are listed in that order, whatever order they end in."""
         launcher = sandbox.config.launcher
-        for argv in (
-            ["ruff", "check", "--no-fix", "--no-cache", "--", *files],
-            ["ruff", "format", "--check", "--diff", "--no-cache", "--", *files],
-        ):
+
+        async def lint(argv: list[str]) -> str | None:
             done = await sandbox.execute([*launcher, *argv], shown=" ".join(argv[:3]))
-            if done.exit_code != 0:
-                found.tester.append(f"Your tests fail `{' '.join(argv[:3])}`:\n\n{done.render()}")
-        resolved = self.context.preferences()
-        hard = [f for f in await run_checks(sandbox, resolved, files) if f.enforcement == "hard"]
-        if hard:
-            found.tester.append(
-                "Your tests break hard preferences:\n\n" + "\n".join(f.render() for f in hard)
-            )
+            if done.exit_code == 0:
+                return None
+            return f"Your tests fail `{' '.join(argv[:3])}`:\n\n{done.render()}"
+
+        async def hard_preferences() -> str | None:
+            checked = await run_checks(sandbox, self.context.preferences(), files)
+            hard = [f for f in checked if f.enforcement == "hard"]
+            if not hard:
+                return None
+            return "Your tests break hard preferences:\n\n" + "\n".join(f.render() for f in hard)
+
+        jobs: list[Callable[[], Awaitable[str | None]]] = [
+            partial(lint, ["ruff", "check", "--no-fix", "--no-cache", "--", *files]),
+            partial(lint, ["ruff", "format", "--check", "--diff", "--no-cache", "--", *files]),
+            hard_preferences,
+        ]
+        problems = await gather_bounded(jobs, self.context.config.verify.concurrency)
+        found.tester.extend(problem for problem in problems if problem is not None)
 
     async def _rerun(self, sandbox: LocalSandbox, nodeid: str, junit: Path) -> list[bool]:
         results = []

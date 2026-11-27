@@ -136,6 +136,7 @@ user = ""           # uid:gid; default yours, or 65534:65534 (nobody) if you are
 # run too. No tests here: UNIT_TESTING and INTEGRATION_TESTING run them.
 [verify]
 commands = ["ruff_check", "ruff_format_check", "mypy"]
+concurrency = 3  # they only read the worktree: run this many at once, reported in order
 
 # Bounds on one agent invocation, on top of its effect's budget reservation.
 [agents]
