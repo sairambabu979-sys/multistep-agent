@@ -118,6 +118,17 @@ def test_a_push_puts_the_commit_on_the_remote_branch_and_is_safe_to_repeat(repo:
         assert git(repo.remote, "rev-parse", "refs/heads/aegis/run-1") == repo.commit
 
 
+def test_a_push_runs_no_hook_of_the_repository(repo: Repo, tmp_path: Path) -> None:
+    """SECURITY.md (outward actions): the repository's hooks are not the harness's code."""
+    marker = tmp_path / "hook-ran"
+    hook = repo.path / ".git" / "hooks" / "pre-push"
+    hook.write_text(f"#!/bin/sh\ntouch {marker}\nexit 1\n")
+    hook.chmod(0o755)
+    run(publishing.push(repo.path, "origin", "aegis/run-1", repo.commit, timeout=30))
+    assert not marker.exists()
+    assert git(repo.remote, "rev-parse", "refs/heads/aegis/run-1") == repo.commit
+
+
 def test_a_push_never_moves_a_remote_branch_that_holds_something_else(repo: Repo) -> None:
     run(publishing.push(repo.path, "origin", "aegis/run-1", repo.commit, timeout=30))
     (repo.path / "b.py").write_text("B = 2\n")

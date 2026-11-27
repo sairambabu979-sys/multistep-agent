@@ -41,8 +41,11 @@ container sandbox that did not exist.
    exit with the reason, and the service records it as the run's driver error. A command
    that finds the runtime gone mid-run is refused, not run locally.
 5. **What stays on this machine:**
-   - searching (`rg`) and diffing (`git`): they read the worktree, and run none of its
-     code;
+   - searching (`rg`), a preference's regex check (`rg` too) and diffing (`git`): they
+     read the worktree, and run none of its code. The image needs none of them. ripgrep
+     follows a symlink it is named, so the regex check confines its paths again just
+     before it runs: a link that code in a container planted cannot point it out of the
+     worktree;
    - a harness tool that needs the network, the dependency audit: it reads the
      repository's dependency files, and runs none of its code.
 6. **Network isolation is the container's.** The gates' `unshare -rn` wrapper is empty in a
@@ -61,6 +64,13 @@ container sandbox that did not exist.
   fake `docker` (timeout, removal). Real containers prove the worktree is writable and
   nothing else, that there is no network, and the memory limit. Those skip where Docker
   cannot run, and CI (`MSA_REQUIRE_CONTAINER=1`) fails rather than skip them.
+- End to end, CI runs the definition-of-done run (ADR-015) in containers as well, from an
+  image of Python, pytest and ruff alone (`tests/fixtures/images/demo`, `MSA_DEMO_IMAGE`). It
+  must reach the same verdict at every gate as the local run. A `docker` that logs its calls
+  shows that every repository command went through `docker run --network none`, that only
+  the image's interpreter ran there, and that every container was removed, across the crash
+  and the resume. That run found a preference's regex check sent into the container, where
+  an image without ripgrep failed it; it runs on this machine now, as point 5 says.
 
 ## Rejected
 

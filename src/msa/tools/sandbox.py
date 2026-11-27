@@ -203,7 +203,7 @@ class LocalSandbox:
         argv += ["--max-columns-preview", "--regexp", _bounded(pattern, "pattern")]
         if glob is not None:
             argv += ["--glob", _bounded(glob, "glob")]
-        done = await self._spawn([*argv, "--", "."], shown="rg", merge=False)
+        done = await self.scan([*argv, "--", "."], shown="rg")
         if done.exit_code not in {0, 1}:  # 1: no match
             raise CommandRejected(f"search failed: {done.stderr.strip() or done.render()}")
         limit = self.config.search_limit_matches
@@ -248,6 +248,17 @@ class LocalSandbox:
         if new:
             body += "\n\nuntracked files:\n" + new
         return Completed(diff.command, 0, diff.seconds, body, "", diff.elided_bytes)
+
+    async def scan(self, argv: Sequence[str], *, shown: str) -> Completed:
+        """ripgrep, for search and a preference's regex check: it reads the worktree and runs
+        none of its code. Like ``git_diff``, it runs on this machine whichever the backend
+        (ADR-019), so an image need not carry it. Nothing else may: anything else that runs
+        here would skip the container. The caller confines the paths it names
+        (``Root.resolve``) just before: ripgrep follows a symlink it is named, and here no
+        container stands in the way."""
+        if argv[:1] != ["rg"]:
+            raise CommandRejected(f"only ripgrep runs on this machine, not {list(argv[:1])}")
+        return await self._spawn(argv, shown=shown, merge=False)
 
     # ---------- execution
 
@@ -364,9 +375,10 @@ class ContainerSandbox(LocalSandbox):
     - ``[sandbox.container]`` CPU, memory and process limits, and ``[sandbox]``'s timeout:
       the container is removed when its time is up, or the run is cancelled.
 
-    Searching and diffing run on this machine, as with the local backend: they read the
-    worktree and run none of its code. So does a harness tool that needs the network (the
-    dependency audit), which also runs none of the repository's code."""
+    Searching, diffing and a preference's ripgrep check (``scan``) run on this machine, as
+    with the local backend: they read the worktree and run none of its code. So does a
+    harness tool that needs the network (the dependency audit), which also runs none of the
+    repository's code."""
 
     def __init__(
         self,

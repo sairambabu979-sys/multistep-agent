@@ -170,10 +170,9 @@ def test_a_checker_that_does_not_run_fails_closed(repo: Path) -> None:
 
 
 class FailingRg(LocalSandbox):
-    async def execute(self, argv: Sequence[str], **kwargs: Any) -> Completed:
-        if argv[0] == "rg":
-            return Completed("rg", 2, 0.0, "", "rg: something broke", 0)
-        return await super().execute(argv, **kwargs)
+    async def scan(self, argv: Sequence[str], **kwargs: Any) -> Completed:
+        assert argv[0] == "rg"
+        return Completed("rg", 2, 0.0, "", "rg: something broke", 0)
 
 
 def test_a_failing_ripgrep_is_a_check_error(repo: Path) -> None:
@@ -194,6 +193,9 @@ class ReportSandbox(LocalSandbox):
         self.completed = completed
 
     async def execute(self, argv: Sequence[str], **kwargs: Any) -> Completed:
+        return self.completed
+
+    async def scan(self, argv: Sequence[str], **kwargs: Any) -> Completed:
         return self.completed
 
 

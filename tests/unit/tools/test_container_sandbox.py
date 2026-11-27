@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import stat
 import sys
 from pathlib import Path
@@ -19,9 +20,12 @@ import pytest
 from pydantic import ValidationError
 
 from msa.config import ContainerConfig, SandboxConfig
-from msa.runtime import live
+from msa.runtime import checks, live
+from msa.runtime.checks import CheckError, run_checks
 from msa.runtime.integration import isolation
-from msa.tools.errors import CommandUnavailable
+from msa.skills.preferences import resolve, store
+from msa.skills.preferences.schema import RegexCheck
+from msa.tools.errors import CommandRejected, CommandUnavailable
 from msa.tools.paths import Root
 from msa.tools.sandbox import ContainerSandbox, LocalSandbox, container_problem, make_sandbox
 from tests.support.containers import IMAGE, needs_containers
@@ -254,6 +258,65 @@ def test_a_harness_tool_that_needs_the_network_runs_on_this_machine(
     )
     assert done.stdout.strip() == "audit"
     assert not log.exists()  # the runtime was never called
+
+
+def test_a_preferences_regex_check_runs_on_this_machine(
+    root: Root, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ripgrep reads the worktree and runs none of its code: like search, it stays here, so
+    the image need not carry it. It used to go into the container, where an image without
+    rg made every regex preference fail to check."""
+    if shutil.which("rg") is None:
+        pytest.skip("ripgrep is not installed")
+    log = fake_runtime(tmp_path / "bin")
+    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}:{os.environ['PATH']}")
+    (root.path / "notes.md").write_text("<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> b\n")
+    box = ContainerSandbox(root, config())
+    found = asyncio.run(run_checks(box, resolve([store.builtin_layer()]), ["notes.md"]))
+    assert [(f.line, f.preference) for f in found] == [
+        (1, "general.no-merge-markers"),
+        (5, "general.no-merge-markers"),
+    ]
+    assert not log.exists()  # the runtime was never called
+
+
+def test_a_regex_check_never_reads_a_symlink_out_of_the_worktree(
+    root: Root, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """That ripgrep runs here, and follows a symlink it is named. run_checks confines its
+    paths first, but code in a container can swap one for a link afterwards (``python -m
+    ruff`` imports from the worktree): the check confines it again, so the file the link
+    points to, outside the worktree, is never read, and nothing of it is reported."""
+    if shutil.which("rg") is None:
+        pytest.skip("ripgrep is not installed")
+    log = fake_runtime(tmp_path / "bin")
+    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}:{os.environ['PATH']}")
+    secret = tmp_path / "outside" / "credentials"
+    secret.parent.mkdir()
+    secret.write_text("<<<<<<< HEAD\naws_secret_access_key = hunter2\n")
+    (root.path / "notes.md").symlink_to(secret)  # what run_checks confined as notes.md
+    resolved = resolve([store.builtin_layer()])
+    (preference,) = [p for p in resolved.select(["notes.md"]) if p.id == "general.no-merge-markers"]
+    assert isinstance(preference.check, RegexCheck)
+    box = ContainerSandbox(root, config())
+    with pytest.raises(CheckError, match=r"notes\.md changed while it was being checked") as error:
+        asyncio.run(checks._regex(box, preference, preference.check, ["notes.md"]))
+    assert "hunter2" not in str(error.value)
+    assert not log.exists()  # the runtime was never called
+
+
+def test_nothing_but_ripgrep_can_skip_the_container(
+    root: Root, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``scan`` runs on this machine with either backend, so it takes ripgrep alone: a
+    repository command sent through it would run here, outside the container."""
+    log = fake_runtime(tmp_path / "bin")
+    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}:{os.environ['PATH']}")
+    box = ContainerSandbox(root, config())
+    for argv in (["python", "-m", "pytest"], ["sh", "-c", "rg x"], []):
+        with pytest.raises(CommandRejected, match="only ripgrep"):
+            asyncio.run(box.scan(argv, shown="scan"))
+    assert not log.exists()
 
 
 # ---------- running, in real containers
