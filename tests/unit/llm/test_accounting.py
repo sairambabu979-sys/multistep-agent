@@ -1,7 +1,8 @@
 """Pricing responses exactly and planning turns that cannot overspend.
 
 Rates from msa.toml, in micro-USD per token: claude-opus-5-5 is 4 in / 20 out / 0.2 cache
-read / 5 and 8 cache write; claude-opus-5 is 5 / 25 / 0.5 / 6.25 / 10.
+read / 5 and 8 cache write (5m, 1h); claude-opus-5 is 5 / 25 / 0.5 / 6.25 / 10. msa.toml's
+[api].cache_ttl is 1h, so a write the response does not label is a 1h write.
 """
 
 from __future__ import annotations
@@ -29,8 +30,9 @@ from tests.support.llm import config
 REQUESTED = "claude-opus-5-5"
 
 
-def priced(usage: dict[str, Any], model: str = REQUESTED) -> Spend:
-    return spend_of(BetaMessage.model_validate(fake.message(model=model, usage_=usage)), config())
+def priced(usage: dict[str, Any], model: str = REQUESTED, **api: Any) -> Spend:
+    message = BetaMessage.model_validate(fake.message(model=model, usage_=usage))
+    return spend_of(message, config(**api))
 
 
 def pricing(**rates: str) -> Pricing:
@@ -49,7 +51,8 @@ def test_a_plain_turn_is_priced_at_the_served_models_rates() -> None:
 
 def test_cache_reads_and_writes_are_priced_and_counted_as_input() -> None:
     spend = priced(fake.usage(100, 50, cache_read=1_000, cache_write=200))
-    assert spend.usd_micros == 100 * 4 + 50 * 20 + 1_000 * 0.2 + 200 * 5
+    # An unlabelled write is priced at [api].cache_ttl's rate: 1h, so 8 per token.
+    assert spend.usd_micros == 100 * 4 + 50 * 20 + 1_000 * 0.2 + 200 * 8
     assert spend.input_tokens == 100 + 1_000 + 200
 
 
@@ -61,9 +64,17 @@ def test_one_hour_cache_writes_are_priced_from_the_breakdown() -> None:
     assert spend.input_tokens == 100 + 300
 
 
-def test_without_a_breakdown_cache_writes_are_charged_at_the_five_minute_rate() -> None:
-    # The gateway only writes 5-minute entries, so that is what an unlabelled write is.
-    assert priced(fake.usage(0, 0, cache_write=10)).usd_micros == 10 * 5
+def test_without_a_breakdown_cache_writes_are_charged_at_the_configured_ttls_rate() -> None:
+    # Every breakpoint the gateway sets has [api].cache_ttl, so that is what an unlabelled
+    # write is. Charging a 1h write at the 5m rate would under-report spend by 37.5%.
+    assert priced(fake.usage(0, 0, cache_write=10)).usd_micros == 10 * 8  # the default, 1h
+    assert priced(fake.usage(0, 0, cache_write=10), cache_ttl="5m").usd_micros == 10 * 5
+
+
+def test_a_breakdown_wins_over_the_configured_ttl() -> None:
+    usage = fake.usage(0, 0, cache_write=10)
+    usage["cache_creation"] = {"ephemeral_5m_input_tokens": 10, "ephemeral_1h_input_tokens": 0}
+    assert priced(usage).usd_micros == 10 * 5  # labelled 5m, though [api].cache_ttl is 1h
 
 
 def test_a_fallback_bills_every_attempt_at_its_own_models_rates() -> None:

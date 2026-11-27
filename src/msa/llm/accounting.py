@@ -3,6 +3,8 @@
 **Pricing a response.** When a refusal fallback ran, ``usage.iterations`` holds one entry
 per attempt, each at its own model's rates, and top-level ``usage`` covers only the final
 attempt. Pricing from top-level usage alone would under-report, so attempts are summed.
+Cache writes are priced by TTL from ``usage.cache_creation``; without that breakdown they
+are priced at ``[api].cache_ttl``'s rate, the only TTL the gateway writes (ADR-021).
 
 **Planning a turn.** The effect's reservation is a hard cap. Output cost is bounded exactly
 by ``max_tokens`` (thinking counts as output). Input cost is bounded by pricing every input
@@ -34,10 +36,12 @@ def spend_of(message: BetaMessage, config: MsaConfig) -> Spend:
         model = getattr(attempt, "model", None) or message.model
         pricing = config.pricing_for_model(model)
         creation = attempt.cache_creation
-        write_1h = creation.ephemeral_1h_input_tokens if creation else 0
-        write_5m = (
-            creation.ephemeral_5m_input_tokens if creation else attempt.cache_creation_input_tokens
-        ) or 0
+        if creation:
+            write_5m = creation.ephemeral_5m_input_tokens or 0
+            write_1h = creation.ephemeral_1h_input_tokens or 0
+        else:  # no breakdown: every breakpoint the gateway sets has [api].cache_ttl
+            written = attempt.cache_creation_input_tokens or 0
+            write_5m, write_1h = (0, written) if config.api.cache_ttl == "1h" else (written, 0)
         read = attempt.cache_read_input_tokens or 0
         total += Spend(
             usd_micros=pricing.cost_usd_micros(

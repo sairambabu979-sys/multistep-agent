@@ -26,3 +26,4 @@ the old one.
 | [018](018-push-and-pull-requests.md) | After approval, push the release and open its pull request, if asked | Accepted |
 | [019](019-container-sandbox.md) | A container backend for repository commands, for repositories you do not trust | Accepted |
 | [020](020-dependency-audit.md) | Audit the pinned Python dependencies a change adds, by default | Accepted |
+| [021](021-prompt-cache-ttl.md) | A one-hour prompt cache, configurable | Accepted |

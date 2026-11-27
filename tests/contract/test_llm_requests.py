@@ -118,7 +118,10 @@ def test_every_request_is_well_formed(script: list[dict[str, Any]]) -> None:
         assert cfg.api.betas.server_side_fallback in request["betas"]
         assert request["betas"] == sorted(set(request["betas"]))
         assert request["fallbacks"] == cfg.api.fallbacks
-        assert request["cache_control"] == {"type": "ephemeral"}
+        # Both breakpoints share one TTL, so a longer one never follows a shorter (ADR-021).
+        cache = {"type": "ephemeral", "ttl": cfg.api.cache_ttl}
+        assert request["cache_control"] == cache
+        assert [block["cache_control"] for block in request["system"]] == [cache]
         answer_format = request["output_config"]["format"]
         assert answer_format["type"] == "json_schema"
         assert strictness_problems(answer_format["schema"]) == []

@@ -24,6 +24,10 @@ max_retries = 2         # SDK retries before a response starts; gateway retries 
 retry_backoff_seconds = 2.0  # the gateway's wait before a mid-stream retry, doubling
 timeout_seconds = 600
 fallbacks = "default"   # on a refusal, the server re-runs on a model chosen by category
+# Prompt-cache lifetime for the system prompt and the conversation: "1h" or "5m" (ADR-021).
+# 1h survives the gaps between turns (a long test run, a human gate) at 2x input per token
+# written instead of 1.25x; a cache read costs the same either way.
+cache_ttl = "1h"
 
 [api.betas]
 server_side_fallback = "server-side-fallback-2026-07-01"

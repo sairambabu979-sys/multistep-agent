@@ -126,6 +126,7 @@ def test_limits_accept_overrides() -> None:
         ),
         ('task_budgets = "task-budgets-2026-03-13"', 'task_budgets = "task-budgets"', "betas"),
         ("max_tokens = 64000", "max_tokens = 64000\nsurprise = 1", "api.surprise"),
+        ('cache_ttl = "1h"', 'cache_ttl = "24h"', "api.cache_ttl"),
         ("max_negotiation_rounds = 3", "max_negotiation_rounds = 0", "max_negotiation_rounds"),
     ],
 )

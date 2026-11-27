@@ -99,6 +99,15 @@
         "betas": {
           "$ref": "#/$defs/BetasConfig"
         },
+        "cache_ttl": {
+          "default": "1h",
+          "enum": [
+            "5m",
+            "1h"
+          ],
+          "title": "Cache Ttl",
+          "type": "string"
+        },
         "fallbacks": {
           "title": "Fallbacks",
           "type": "string"

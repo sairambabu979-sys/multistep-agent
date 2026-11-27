@@ -107,6 +107,11 @@ class ApiConfig(Frozen):
     timeout_seconds: PositiveFloat = 600.0
     fallbacks: str  # "default": route refusals by category on the server
     betas: BetasConfig
+    # How long the prompt cache keeps the system prompt and the conversation (ADR-021).
+    # "1h" outlives a test suite or a human gate between turns, at 2x input per token
+    # written instead of 1.25x; reads cost the same. Both breakpoints use it, so the
+    # API's rule that a longer TTL comes first always holds.
+    cache_ttl: Literal["5m", "1h"] = "1h"
 
 
 class Pricing(Frozen):

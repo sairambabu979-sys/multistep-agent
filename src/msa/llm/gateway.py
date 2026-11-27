@@ -285,6 +285,11 @@ class _Run[O: BaseModel]:
                     raise self._fail(f"turn {index} stopped for an unsupported reason: {other}")
         raise self._fail(f"no answer within {self.inv.max_turns} turns")
 
+    @property
+    def _cache_control(self) -> dict[str, str]:
+        """The system prompt's breakpoint and the conversation's, alike (ADR-021)."""
+        return {"type": "ephemeral", "ttl": self.config.api.cache_ttl}
+
     async def _request(self) -> Request:
         config, api = self.config, self.config.api
         output_config: dict[str, Any] = {
@@ -302,7 +307,7 @@ class _Run[O: BaseModel]:
         request: Request = {
             "model": self.model,
             "system": [
-                {"type": "text", "text": self.inv.system, "cache_control": {"type": "ephemeral"}}
+                {"type": "text", "text": self.inv.system, "cache_control": self._cache_control}
             ],
             "messages": self.transcript.messages,
             # The transcript is append-only by type, so a thinking block failing the API's
@@ -313,7 +318,7 @@ class _Run[O: BaseModel]:
                 "block_binding": {"prefix_mismatch_behavior": "error"},
             },
             "output_config": output_config,
-            "cache_control": {"type": "ephemeral"},
+            "cache_control": self._cache_control,
             "fallbacks": api.fallbacks,
             "betas": sorted(betas),
         }

@@ -438,6 +438,16 @@ def test_task_budget_is_sent_only_when_large_enough() -> None:
 # ---------- configuration
 
 
+def test_the_prompt_cache_ttl_comes_from_msa_toml() -> None:
+    """Both breakpoints, the system prompt's and the conversation's, carry [api].cache_ttl."""
+    for ttl in ("1h", "5m"):
+        client = fake.ScriptedClient(fake.answer(VERDICT))
+        asyncio.run(Gateway(client, config(cache_ttl=ttl)).invoke(invocation()))
+        (request,) = client.requests
+        assert request["cache_control"] == {"type": "ephemeral", "ttl": ttl}
+        assert request["system"][0]["cache_control"] == {"type": "ephemeral", "ttl": ttl}
+
+
 def test_the_roles_model_and_effort_come_from_msa_toml_and_can_be_overridden() -> None:
     client = fake.ScriptedClient(fake.answer(VERDICT), fake.answer(VERDICT))
     run(client, role=Role.CODER)
