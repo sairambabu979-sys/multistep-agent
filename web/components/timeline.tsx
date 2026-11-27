@@ -1,9 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { useSession } from "@/components/auth";
 import { when } from "@/components/run-parts";
 import type { JournalEvent } from "@/lib/api";
+import type { StreamStatus } from "@/lib/use-run-stream";
 
 const SHOWN = ["by", "reason", "feedback", "note", "tree", "head_tree", "reference", "error"];
 
@@ -20,45 +19,15 @@ function details(event: JournalEvent["event"]): string {
   return parts.join(" · ");
 }
 
-/** The run's journaled events, live: read once, then streamed until the run ends. */
-export function Timeline({ runId, onEvent }: { runId: string; onEvent?: () => void }) {
-  const { api } = useSession();
-  const [events, setEvents] = useState<JournalEvent[]>([]);
-  const [status, setStatus] = useState<"live" | "ended" | "lost">("live");
-  const notify = useRef(onEvent);
-  notify.current = onEvent;
-
-  useEffect(() => {
-    const abort = new AbortController();
-    let last = 0;
-    setEvents([]);
-    setStatus("live");
-    api
-      .stream(
-        runId,
-        0,
-        (event) => {
-          if (event.seq <= last) return;
-          last = event.seq;
-          setEvents((seen) => [...seen, event]);
-          notify.current?.();
-        },
-        abort.signal,
-      )
-      .then(() => setStatus("ended"))
-      .catch(() => {
-        if (!abort.signal.aborted) setStatus("lost");
-      });
-    return () => abort.abort();
-  }, [api, runId]);
-
+/** The run's journaled events, as the page's stream delivers them (``useRunStream``). */
+export function Timeline({ events, status }: { events: JournalEvent[]; status: StreamStatus }) {
   const latest = events.at(-1);
   return (
     <div>
       <p className="mb-2 text-sm text-muted">
         {status === "live" ? "Live: new events appear as they are journaled." : null}
         {status === "ended" ? "The run is over: this is its whole journal." : null}
-        {status === "lost" ? "The stream was lost; reload to reconnect." : null}
+        {status === "lost" ? "The stream was lost: reconnecting, and checking every 15 seconds meanwhile." : null}
       </p>
       <p aria-live="polite" className="sr-only">
         {latest ? `Event ${latest.seq}: ${latest.kind}` : ""}

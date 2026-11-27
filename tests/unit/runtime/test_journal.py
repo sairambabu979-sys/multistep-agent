@@ -16,11 +16,14 @@ from msa.runtime.clock import LogicalClock
 from msa.runtime.codec import CodecError
 from msa.runtime.interpreter import Interpreter
 from msa.runtime.journal import (
+    ROLLUP_COLUMNS,
+    SCHEMA_VERSION,
     DuplicateRun,
     JournalConflict,
     JournalCorrupt,
     JournalError,
     PostgresJournal,
+    RunRollup,
     SqliteJournal,
     SqlJournal,
     UnknownRun,
@@ -64,6 +67,57 @@ def journal(store: Opener) -> Iterator[SqlJournal]:
 def sqlite_journal(tmp_path: Path) -> Iterator[SqliteJournal]:
     with SqliteJournal(tmp_path / "nested" / "runs.db") as opened:
         yield opened
+
+
+def expected_rollup(state: RunState) -> tuple[object, ...]:
+    return (
+        state.phase.value,
+        state.outcome.reason.value if state.outcome else None,
+        state.ledger.spent.usd_micros,
+        state.paused.total_seconds(),
+        state.waiting_since is not None,
+        state.revisions,
+        (state.updated_at - state.started_at - state.paused).total_seconds(),
+    )
+
+
+def rollup_of(row: RunRollup) -> tuple[object, ...]:
+    return (
+        row.phase,
+        row.outcome_reason,
+        row.spent_usd_micros,
+        row.paused_seconds,
+        row.waiting,
+        row.revisions,
+        row.working_seconds,
+    )
+
+
+def test_the_runs_table_keeps_each_runs_rollups_at_its_head(journal: SqlJournal) -> None:
+    """Written with every append, in its transaction: what /api/metrics reads (ADR-023)."""
+    final = simulate(journal)
+    (row,) = journal.rollups()
+    assert row.run_id == RUN
+    assert rollup_of(row) == expected_rollup(journal.load(RUN)) == expected_rollup(final)
+    assert final.ledger.spent.usd_micros > 0  # a run that spent, so the column means something
+
+
+def test_a_v1_journal_gains_its_rollups_from_each_runs_state_when_opened(store: Opener) -> None:
+    """A journal from before the rollups: the columns are added and filled once, on open."""
+    with store() as opened:
+        final = simulate(opened)
+        for name in ROLLUP_COLUMNS:
+            opened._run(f"ALTER TABLE runs DROP COLUMN {name}")
+        if isinstance(opened, SqliteJournal):
+            opened._run("PRAGMA user_version = 1")
+        else:
+            opened._run("UPDATE msa_schema SET version = 1")
+    with store() as reopened:
+        (row,) = reopened.rollups()
+        assert rollup_of(row) == expected_rollup(final)
+        assert reopened.load(RUN) == final  # nothing else changed
+        if isinstance(reopened, SqliteJournal):
+            assert reopened._run("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
 
 
 def test_a_journaled_run_loads_back_to_its_exact_state(journal: SqlJournal) -> None:

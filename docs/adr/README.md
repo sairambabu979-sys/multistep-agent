@@ -28,3 +28,4 @@ the old one.
 | [020](020-dependency-audit.md) | Audit the pinned Python dependencies a change adds, by default | Accepted |
 | [021](021-prompt-cache-ttl.md) | A one-hour prompt cache, configurable | Accepted |
 | [022](022-bounded-tool-results.md) | Bound what tool results add to the transcript | Accepted |
+| [023](023-metrics-rollups-and-a-streamed-run-page.md) | Metrics from rollups, and a run page driven by its stream | Accepted |

@@ -323,13 +323,16 @@ shadcn-style components vendored in `web/components/ui` (Radix tabs underneath):
 
 - **Mission Control:** live runs, what waits on a person, run history, and starting a
   simulated run.
-- **The run page** has the agent timeline (streamed live), the workflow graph drawn from the
-  transition table with the run's path, the code diff, the Review and Negotiation Center,
-  the test and gate dashboard, the pull request, and the actions the run is waiting for.
+- **The run page** follows the run's event stream and refetches only what each event can
+  change, polling slowly only while the stream is down (ADR-023). It has the agent
+  timeline, the workflow graph drawn from the transition table with the run's path, the
+  code diff, the Review and Negotiation Center, the test and gate dashboard, the pull
+  request, and the actions the run is waiting for.
   The progress bar shows the stage the run is actually in ("stage 14 of 15: Human approval"),
   never an animation.
 - **The Approval Center** lists every question for a person in one place.
-- **Metrics** are computed by the API from every run's state.
+- **Metrics** come from rollups the journal keeps on its runs table with every append: one
+  query, however many runs there are (ADR-023).
 - **The Preferences Studio** shows preferences with their origin, the security policy and
   the skills.
 

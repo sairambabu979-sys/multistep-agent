@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useCallback } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ApprovalPanel } from "@/components/approval-panel";
 import { useSession } from "@/components/auth";
 import { DiffView } from "@/components/diff-view";
@@ -13,15 +13,30 @@ import { Timeline } from "@/components/timeline";
 import { WorkflowGraph } from "@/components/workflow-graph";
 import { Card } from "@/components/ui/card";
 import { Tabs } from "@/components/ui/tabs";
-import type { RecordRow } from "@/lib/api";
-import { TERMINAL } from "@/lib/phases";
+import type { JournalEvent, RecordRow } from "@/lib/api";
+import { COALESCE_MS, FALLBACK_POLL_MS, type Refresh, refreshesFor } from "@/lib/run-events";
 import { useResource } from "@/lib/use-resource";
+import { useRunStream } from "@/lib/use-run-stream";
 
 const GATE_RECORDS = ["verifications", "tests", "integrations", "security", "releases"] as const;
 
-function TextFile({ runId, name, empty }: { runId: string; name: string; empty: string }) {
+/** A run file, fetched again when ``version`` changes (a release event), or every
+ * ``everyMs`` while the stream is down. */
+function TextFile({
+  runId,
+  name,
+  empty,
+  version,
+  everyMs,
+}: {
+  runId: string;
+  name: string;
+  empty: string;
+  version: number;
+  everyMs: number;
+}) {
   const { api } = useSession();
-  const file = useResource(() => api.file(runId, name).catch(() => null), `${runId}/${name}`, 5000);
+  const file = useResource(() => api.file(runId, name).catch(() => null), `${runId}/${name}/${version}`, everyMs);
   if (file.data === undefined) return <p role="status">Loading…</p>;
   if (file.data === null) return <p className="text-sm text-muted">{empty}</p>;
   return name.endsWith(".diff") ? (
@@ -35,16 +50,49 @@ export default function RunPage() {
   const params = useParams<{ id: string }>();
   const id = params.id;
   const { api } = useSession();
-  const run = useResource(() => api.run(id), id, 2000);
-  const done = run.data ? TERMINAL.has(run.data.phase) : false;
-  const timeline = useResource(() => api.timeline(id), `${id}/timeline`, done ? 0 : 2000);
+  // The stream drives the page: each event refetches only what it can change, gathered over
+  // a short window. While the stream is down, a slow poll keeps the page roughly current.
+  const [fallback, setFallback] = useState(0);
+  const run = useResource(() => api.run(id), id, fallback);
+  const timeline = useResource(() => api.timeline(id), `${id}/timeline`, fallback);
   const workflow = useResource(() => api.workflow(), "workflow");
   const loadRecords = useCallback(async () => {
     const names = ["findings", "negotiation", "arbitration", ...GATE_RECORDS] as const;
     const rows = await Promise.all(names.map((n) => api.records(id, n)));
     return Object.fromEntries(names.map((n, i) => [n, rows[i] ?? []])) as Record<string, RecordRow[]>;
   }, [api, id]);
-  const records = useResource(loadRecords, `${id}/records`, done ? 0 : 4000);
+  const records = useResource(loadRecords, `${id}/records`, fallback);
+  const [files, setFiles] = useState(0);
+  const pending = useRef(new Set<Refresh>());
+  const flushing = useRef<number | undefined>(undefined);
+  const reloads = useRef({ run: run.reload, timeline: timeline.reload, records: records.reload });
+  reloads.current = { run: run.reload, timeline: timeline.reload, records: records.reload };
+  const flush = useCallback(() => {
+    flushing.current = undefined;
+    const due = pending.current;
+    pending.current = new Set();
+    if (due.has("run")) reloads.current.run();
+    if (due.has("timeline")) reloads.current.timeline();
+    if (due.has("records")) reloads.current.records();
+    if (due.has("files")) setFiles((n) => n + 1);
+  }, []);
+  const onEvent = useCallback(
+    (event: JournalEvent) => {
+      for (const refresh of refreshesFor(event.kind)) pending.current.add(refresh);
+      flushing.current ??= window.setTimeout(flush, COALESCE_MS);
+    },
+    [flush],
+  );
+  const stream = useRunStream(api, id, onEvent);
+  useEffect(() => {
+    setFallback(stream.status === "lost" ? FALLBACK_POLL_MS : 0);
+    if (stream.status === "ended") {
+      // The run is over: one last read of everything, then no more requests.
+      for (const refresh of ["run", "timeline", "records", "files"] as const) pending.current.add(refresh);
+      flush();
+    }
+  }, [stream.status, flush]);
+  useEffect(() => () => window.clearTimeout(flushing.current), []);
 
   if (run.error && !run.data) {
     return (
@@ -129,7 +177,7 @@ export default function RunPage() {
               </div>
             ),
           },
-          { id: "timeline", title: "Timeline", body: <Timeline runId={id} onEvent={run.reload} /> },
+          { id: "timeline", title: "Timeline", body: <Timeline events={stream.events} status={stream.status} /> },
           {
             id: "workflow",
             title: "Workflow",
@@ -143,7 +191,15 @@ export default function RunPage() {
           {
             id: "changes",
             title: "Changes",
-            body: <TextFile runId={id} name="patch.diff" empty="No patch yet: it is written when the release is verified." />,
+            body: (
+              <TextFile
+                runId={id}
+                name="patch.diff"
+                empty="No patch yet: it is written when the release is verified."
+                version={files}
+                everyMs={fallback}
+              />
+            ),
           },
           {
             id: "review",
@@ -166,7 +222,15 @@ export default function RunPage() {
           {
             id: "pr",
             title: "Pull request",
-            body: <TextFile runId={id} name="pr.md" empty="No pull request yet: it is written in final verification." />,
+            body: (
+              <TextFile
+                runId={id}
+                name="pr.md"
+                empty="No pull request yet: it is written in final verification."
+                version={files}
+                everyMs={fallback}
+              />
+            ),
           },
         ]}
       />

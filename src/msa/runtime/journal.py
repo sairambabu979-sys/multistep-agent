@@ -49,7 +49,7 @@ from msa.runtime.codec import (
     event_kind,
 )
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # v2: the runs table keeps the rollups /api/metrics reads (ADR-023)
 
 # One schema for both backends. SQLite stores these tables WITHOUT ROWID (they are keyed
 # by their primary key anyway); PostgreSQL has no such clause. Payloads are TEXT on both,
@@ -61,7 +61,8 @@ _TABLES = (
     environment TEXT NOT NULL,           -- JSON: how to rebuild executors on resume
     head_seq    INTEGER NOT NULL,
     phase       TEXT NOT NULL,
-    outcome     TEXT                     -- JSON, NULL while the run is live
+    outcome     TEXT,                    -- JSON, NULL while the run is live
+    {rollups}
 )""",
     """CREATE TABLE events (
     run_id      TEXT NOT NULL REFERENCES runs(run_id),
@@ -80,6 +81,38 @@ _TABLES = (
     PRIMARY KEY (run_id, seq)
 )""",
 )
+
+
+# Rollups of each run's state at its head, written with every append in the same transaction
+# as the event, so they are never behind the journal. /api/metrics reads these instead of
+# folding every run (ADR-023). Schema v1 journals gain them on open.
+_ROLLUPS = (
+    ("spent_usd_micros", "INTEGER NOT NULL DEFAULT 0"),
+    ("paused_seconds", "DOUBLE PRECISION NOT NULL DEFAULT 0"),
+    ("waiting", "INTEGER NOT NULL DEFAULT 0"),  # 1 while it waits on a person
+    ("revisions", "INTEGER NOT NULL DEFAULT 0"),
+    ("working_seconds", "DOUBLE PRECISION NOT NULL DEFAULT 0"),  # started to now, less paused
+)
+ROLLUP_COLUMNS = tuple(name for name, _ in _ROLLUPS)
+_SCHEMA: tuple[str, ...] = tuple(
+    table.replace("{rollups}", ",\n    ".join(f"{name} {kind}" for name, kind in _ROLLUPS))
+    for table in _TABLES
+)
+
+
+_SET_ROLLUPS = ", ".join(f"{name} = ?" for name, _ in _ROLLUPS)
+
+
+def rollups(state: RunState) -> tuple[int, float, int, int, float]:
+    """The run's rollups, in ``_ROLLUPS`` order."""
+    working = state.updated_at - state.started_at - state.paused
+    return (
+        state.ledger.spent.usd_micros,
+        state.paused.total_seconds(),
+        int(state.waiting_since is not None),
+        state.revisions,
+        working.total_seconds(),
+    )
 
 
 class JournalError(Exception):
@@ -110,6 +143,20 @@ class RunSummary:
     phase: str
     outcome: dict[str, Any] | None
     environment: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class RunRollup:
+    """What /api/metrics needs of a run, from the runs table alone."""
+
+    run_id: RunId
+    phase: str
+    outcome_reason: str | None
+    spent_usd_micros: int
+    paused_seconds: float
+    waiting: bool
+    revisions: int
+    working_seconds: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,15 +231,17 @@ class SqlJournal(ABC):
     def create(self, environment: dict[str, Any], first: RunStarted, state: RunState) -> None:
         with self._transaction():
             try:
+                columns = ", ".join(("run_id", "created_at", "environment", "head_seq", "phase"))
+                rolled = ", ".join(ROLLUP_COLUMNS)
                 self._run(
-                    "INSERT INTO runs (run_id, created_at, environment, head_seq, phase) "
-                    "VALUES (?, ?, ?, ?, ?)",
+                    f"INSERT INTO runs ({columns}, {rolled}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         state.run_id,
                         _now(),
                         json.dumps(environment, sort_keys=True),
                         state.seq,
                         state.phase,
+                        *rollups(state),
                     ),
                 )
             except Exception as exc:
@@ -206,9 +255,9 @@ class SqlJournal(ABC):
         outcome = state.outcome.model_dump_json() if state.outcome else None
         with self._transaction():
             moved = self._run(
-                "UPDATE runs SET head_seq = ?, phase = ?, outcome = ? "
+                f"UPDATE runs SET head_seq = ?, phase = ?, outcome = ?, {_SET_ROLLUPS} "
                 "WHERE run_id = ? AND head_seq = ?",
-                (state.seq, state.phase, outcome, state.run_id, state.seq - 1),
+                (state.seq, state.phase, outcome, *rollups(state), state.run_id, state.seq - 1),
             ).rowcount
             if moved != 1:
                 head = self._head(state.run_id)
@@ -316,6 +365,30 @@ class SqlJournal(ABC):
             divergences.append(str(exc))
         return Verification(len(events), len(snapshots), tuple(divergences))
 
+    def rollups(self) -> list[RunRollup]:
+        """Every run's rollups: one query, and no state is loaded (ADR-023)."""
+        columns = ", ".join(name for name, _ in _ROLLUPS)
+        rows = self._run(f"SELECT run_id, phase, outcome, {columns} FROM runs").fetchall()
+        return [
+            RunRollup(
+                run_id=RunId(run_id),
+                phase=phase,
+                outcome_reason=json.loads(outcome)["reason"] if outcome else None,
+                spent_usd_micros=int(spent),
+                paused_seconds=float(paused),
+                waiting=bool(waiting),
+                revisions=int(revisions),
+                working_seconds=float(working),
+            )
+            for run_id, phase, outcome, spent, paused, waiting, revisions, working in rows
+        ]
+
+    def _backfill_rollups(self) -> None:
+        """Compute the rollups of every run a v1 journal held, from its state, once."""
+        for (run_id,) in self._run("SELECT run_id FROM runs").fetchall():
+            state = self.load(RunId(run_id))
+            self._run(f"UPDATE runs SET {_SET_ROLLUPS} WHERE run_id = ?", (*rollups(state), run_id))
+
     def runs(self) -> list[RunSummary]:
         rows = self._run(
             "SELECT run_id, created_at, head_seq, phase, outcome, environment FROM runs "
@@ -366,14 +439,19 @@ class SqliteJournal(SqlJournal):
         (version,) = self._db.execute("PRAGMA user_version").fetchone()
         if version == SCHEMA_VERSION:
             return
-        if version != 0:
+        if version not in {0, 1}:
             raise JournalCorrupt(
                 f"journal schema v{version} is not supported (this msa uses v{SCHEMA_VERSION})"
             )
         with self._transaction():
             # Not executescript(): it commits implicitly, which would break atomicity.
-            for statement in _TABLES:
-                self._db.execute(f"{statement} WITHOUT ROWID")
+            if version == 0:
+                for statement in _SCHEMA:
+                    self._db.execute(f"{statement} WITHOUT ROWID")
+            else:  # v1 -> v2: the rollup columns, filled from every run's state
+                for name, kind in _ROLLUPS:
+                    self._db.execute(f"ALTER TABLE runs ADD COLUMN {name} {kind}")
+                self._backfill_rollups()
             self._db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
 
@@ -429,9 +507,14 @@ class PostgresJournal(SqlJournal):
             self._db.execute("CREATE TABLE IF NOT EXISTS msa_schema (version INTEGER NOT NULL)")
             row = self._db.execute("SELECT version FROM msa_schema").fetchone()
             if row is None:
-                for statement in _TABLES:
+                for statement in _SCHEMA:
                     self._db.execute(statement)
                 self._db.execute("INSERT INTO msa_schema (version) VALUES (%s)", (SCHEMA_VERSION,))
+            elif row[0] == 1:  # v1 -> v2: the rollup columns, filled from every run's state
+                for name, kind in _ROLLUPS:
+                    self._db.execute(f"ALTER TABLE runs ADD COLUMN {name} {kind}")
+                self._backfill_rollups()
+                self._db.execute("UPDATE msa_schema SET version = %s", (SCHEMA_VERSION,))
             elif row[0] != SCHEMA_VERSION:
                 raise JournalCorrupt(
                     f"journal schema v{row[0]} is not supported (this msa uses v{SCHEMA_VERSION})"

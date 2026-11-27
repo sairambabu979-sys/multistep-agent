@@ -408,31 +408,32 @@ def preferences(_: Viewer, svc: Svc) -> list[dict[str, Any]]:
 
 @router.get("/metrics")
 def metrics(_: Viewer, svc: Svc) -> dict[str, Any]:
-    """Aggregates over every run in the journal, from the runs' own states."""
+    """Aggregates over every run in the journal, from the rollups the journal keeps on its
+    runs table with every append: one query, whatever the number of runs (ADR-023)."""
     with svc.journal() as opened:
-        states = [opened.load(r.run_id) for r in opened.runs()]
+        runs = opened.rollups()
     phases: dict[str, int] = {}
     outcomes: dict[str, int] = {}
-    for state in states:
-        phases[state.phase.value] = phases.get(state.phase.value, 0) + 1
-        if state.outcome is not None:
-            reason = state.outcome.reason.value
-            outcomes[reason] = outcomes.get(reason, 0) + 1
-    completed = [s for s in states if s.phase is Phase.COMPLETED]
-    working = [(s.updated_at - s.started_at - s.paused).total_seconds() for s in completed]
+    for run in runs:
+        phases[run.phase] = phases.get(run.phase, 0) + 1
+        if run.outcome_reason is not None:
+            outcomes[run.outcome_reason] = outcomes.get(run.outcome_reason, 0) + 1
+    completed = [r for r in runs if r.phase == Phase.COMPLETED.value]
     return {
-        "runs": len(states),
-        "live": sum(s.outcome is None for s in states),
-        "waiting_on_people": sum(s.waiting_since is not None for s in states),
+        "runs": len(runs),
+        "live": sum(r.outcome_reason is None for r in runs),
+        "waiting_on_people": sum(r.waiting for r in runs),
         "by_phase": dict(sorted(phases.items())),
         "by_outcome": dict(sorted(outcomes.items())),
-        "spent_usd_micros": sum(s.ledger.spent.usd_micros for s in states),
-        "paused_seconds": sum(s.paused.total_seconds() for s in states),
+        "spent_usd_micros": sum(r.spent_usd_micros for r in runs),
+        "paused_seconds": sum(r.paused_seconds for r in runs),
         "completed": len(completed),
         "mean_revisions_completed": (
-            sum(s.revisions for s in completed) / len(completed) if completed else None
+            sum(r.revisions for r in completed) / len(completed) if completed else None
         ),
-        "mean_working_seconds_completed": sum(working) / len(working) if working else None,
+        "mean_working_seconds_completed": (
+            sum(r.working_seconds for r in completed) / len(completed) if completed else None
+        ),
     }
 
 

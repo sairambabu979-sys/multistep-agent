@@ -508,6 +508,33 @@ def test_the_default_factory_drives_a_simulated_run_to_completion(
         assert "access-control-allow-origin" not in other.headers
 
 
+def test_metrics_read_the_runs_table_and_load_no_run(
+    api: TestClient, tokens: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One query over the rollups, however many runs there are (ADR-023)."""
+    start(api, tokens["operator"], "m1")
+    start(api, tokens["operator"], "m2")
+    api.post("/api/runs/m2/cancel", json={}, headers=auth(tokens["operator"]))
+    wait_until_parked(api, tokens["viewer"], "m2")
+    loaded: list[str] = []
+    real = SqlJournal.load
+
+    def counting(self: SqlJournal, run_id: RunId, *args: Any, **kwargs: Any) -> Any:
+        loaded.append(run_id)
+        return real(self, run_id, *args, **kwargs)
+
+    monkeypatch.setattr(SqlJournal, "load", counting)
+    body = api.get("/api/metrics", headers=auth(tokens["viewer"])).json()
+    assert loaded == []
+    assert body["runs"] == 2
+    assert body["by_outcome"] == {"cancelled": 1}
+    waiting = [
+        api.get(f"/api/runs/{r}", headers=auth(tokens["viewer"])).json()["waiting_on_person"]
+        for r in ("m1", "m2")
+    ]
+    assert body["waiting_on_people"] == sum(waiting)
+
+
 def test_metrics_aggregate_every_run(api: TestClient, tokens: dict[str, str]) -> None:
     start(api, tokens["operator"], "m1")
     start(api, tokens["operator"], "m2")
