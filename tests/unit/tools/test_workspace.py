@@ -90,9 +90,35 @@ def test_reads_are_refused_for_binary_undecodable_and_oversized_files(
         TooLarge, match=re.escape("big.txt is 5000 bytes, over the 1000-byte read limit")
     ):
         small.read_file("big.txt")
-    with pytest.raises(TooLarge, match="it has 200 lines: read it in ranges"):
-        small.read_file("wide.txt")
-    assert small.read_file("wide.txt", start_line=1, end_line=10).last_line == 10
+    # Over the view limit, the view is cut at a line boundary and says where to read on.
+    cut = small.read_file("wide.txt")  # 200 two-character lines; 50 fit in 100 characters
+    assert (cut.first_line, cut.last_line, cut.total_lines) == (1, 50, 200)
+    assert cut.render().endswith(
+        "[cut at the 100-character view limit: lines 51-200 not shown. Read on with start_line=51.]"
+    )
+    within = small.read_file("wide.txt", start_line=1, end_line=10)
+    assert within.last_line == 10
+    assert "[cut at" not in within.render()
+    (tree.repo / "minified.js").write_text("z" * 500)
+    with pytest.raises(TooLarge, match="line 1 alone is 500 characters, over the 100-character"):
+        small.read_file("minified.js")
+
+
+def test_reading_on_from_each_cut_covers_the_file_exactly_once(tree: Tree) -> None:
+    """Following the hint from view to view returns every line, in order, once."""
+    small = tree.workspace(Role.CODER, view_limit_chars=64)
+    text = "".join(f"line {n} {'.' * (n % 13)}\n" for n in range(1, 120))
+    (tree.repo / "long.txt").write_text(text)
+    seen, start = [], 1
+    while True:
+        view = small.read_file("long.txt", start_line=start)
+        assert view.first_line == start
+        assert len(view.text) <= 64
+        seen.append(view.text)
+        if "[cut at" not in view.render():
+            break
+        start = view.last_line + 1
+    assert "".join(seen) == text
 
 
 def test_a_file_that_grows_past_the_limit_while_read_is_refused(

@@ -108,6 +108,15 @@
           "title": "Cache Ttl",
           "type": "string"
         },
+        "context_management": {
+          "$ref": "#/$defs/ContextManagementConfig",
+          "default": {
+            "clear_at_least_input_tokens": 60000,
+            "enabled": true,
+            "keep_tool_uses": 8,
+            "trigger_input_tokens": 200000
+          }
+        },
         "fallbacks": {
           "title": "Fallbacks",
           "type": "string"
@@ -154,6 +163,12 @@
     "BetasConfig": {
       "additionalProperties": false,
       "properties": {
+        "context_management": {
+          "default": "context-management-2025-06-27",
+          "pattern": "^[a-z0-9-]+-\\d{4}-\\d{2}-\\d{2}$",
+          "title": "Context Management",
+          "type": "string"
+        },
         "server_side_fallback": {
           "pattern": "^[a-z0-9-]+-\\d{4}-\\d{2}-\\d{2}$",
           "title": "Server Side Fallback",
@@ -270,6 +285,37 @@
         }
       },
       "title": "ContainerConfig",
+      "type": "object"
+    },
+    "ContextManagementConfig": {
+      "additionalProperties": false,
+      "description": "The server clears old tool results from what the model sees (ADR-022).\n\nThe transcript the gateway sends is untouched, so the journal, replay and thinking\nblocks are unaffected. Clearing invalidates the cached conversation from the first\nresult it clears, so the next request writes what follows again, at the write price.\nIt pays only when a lot is cleared, which is why the thresholds are high: this keeps a\nlong Coder or Tester invocation from growing without bound, more than it saves money.",
+      "properties": {
+        "clear_at_least_input_tokens": {
+          "default": 60000,
+          "exclusiveMinimum": 0,
+          "title": "Clear At Least Input Tokens",
+          "type": "integer"
+        },
+        "enabled": {
+          "default": true,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "keep_tool_uses": {
+          "default": 8,
+          "exclusiveMinimum": 0,
+          "title": "Keep Tool Uses",
+          "type": "integer"
+        },
+        "trigger_input_tokens": {
+          "default": 200000,
+          "exclusiveMinimum": 0,
+          "title": "Trigger Input Tokens",
+          "type": "integer"
+        }
+      },
+      "title": "ContextManagementConfig",
       "type": "object"
     },
     "Effort": {
@@ -784,7 +830,7 @@
           "type": "number"
         },
         "view_limit_chars": {
-          "default": 100000,
+          "default": 32000,
           "exclusiveMinimum": 0,
           "title": "View Limit Chars",
           "type": "integer"
@@ -1110,7 +1156,7 @@
         "read_limit_bytes": 2097152,
         "search_limit_matches": 200,
         "timeout_seconds": 600.0,
-        "view_limit_chars": 100000
+        "view_limit_chars": 32000
       }
     },
     "security": {

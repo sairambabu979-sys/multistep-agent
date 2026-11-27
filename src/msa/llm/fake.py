@@ -81,6 +81,7 @@ def message(
     model: str | None = None,
     usage_: dict[str, Any] | None = None,
     stop_details: dict[str, Any] | None = None,
+    cleared: tuple[int, int] | None = None,
 ) -> Response:
     """A Messages API response. Without ``model``, ``ScriptedClient`` answers as the
     requested model, as the API does when no fallback runs."""
@@ -97,6 +98,12 @@ def message(
         response["model"] = model
     if stop_details is not None:
         response["stop_details"] = stop_details
+    if cleared is not None:  # (tool uses, input tokens) the server's context management cleared
+        uses, tokens = cleared
+        edit = {"type": "clear_tool_uses_20250919", "cleared_tool_uses": uses}
+        response["context_management"] = {
+            "applied_edits": [edit | {"cleared_input_tokens": tokens}]
+        }
     return response
 
 

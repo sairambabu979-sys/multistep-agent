@@ -430,6 +430,7 @@ def test_task_budget_is_sent_only_when_large_enough() -> None:
     assert "task-budgets-2026-03-13" in big.requests[0]["betas"]
     assert "task_budget" not in small.requests[0]["output_config"]
     assert small.requests[0]["betas"] == [
+        "context-management-2025-06-27",  # the invocation has a tool (ADR-022)
         "server-side-fallback-2026-07-01",
         "thinking-binding-controls-2026-08-01",
     ]
@@ -454,6 +455,86 @@ def test_the_roles_model_and_effort_come_from_msa_toml_and_can_be_overridden() -
     run(client, role=Role.CODER, effort=Effort.LOW)
     assert [r["output_config"]["effort"] for r in client.requests] == ["xhigh", "low"]
     assert {r["model"] for r in client.requests} == {"claude-opus-5-5"}
+
+
+# ---------- context management (ADR-022)
+
+
+def test_invocations_with_tools_ask_the_server_to_clear_old_tool_results() -> None:
+    with_tools, without = (
+        fake.ScriptedClient(fake.answer(VERDICT)),
+        fake.ScriptedClient(fake.answer(VERDICT)),
+    )
+    run(with_tools)
+    run(without, tools=())
+    (request,) = with_tools.requests
+    assert request["context_management"] == {
+        "edits": [
+            {
+                "type": "clear_tool_uses_20250919",
+                "trigger": {"type": "input_tokens", "value": 200_000},
+                "keep": {"type": "tool_uses", "value": 8},
+                "clear_at_least": {"type": "input_tokens", "value": 60_000},
+            }
+        ]
+    }
+    assert "context-management-2025-06-27" in request["betas"]
+    assert "context_management" not in without.requests[0]  # nothing to clear
+    assert "context-management-2025-06-27" not in without.requests[0]["betas"]
+
+
+def test_context_management_can_be_switched_off() -> None:
+    cfg = config()
+    off = cfg.api.context_management.model_copy(update={"enabled": False})
+    client = fake.ScriptedClient(fake.answer(VERDICT))
+    asyncio.run(Gateway(client, config(context_management=off)).invoke(invocation()))
+    assert "context_management" not in client.requests[0]
+    assert cfg.api.betas.context_management not in client.requests[0]["betas"]
+
+
+def test_what_the_server_cleared_is_recorded_and_the_transcript_still_only_grows() -> None:
+    """Clearing happens on the server, on what the model sees. The gateway still sends every
+    tool result it has: the transcript is append-only, so thinking blocks stay valid, and a
+    replay sends byte-identical requests."""
+    client = fake.ScriptedClient(
+        tool_turn(fake.tool_use("a", "read_file", {"path": "x"})),
+        fake.message(fake.thinking(), fake.text(VERDICT), cleared=(3, 70_000)),
+    )
+    result = run(client)
+    assert [(t.cleared_tool_uses, t.cleared_input_tokens) for t in result.turns] == [
+        (0, 0),
+        (3, 70_000),
+    ]
+    first, second = client.requests
+    assert second["messages"][: len(first["messages"])] == first["messages"]
+    assert any(
+        block.get("type") == "tool_result"
+        for message in second["messages"]
+        for block in (message["content"] if isinstance(message["content"], list) else [])
+    )
+
+
+def test_a_replay_with_context_management_needs_no_api_call_and_keeps_what_was_cleared() -> None:
+    store = MemoryResponseStore()
+    script = (
+        tool_turn(fake.tool_use("a", "read_file", {"path": "x"})),
+        fake.message(fake.thinking(), fake.text(VERDICT), cleared=(2, 61_000)),
+    )
+    first = run(fake.ScriptedClient(*script), store=store)
+    again = fake.ScriptedClient()  # any API call would fail the test
+    second = run(again, store=store)
+    assert again.requests == []
+    assert [t.replayed for t in second.turns] == [True, True]
+    assert second.turns[-1].cleared_input_tokens == first.turns[-1].cleared_input_tokens == 61_000
+
+
+def test_an_exact_count_is_asked_with_the_same_context_management() -> None:
+    """count_tokens takes context_management, so a tight budget is planned on the prompt the
+    model will actually see."""
+    client = fake.ScriptedClient(fake.answer(VERDICT), count_tokens=lambda _: 1_000)
+    run(client, budget_usd_micros=104_000)
+    (counted,) = client.counted
+    assert counted["context_management"] == client.requests[0]["context_management"]
 
 
 # ---------- idempotency across crashes

@@ -33,6 +33,16 @@ cache_ttl = "1h"
 server_side_fallback = "server-side-fallback-2026-07-01"
 task_budgets = "task-budgets-2026-03-13"
 thinking_binding = "thinking-binding-controls-2026-08-01"
+context_management = "context-management-2025-06-27"
+
+# The server clears old tool results from what the model sees, on invocations with tools
+# (ADR-022). The transcript sent is unchanged. A clear invalidates the cached conversation
+# from that point, so it only pays when a lot goes: these keep long invocations bounded.
+[api.context_management]
+enabled = true
+trigger_input_tokens = 200000         # clear once the prompt reaches this...
+keep_tool_uses = 8                    # ...keeping the newest tool uses...
+clear_at_least_input_tokens = 60000   # ...and only if at least this much goes
 
 # US dollars per million tokens. A served model missing here is priced at the highest rate
 # of each component (over-states spend, never under-states it).
@@ -102,7 +112,7 @@ launcher = ["uv", "run", "--frozen", "python", "-m"]  # `<launcher> pytest ...`
 timeout_seconds = 600
 output_limit_bytes = 65536
 read_limit_bytes = 2097152
-view_limit_chars = 100000
+view_limit_chars = 32000
 search_limit_matches = 200
 cpu_seconds = 1800
 max_file_bytes = 1073741824

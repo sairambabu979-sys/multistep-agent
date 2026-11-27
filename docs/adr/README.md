@@ -27,3 +27,4 @@ the old one.
 | [019](019-container-sandbox.md) | A container backend for repository commands, for repositories you do not trust | Accepted |
 | [020](020-dependency-audit.md) | Audit the pinned Python dependencies a change adds, by default | Accepted |
 | [021](021-prompt-cache-ttl.md) | A one-hour prompt cache, configurable | Accepted |
+| [022](022-bounded-tool-results.md) | Bound what tool results add to the transcript | Accepted |

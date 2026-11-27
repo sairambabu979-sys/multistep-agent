@@ -21,7 +21,7 @@ from pydantic import BaseModel, ConfigDict
 from msa.config import Role
 from msa.llm import fake
 from msa.llm.client import Request
-from msa.llm.gateway import Gateway, Tool, ToolOutput
+from msa.llm.gateway import Gateway, Tool, ToolOutput, clear_tool_uses
 from msa.llm.schema import strictness_problems
 from tests.support.llm import READ, VERDICT, config, invocation
 
@@ -29,6 +29,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SENT_FIELDS = {
     "betas",
     "cache_control",
+    "context_management",
     "fallbacks",
     "max_tokens",
     "messages",
@@ -125,6 +126,11 @@ def test_every_request_is_well_formed(script: list[dict[str, Any]]) -> None:
         answer_format = request["output_config"]["format"]
         assert answer_format["type"] == "json_schema"
         assert strictness_problems(answer_format["schema"]) == []
+        # Every request here has tools, so old results may be cleared, server side (ADR-022).
+        assert request["context_management"] == {
+            "edits": [clear_tool_uses(cfg.api.context_management)]
+        }
+        assert cfg.api.betas.context_management in request["betas"]
         tools = request["tools"]
         assert [t["name"] for t in tools] == sorted(t["name"] for t in tools)
         for tool in tools:
@@ -140,7 +146,8 @@ def test_the_cached_prefix_is_frozen_and_the_conversation_only_grows(
     requests = sent(script)
     first = requests[0]
     for earlier, later in itertools.pairwise(requests):
-        for frozen in ("system", "tools", "model", "thinking", "output_config", "betas"):
+        frozen_fields = ("system", "tools", "model", "thinking", "output_config", "betas")
+        for frozen in (*frozen_fields, "context_management"):
             assert later[frozen] == first[frozen], frozen
         assert later["messages"][: len(earlier["messages"])] == earlier["messages"]
         assert len(later["messages"]) > len(earlier["messages"])

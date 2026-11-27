@@ -33,7 +33,7 @@ from typing import Any
 from anthropic.types.beta import BetaMessage
 from pydantic import BaseModel, ValidationError
 
-from msa.config import Effort, MsaConfig, Role
+from msa.config import ContextManagementConfig, Effort, MsaConfig, Role
 from msa.core.budget import NO_SPEND, Spend
 from msa.llm.accounting import (
     affordable_output_tokens,
@@ -108,6 +108,9 @@ class Turn:
     cache_read_tokens: int
     retries: int  # mid-stream failures retried before this turn's response arrived
     thinking_dropped: int  # earlier thinking the served model could not read (a downgrade)
+    # What the server's context management cleared before this turn (ADR-022).
+    cleared_tool_uses: int = 0
+    cleared_input_tokens: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,6 +148,26 @@ class InvocationRefused(InvocationError):
 
 
 # ---------- echo rules
+
+
+def clear_tool_uses(managed: ContextManagementConfig) -> dict[str, Any]:
+    """The server-side edit that clears old tool results (ADR-022)."""
+    return {
+        "type": "clear_tool_uses_20250919",
+        "trigger": {"type": "input_tokens", "value": managed.trigger_input_tokens},
+        "keep": {"type": "tool_uses", "value": managed.keep_tool_uses},
+        "clear_at_least": {"type": "input_tokens", "value": managed.clear_at_least_input_tokens},
+    }
+
+
+def _cleared(message: BetaMessage) -> dict[str, int]:
+    """What the server cleared before answering, from ``context_management.applied_edits``."""
+    applied = message.context_management.applied_edits if message.context_management else []
+    uses = [edit for edit in applied if edit.type == "clear_tool_uses_20250919"]
+    return {
+        "cleared_tool_uses": sum(edit.cleared_tool_uses for edit in uses),
+        "cleared_input_tokens": sum(edit.cleared_input_tokens for edit in uses),
+    }
 
 
 def _boundary(blocks: list[Block]) -> int:
@@ -252,6 +275,7 @@ class _Run[O: BaseModel]:
                     thinking_dropped=sum(
                         t.type == "thinking_dropped" for t in message.input_transformations or ()
                     ),
+                    **_cleared(message),
                 )
             )
             if self.spend.usd_micros > self.inv.budget_usd_micros:
@@ -304,6 +328,9 @@ class _Run[O: BaseModel]:
         if budget_tokens >= TASK_BUDGET_MINIMUM:
             output_config["task_budget"] = {"type": "tokens", "total": budget_tokens}
             betas.add(api.betas.task_budgets)
+        managed = api.context_management  # only invocations with tools have results to clear
+        if self.definitions and managed.enabled:
+            betas.add(api.betas.context_management)
         request: Request = {
             "model": self.model,
             "system": [
@@ -324,6 +351,8 @@ class _Run[O: BaseModel]:
         }
         if self.definitions:
             request["tools"] = self.definitions
+            if managed.enabled:
+                request["context_management"] = {"edits": [clear_tool_uses(managed)]}
 
         # Plan with the price of whoever served last: sticky fallbacks keep serving.
         pricing = config.pricing_for_model(self.served)

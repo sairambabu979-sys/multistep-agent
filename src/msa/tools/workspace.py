@@ -39,6 +39,16 @@ from msa.tools.errors import (
 from msa.tools.paths import Root
 
 
+def _fitting(lines: list[str], limit: int) -> list[str]:
+    """The leading lines whose characters together fit in ``limit``."""
+    size = 0
+    for count, line in enumerate(lines):
+        size += len(line)
+        if size > limit:
+            return lines[:count]
+    return lines
+
+
 def content_hash(data: bytes) -> str:
     return "sha256:" + hashlib.sha256(data).hexdigest()
 
@@ -51,6 +61,9 @@ class FileView:
     last_line: int
     total_lines: int
     content_hash: str  # of the whole file, whatever the range
+    # The last line asked for, when the view limit cut the range short; None when not cut.
+    requested_last_line: int | None = None
+    view_limit_chars: int = 0
 
     def render(self) -> str:
         """Numbered lines for the model; the numbers are not part of the file."""
@@ -61,7 +74,14 @@ class FileView:
         )
         lines = self.text.splitlines()
         body = "\n".join(f"{n:>6}\t{line}" for n, line in enumerate(lines, self.first_line))
-        return f"{self.path} ({span}) {self.content_hash}\n{body}".rstrip("\n")
+        view = f"{self.path} ({span}) {self.content_hash}\n{body}".rstrip("\n")
+        if self.requested_last_line is None:
+            return view
+        rest = self.last_line + 1
+        return (
+            f"{view}\n[cut at the {self.view_limit_chars}-character view limit: lines "
+            f"{rest}-{self.requested_last_line} not shown. Read on with start_line={rest}.]"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,20 +125,23 @@ class Workspace:
                 raise ToolError(
                     f"{relative} has {len(lines)} lines; lines {first}-{last} select nothing"
                 )
-            selected = "".join(lines[first - 1 : last])
-            if len(selected) > self.limits.view_limit_chars:
+            limit = self.limits.view_limit_chars
+            shown = _fitting(lines[first - 1 : last], limit)
+            if lines and not shown:
                 raise TooLarge(
-                    f"{relative} lines {first}-{last} are {len(selected)} characters, over the "
-                    f"{self.limits.view_limit_chars} limit; it has {len(lines)} lines: read it "
-                    "in ranges with start_line and end_line"
+                    f"{relative} line {first} alone is {len(lines[first - 1])} characters, over "
+                    f"the {limit}-character view limit: search it instead"
                 )
+            shown_last = first + len(shown) - 1 if lines else last
             return FileView(
                 path=relative.as_posix(),
-                text=selected,
+                text="".join(shown),
                 first_line=first if lines else 0,
-                last_line=last,
+                last_line=shown_last,
                 total_lines=len(lines),
                 content_hash=content_hash(data),
+                requested_last_line=last if shown_last < last else None,
+                view_limit_chars=limit,
             )
 
     def create_file(self, path: str, content: str) -> Written:

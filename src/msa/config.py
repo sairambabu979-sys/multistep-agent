@@ -91,6 +91,25 @@ class BetasConfig(Frozen):
     server_side_fallback: BetaFlag
     task_budgets: BetaFlag
     thinking_binding: BetaFlag
+    context_management: BetaFlag = "context-management-2025-06-27"
+
+
+class ContextManagementConfig(Frozen):
+    """The server clears old tool results from what the model sees (ADR-022).
+
+    The transcript the gateway sends is untouched, so the journal, replay and thinking
+    blocks are unaffected. Clearing invalidates the cached conversation from the first
+    result it clears, so the next request writes what follows again, at the write price.
+    It pays only when a lot is cleared, which is why the thresholds are high: this keeps a
+    long Coder or Tester invocation from growing without bound, more than it saves money."""
+
+    enabled: bool = True
+    # Clear once the prompt reaches this many input tokens...
+    trigger_input_tokens: PositiveInt = 200_000
+    # ...keeping the most recent tool uses whole...
+    keep_tool_uses: PositiveInt = 8
+    # ...and only when at least this much would go: a smaller clear costs more than it saves.
+    clear_at_least_input_tokens: PositiveInt = 60_000
 
 
 class ApiConfig(Frozen):
@@ -112,6 +131,7 @@ class ApiConfig(Frozen):
     # written instead of 1.25x; reads cost the same. Both breakpoints use it, so the
     # API's rule that a longer TTL comes first always holds.
     cache_ttl: Literal["5m", "1h"] = "1h"
+    context_management: ContextManagementConfig = ContextManagementConfig()
 
 
 class Pricing(Frozen):
@@ -311,7 +331,10 @@ class SandboxConfig(Frozen):
     timeout_seconds: PositiveFloat = 600.0
     output_limit_bytes: PositiveInt = 64 * 1024  # head and tail are kept, the middle elided
     read_limit_bytes: PositiveInt = 2 * 1024 * 1024  # larger files cannot be read
-    view_limit_chars: PositiveInt = 100_000  # larger views must name a line range
+    # The most characters one read_file returns. A larger range is cut at a line boundary,
+    # and the view says which start_line reads on (ADR-022). Every view stays in the
+    # transcript for the rest of the invocation, so this bounds what each read adds.
+    view_limit_chars: PositiveInt = 32_000
     search_limit_matches: PositiveInt = 200
     cpu_seconds: PositiveInt = 1800  # RLIMIT_CPU per command
     max_file_bytes: PositiveInt = 1024**3  # RLIMIT_FSIZE per command
