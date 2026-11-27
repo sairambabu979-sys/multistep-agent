@@ -16,6 +16,7 @@ from msa.config import (
     ServiceConfig,
     json_schema,
     load_config,
+    parse_efforts,
 )
 from msa.core.values import Escalation, Limits, PlanGate
 
@@ -176,6 +177,27 @@ def test_a_journal_schema_must_be_a_plain_identifier(tmp_path: Path) -> None:
     old = "[journal]\n"
     with pytest.raises(ConfigError, match="schema_name"):
         load_config(write(tmp_path, text.replace(old, f'{old}schema_name = "a; DROP"\n', 1)))
+
+
+def test_efforts_parse_from_role_equals_effort() -> None:
+    assert parse_efforts(["coder=high", " Tester = MEDIUM ", "coder=high"]) == {
+        Role.CODER: Effort.HIGH,
+        Role.TESTER: Effort.MEDIUM,
+    }
+    assert parse_efforts([]) == {}
+
+
+def test_with_efforts_changes_only_the_named_roles() -> None:
+    committed = load_config(COMMITTED)
+    tuned = committed.with_efforts({Role.CODER: Effort.HIGH})
+    assert tuned.models.effort_for(Role.CODER) is Effort.HIGH
+    others = set(Role) - {Role.CODER}
+    assert {r: tuned.models.effort_for(r) for r in others} == {
+        r: committed.models.effort_for(r) for r in others
+    }
+    assert tuned.models.model_for(Role.CODER) == committed.models.model_for(Role.CODER)
+    assert committed.with_efforts({}) is committed
+    assert set(tuned.models.efforts()) == set(Role)
 
 
 def test_the_api_listens_on_loopback_unless_told_otherwise() -> None:

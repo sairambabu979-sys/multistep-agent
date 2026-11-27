@@ -187,6 +187,13 @@ def test_resume_refuses_a_live_run_it_cannot_rebuild(
         (["--task", "x", "--task-file", "msa.toml"], "give exactly one of --task and --task-file"),
         (["--task", "   "], "the task is empty"),
         (["--task", "x", "--record", "a.json", "--replay", "msa.toml"], "cannot be combined"),
+        (["--task", "x", "--effort", "coder"], "give ROLE=EFFORT, e.g. coder=high"),
+        (["--task", "x", "--effort", "boss=high"], "no role 'boss'"),
+        (["--task", "x", "--effort", "coder=extreme"], "no effort 'extreme'"),
+        (
+            ["--task", "x", "--effort", "coder=high", "--effort", "coder=low"],
+            "--effort gives coder two efforts",
+        ),
     ],
 )
 def test_run_refuses_unusable_arguments(db: str, arguments: list[str], message: str) -> None:

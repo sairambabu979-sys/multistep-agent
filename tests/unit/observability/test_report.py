@@ -108,6 +108,7 @@ def test_the_report_names_stand_ins_and_holds_the_patch() -> None:
             {
                 "effect": "run-1:2:0",
                 "role": "planner",
+                "effort": "high",
                 "status": "ok",
                 "turns": 2,
                 "replayed": 0,
@@ -140,7 +141,7 @@ def test_the_report_names_stand_ins_and_holds_the_patch() -> None:
     assert "- `author_acceptance_tests`: Tester (M7): none" in text
     assert "request_arbitration" not in text  # only stand-ins the run used are listed
     assert "## Plan\n\nDo it." in text
-    assert "| `run-1:2:0` | planner | ok | 2 | 0 | $0.0015 | 10 | 5 | 0 |" in text
+    assert "| `run-1:2:0` | planner | high | ok | 2 | 0 | $0.0015 | 10 | 5 | 0 |" in text
     assert "- Files: src/greeter.py" in text
     assert f"- `{BUILD}`: passed" in text
     assert "````diff\ndiff --git a/x b/x\n+```\n````" in text  # a fence the patch cannot close

@@ -125,11 +125,12 @@ def _invocations(invocations: Sequence[Mapping[str, Any]]) -> list[str]:
         "",
         "## Agent invocations",
         "",
-        "| effect | role | status | turns | replayed | spend | in | out | cache read |",
-        "|---|---|---|---|---|---|---|---|---|",
+        "| effect | role | effort | status | turns | replayed | spend | in | out | cache read |",
+        "|---|---|---|---|---|---|---|---|---|---|",
     ]
     out.extend(
-        f"| `{i.get('effect')}` | {i.get('role')} | {i.get('status')} | {i.get('turns')} "
+        f"| `{i.get('effect')}` | {i.get('role')} | {i.get('effort', '-')} | {i.get('status')} "
+        f"| {i.get('turns')} "
         f"| {i.get('replayed')} | {_usd(int(i.get('usd_micros', 0)))} "
         f"| {i.get('input_tokens')} | {i.get('output_tokens')} "
         f"| {i.get('cache_read_tokens')} |"

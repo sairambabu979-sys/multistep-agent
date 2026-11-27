@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from msa.config import MsaConfig
+from msa.config import Effort, MsaConfig, Role
 from msa.core.effects import (
     AwaitPlanApproval,
     Effect,
@@ -120,6 +120,28 @@ def test_junit_cases_become_node_ids_with_outcomes_and_their_first_message_line(
         "tests/acceptance/test_y.py": ("failed", False, "collection failure"),
         "tests.acceptance.test_z": ("failed", False, "no file"),
     }
+
+
+# ---------- efforts: journaled with the run, kept on resume
+
+
+def test_a_run_keeps_the_efforts_it_started_with() -> None:
+    """The environment is journaled when the run starts, so a resume rebuilds the roles at
+    the same effort even after msa.toml changes."""
+    config = base_config()
+    started = live.LiveEnvironment(
+        repo="/r", state_dir="/s", task="t", efforts={Role.CODER: Effort.LOW}
+    )
+    journaled = live.LiveEnvironment.model_validate(started.model_dump(mode="json"))
+    assert journaled.efforts == {Role.CODER: Effort.LOW}
+    later = config.with_efforts({Role.CODER: Effort.MAX})  # msa.toml edited since
+    assert journaled.settings(later).models.effort_for(Role.CODER) is Effort.LOW
+
+
+def test_a_run_journaled_before_efforts_were_recorded_uses_msa_toml() -> None:
+    old = live.LiveEnvironment.model_validate({"repo": "/r", "state_dir": "/s", "task": "t"})
+    assert old.efforts == {}
+    assert old.settings(base_config()) == base_config()
 
 
 # ---------- executors on a real worktree

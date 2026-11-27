@@ -41,8 +41,10 @@ from functools import cache
 from pathlib import Path
 from typing import Literal
 
+from pydantic import Field
+
 from msa.agents.schemas import Plan
-from msa.config import MsaConfig, Role
+from msa.config import Effort, MsaConfig, Role
 from msa.core import RunState, Step, TransitionRejected
 from msa.core._frozen import Frozen
 from msa.core.effects import (
@@ -111,10 +113,17 @@ class LiveEnvironment(Frozen):
     overrides: tuple[str, ...] = ()  # --pref
     cassette: str | None = None
     cassette_mode: Literal["record", "replay"] | None = None
+    # Each role's effort when the run started: msa.toml with any --effort. A resumed run
+    # keeps these, whatever msa.toml says by then. Empty in runs journaled before them.
+    efforts: dict[Role, Effort] = Field(default_factory=dict)
 
     @property
     def task_digest(self) -> Digest:
         return digest_of(self.task.encode("utf-8"))
+
+    def settings(self, config: MsaConfig) -> MsaConfig:
+        """``config`` with the efforts this run started with."""
+        return config.with_efforts(self.efforts)
 
 
 # ---------- the executors that are not agents
@@ -384,7 +393,9 @@ def interpreter(
     on_report: Callable[[Path], None] | None = None,
 ) -> Interpreter:
     """The interpreter that drives (or resumes) a live run, writing its report at the end.
-    With the container backend and no usable runtime, it refuses: nothing would run."""
+    Each role runs at the effort the run started with (``LiveEnvironment.efforts``). With
+    the container backend and no usable runtime, it refuses: nothing would run."""
+    config = environment.settings(config)
     if (problem := container_problem(config.sandbox)) is not None:
         raise CommandUnavailable(problem)
     repo = Path(environment.repo)

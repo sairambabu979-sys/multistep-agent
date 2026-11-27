@@ -471,6 +471,7 @@ async def start_run(body: StartRun, who: Operator, svc: Svc) -> dict[str, Any]:
                 repo=str(settings.repo.resolve()),
                 state_dir=str(settings.state_dir.resolve()),
                 task=body.task,
+                efforts=config.models.efforts(),
             ).model_dump(mode="json")
         with svc.journal() as opened:
             if any(r.run_id == rid for r in opened.runs()):

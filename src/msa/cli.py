@@ -29,6 +29,7 @@ from msa.config import (
     TemporalConfig,
     json_schema,
     load_config,
+    parse_efforts,
 )
 from msa.core import RunState, Step, TransitionRejected, transition
 from msa.core.effects import (
@@ -1094,6 +1095,27 @@ async def _drive_live(
                 await close()
 
 
+EffortOption = Annotated[
+    list[str] | None,
+    typer.Option(
+        "--effort",
+        metavar="ROLE=EFFORT",
+        help="One role's effort for this run, e.g. coder=high (repeatable) [default: msa.toml].",
+    ),
+]
+
+
+def _with_efforts(settings: MsaConfig | None, effort: list[str] | None, command: str) -> MsaConfig:
+    """msa.toml with any --effort applied. The run journals each role's effort
+    (``LiveEnvironment.efforts``), so a resume keeps it (README: "Comparing effort levels")."""
+    if settings is None:
+        raise _fail(f"{command} needs msa.toml: model ids and prices live there")
+    try:
+        return settings.with_efforts(parse_efforts(effort or ()))
+    except ConfigError as exc:
+        raise _fail(str(exc)) from exc
+
+
 @app.command(name="run")
 def run_task(
     ctx: typer.Context,
@@ -1120,6 +1142,7 @@ def run_task(
             "--replay", help="Answer from this cassette, offline.", exists=True, dir_okay=False
         ),
     ] = None,
+    effort: EffortOption = None,
     quiet: Quiet = False,
     db: Db = None,
     temporal: TemporalFlag = False,
@@ -1133,9 +1156,7 @@ def run_task(
         raise _fail("give exactly one of --task and --task-file")
     if record is not None and replay is not None:
         raise _fail("--record and --replay cannot be combined")
-    settings = _settings(ctx)
-    if settings is None:
-        raise _fail("msa run needs msa.toml: model ids and prices live there")
+    settings = _with_efforts(_settings(ctx), effort, "msa run")
     if task_file is not None:
         task = task_file.read_text(encoding="utf-8")
     text = task or ""
@@ -1156,6 +1177,7 @@ def run_task(
         overrides=tuple(pref or ()),
         cassette=str(cassette.resolve()) if cassette else None,
         cassette_mode="record" if record else "replay" if replay else None,
+        efforts=settings.models.efforts(),
     )
     rid = RunId(run_id or f"run-{uuid.uuid4().hex[:8]}")
     if temporal:
@@ -1667,13 +1689,12 @@ def eval_run(
         float | None, typer.Option(min=0.000001, help="Per run [default: msa.toml].")
     ] = None,
     repeats: Annotated[int, typer.Option(min=1, help="Runs per (task, arm).")] = 1,
+    effort: EffortOption = None,
 ) -> None:
     """Run the corpus through the system with the real model, one live run per (task, arm),
     and score each delivered tree with the task's hidden tests. It spends: every run is
     capped by --budget-usd, and no run starts once --max-total-usd is spent."""
-    settings = _settings(ctx)
-    if settings is None:
-        raise _fail("msa eval run needs msa.toml: model ids and prices live there")
+    settings = _with_efforts(_settings(ctx), effort, "msa eval run")
     settings = settings.model_copy(update={"sandbox": _eval_sandbox(settings.sandbox)})
     tasks = _eval_tasks(corpus, task)
     arms = arm or ["B", "D"]

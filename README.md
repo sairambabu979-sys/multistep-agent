@@ -596,6 +596,30 @@ uv run msa eval report .msa/evals          # the metrics, and what the rule deci
   more, so one broken run doesn't leave an arm short of the 54 results the rule needs. Its
   spend, from its model calls' records, stays in the results and counts against
   `--max-total-usd`, which stops new runs once that much is spent.
+- **Comparing effort levels.** Each role's effort is set in `msa.toml`
+  (`[models.roles]`). `--effort ROLE=EFFORT` (repeatable) changes it for one run, on both
+  `msa run` and `msa eval run`.
+  - **Recorded:** a run journals each role's effort when it starts, so a resume keeps it.
+    Every line of `invocations.jsonl` records the model and effort it was asked at, the
+    run report shows it, and each eval result has an `efforts` field.
+  - **A Coder `high`-against-`xhigh` comparison** runs the same tasks twice, into separate
+    directories:
+
+    ```bash
+    uv run msa eval run --arm D --repeats 3 --max-total-usd 60 --effort coder=high --out .msa/evals/coder-high
+    uv run msa eval run --arm D --repeats 3 --max-total-usd 60 --effort coder=xhigh --out .msa/evals/coder-xhigh
+    uv run msa eval report .msa/evals/coder-high
+    uv run msa eval report .msa/evals/coder-xhigh
+    ```
+
+  - **Why separate directories:** results resume by (task, arm, repeat), so two efforts
+    written to one directory would count as one.
+  - **What to compare:** the resolution rate, then the cost per *resolved* task, not per
+    run. A cheaper effort that resolves fewer tasks is not cheaper. Then compare tokens,
+    revisions and wall time.
+  - **It spends real money.** Each run is capped by `--budget-usd`, and the whole
+    comparison by `--max-total-usd`. `evals/decision.toml` decides between arms. An effort
+    comparison is read by a person.
 - **Arms.** B is every stage, with the Reviewer as a pass-through stand-in. D is the full
   system. A (no Tester) and C (the author must accept every finding) are refused for now:
   A needs the unit-test stage to accept a run without acceptance tests, and C needs a

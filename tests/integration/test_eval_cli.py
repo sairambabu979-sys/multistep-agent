@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import click
 import pytest
@@ -16,7 +17,13 @@ from typer.testing import CliRunner
 
 from msa import cli
 from msa.cli import app
+from msa.config import MsaConfig
+from msa.core.ids import RunId
 from msa.evals import runner
+from msa.llm.client import MessagesClient
+from msa.runtime.artifacts import RunFiles
+from msa.runtime.journal import SqliteJournal
+from msa.runtime.live import LiveEnvironment
 from tests.integration.test_eval_runner import GOOD, scripts
 from tests.support.scripts import ROOT
 
@@ -118,6 +125,60 @@ def test_run_then_report(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     assert "# Eval report" in reported.output
     assert "**review** (arm D against B): **not enough evidence**." in reported.output
     assert "| textkit-wrap-last-line | bugfix | ✓ $" in reported.output
+
+
+def test_an_effort_given_for_one_eval_reaches_every_request_and_every_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--effort coder=high, as for a high-against-xhigh comparison (README, "Comparing
+    effort levels"): the Coder's requests carry it, and the result, the journal and each
+    invocation's record say so."""
+    monkeypatch.setenv("MSA_USER_PREFERENCES", str(tmp_path / "no-user-layer.yaml"))
+    made: list[Any] = []
+    factory = scripts(GOOD)
+
+    def recording(settings: MsaConfig, environment: LiveEnvironment) -> MessagesClient:
+        made.append(client := factory(settings, environment))
+        return client
+
+    monkeypatch.setattr(cli, "_client", recording)
+    out = tmp_path / "results"
+    ran = CliRunner().invoke(
+        app,
+        [
+            *CONFIG,
+            "eval",
+            "run",
+            "--corpus",
+            str(ROOT / "evals"),
+            "--task",
+            "textkit-wrap-last-line",
+            "--arm",
+            "B",
+            "--max-total-usd",
+            "5",
+            "--out",
+            str(out),
+            "--effort",
+            "coder=high",
+        ],
+    )
+    assert ran.exit_code == 0, ran.output
+    (client,) = made
+    assert {r["output_config"]["effort"] for r in client.requests("coder")} == {"high"}
+    (recorded,) = (json.loads(line) for line in (out / runner.RESULTS).read_text().splitlines())
+    result = runner.Result.model_validate(recorded)
+    assert result.efforts["coder"] == "high"
+    assert result.efforts["tester"] == "high"  # msa.toml's, untouched
+    state = out / "runs" / "textkit-wrap-last-line-B-0" / "state"
+    files = RunFiles.for_run(state, RunId(result.run_id))
+    coder_lines = [r for r in files.records("invocations.jsonl") if r["role"] == "coder"]
+    assert coder_lines
+    assert {r["effort"] for r in coder_lines} == {"high"}
+    assert {r["model"] for r in coder_lines} == {"claude-opus-5-5"}
+    with SqliteJournal(state / "runs.db") as journal:
+        (run,) = journal.runs()
+        assert run.environment["efforts"]["coder"] == "high"
 
 
 def test_report_without_results_fails(tmp_path: Path) -> None:

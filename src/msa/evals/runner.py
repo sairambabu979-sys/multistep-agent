@@ -112,6 +112,7 @@ class Result(BaseModel):
     findings: list[FindingRow] = []
     plan_risks: list[str] = []
     error: str | None = None  # the harness itself failed; the run is not evidence
+    efforts: dict[str, str] = {}  # each role's effort (msa.toml with any --effort)
 
 
 def arm_config(settings: MsaConfig, arm: str, budget_usd: float) -> MsaConfig:
@@ -144,7 +145,9 @@ async def run_one(
     workdir.mkdir(parents=True)
     repo = materialize(task, workdir / "repo")
     state_dir = workdir / "state"
-    environment = live.LiveEnvironment(repo=str(repo), state_dir=str(state_dir), task=task.text)
+    environment = live.LiveEnvironment(
+        repo=str(repo), state_dir=str(state_dir), task=task.text, efforts=config.models.efforts()
+    )
     record: dict[str, object] = {
         "task": task.id,
         "kind": task.kind,
@@ -152,6 +155,7 @@ async def run_one(
         "arm": arm,
         "repeat": repeat,
         "run_id": run_id,
+        "efforts": {role.value: effort.value for role, effort in environment.efforts.items()},
     }
     files = RunFiles.for_run(state_dir, run_id)
     started = time.monotonic()

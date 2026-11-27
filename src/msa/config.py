@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import tomllib
+from collections.abc import Iterable, Mapping
 from datetime import timedelta
 from decimal import ROUND_CEILING, Decimal
 from enum import StrEnum
@@ -85,6 +86,29 @@ class ModelsConfig(Frozen):
 
     def effort_for(self, role: Role) -> Effort:
         return self.roles[role].effort
+
+    def efforts(self) -> dict[Role, Effort]:
+        """Every role's effort, as a run journals it."""
+        return {role: self.effort_for(role) for role in Role}
+
+
+def parse_efforts(values: Iterable[str]) -> dict[Role, Effort]:
+    """``ROLE=EFFORT`` pairs, as ``--effort coder=high`` gives them."""
+    efforts: dict[Role, Effort] = {}
+    roles, levels = ", ".join(r.value for r in Role), ", ".join(e.value for e in Effort)
+    for value in values:
+        name, equals, level = (part.strip().lower() for part in value.partition("="))
+        if not equals:
+            raise ConfigError(f"--effort {value!r}: give ROLE=EFFORT, e.g. coder=high")
+        if name not in set(Role):
+            raise ConfigError(f"--effort {value!r}: no role {name!r} (the roles: {roles})")
+        if level not in set(Effort):
+            raise ConfigError(f"--effort {value!r}: no effort {level!r} (the levels: {levels})")
+        role = Role(name)
+        if efforts.get(role, Effort(level)) != Effort(level):
+            raise ConfigError(f"--effort gives {role.value} two efforts")
+        efforts[role] = Effort(level)
+    return efforts
 
 
 class BetasConfig(Frozen):
@@ -537,6 +561,16 @@ class MsaConfig(Frozen):
         if unpriced:
             raise ValueError(f"no [pricing] entry for {unpriced}: spend could not be accounted")
         return self
+
+    def with_efforts(self, efforts: Mapping[Role, Effort]) -> MsaConfig:
+        """This configuration with the named roles' efforts replaced (``--effort``)."""
+        if not efforts:
+            return self
+        roles = {
+            role: settings.model_copy(update={"effort": efforts.get(role, settings.effort)})
+            for role, settings in self.models.roles.items()
+        }
+        return self.model_copy(update={"models": self.models.model_copy(update={"roles": roles})})
 
     def pricing_for(self, role: Role) -> Pricing:
         return self.pricing[self.models.model_for(role)]

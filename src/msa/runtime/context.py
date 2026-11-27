@@ -145,6 +145,11 @@ class RunContext:
                 "effect": effect.id,
                 "kind": effect.command.kind,
                 "role": invocation.role.value,
+                "model": self.config.models.model_for(invocation.role),
+                "effort": (
+                    invocation.effort or self.config.models.effort_for(invocation.role)
+                ).value,
+                "served_by": sorted({t.model for t in turns}),
                 "status": status,
                 "turns": len(turns),
                 "replayed": sum(t.replayed for t in turns),
